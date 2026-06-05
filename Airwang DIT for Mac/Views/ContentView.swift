@@ -1,0 +1,3672 @@
+import AppKit
+import QuickLookThumbnailing
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var isWindowResizing = false
+    @State private var isScrolling = false
+    @State private var resizeSettlingTask: Task<Void, Never>?
+    @State private var scrollSettlingTask: Task<Void, Never>?
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            musicBackdrop
+                .ignoresSafeArea()
+
+            ambientAurora
+                .ignoresSafeArea()
+
+            if viewModel.isConfigured {
+                mainDashboard
+            } else {
+                onboardingView
+            }
+        }
+        .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
+        .transaction { transaction in
+            if reduceMotionEffects {
+                transaction.animation = nil
+            }
+        }
+        .onDisappear {
+            resizeSettlingTask?.cancel()
+            scrollSettlingTask?.cancel()
+        }
+        .sheet(item: $viewModel.pendingImportVolume) { volume in
+            ImportSheet(volume: volume)
+                .environmentObject(viewModel)
+        }
+        .sheet(item: $viewModel.activeFolderPicker) { purpose in
+            FolderPickerSheet(purpose: purpose)
+                .environmentObject(viewModel)
+        }
+        .alert("提示", isPresented: Binding(
+            get: { viewModel.importError != nil },
+            set: { if !$0 { viewModel.importError = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(viewModel.importError ?? "")
+        }
+    }
+
+    private var onboardingView: some View {
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 920
+            let contentPadding: CGFloat = compact ? 16 : 34
+
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: compact ? 20 : 28) {
+                    Text("Airwang DIT for Mac")
+                        .font(.system(size: compact ? 32 : 38, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.82)
+                        .lineLimit(1)
+                        .foregroundStyle(primaryTextColor)
+                    Text("先在软件内设置默认导入目标。完成后，插入新卡或 SSD 时会直接弹出导入任务，不再通过访达跳转。")
+                        .font(compact ? .body : .title3)
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    onboardingDestinationSection(stacked: compact)
+                    onboardingFeatureSection(stacked: compact)
+                }
+                .padding(compact ? 22 : 34)
+                .frame(maxWidth: 1140, alignment: .leading)
+                .background(glassSurface(cornerRadius: compact ? 24 : 30))
+                .padding(contentPadding)
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
+            }
+            .background(ScrollActivityMonitor(onScroll: markScrollActivity))
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in markScrollActivity() }
+                    .onEnded { _ in markScrollActivity() }
+            )
+            .onChange(of: proxy.size) { _, _ in
+                markWindowResizing()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func onboardingDestinationSection(stacked: Bool) -> some View {
+        let targetCard = destinationCard(
+            badge: "主目标盘",
+            title: viewModel.preferences.targetPath == nil ? "尚未设置默认主目标位置" : "默认写入位置",
+            path: viewModel.preferences.targetPath,
+            actionTitle: "在软件内选择主目标盘",
+            action: { viewModel.openFolderPicker(for: .target) }
+        )
+
+        let backupControls = VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("同时备份")
+                    .font(.headline)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { viewModel.preferences.backupEnabled },
+                    set: { viewModel.setBackupEnabled($0) }
+                ))
+                .labelsHidden()
+            }
+
+            destinationCard(
+                badge: "备份盘",
+                title: viewModel.preferences.backupEnabled ? "同步写入备份位置" : "当前未启用备份",
+                path: viewModel.preferences.backupPath,
+                actionTitle: "在软件内选择备份盘",
+                action: { viewModel.openFolderPicker(for: .backup) }
+            )
+            .disabled(!viewModel.preferences.backupEnabled)
+        }
+
+        if stacked {
+            VStack(alignment: .leading, spacing: 16) {
+                targetCard
+                backupControls
+            }
+        } else {
+            HStack(alignment: .top, spacing: 18) {
+                targetCard
+                backupControls
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func onboardingFeatureSection(stacked: Bool) -> some View {
+        if stacked {
+            VStack(spacing: 12) {
+                onboardingFeature(label: "应用内目录浏览", detail: "直接选文件夹并查看剩余容量")
+                onboardingFeature(label: "自动设备发现", detail: "检测新介质后快速开始导入")
+                onboardingFeature(label: "拷贝后校验", detail: "导入完成即执行完整性确认")
+            }
+        } else {
+            HStack(spacing: 18) {
+                onboardingFeature(label: "应用内目录浏览", detail: "直接选文件夹并查看剩余容量")
+                onboardingFeature(label: "自动设备发现", detail: "检测新介质后快速开始导入")
+                onboardingFeature(label: "拷贝后校验", detail: "导入完成即执行完整性确认")
+            }
+        }
+    }
+
+    private var mainDashboard: some View {
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 1180
+            let contentPadding: CGFloat = compact ? 16 : 26
+            let contentSpacing: CGFloat = compact ? 14 : 18
+            let availableWidth = max(0, proxy.size.width - contentPadding * 2)
+            let bottomBarReserve: CGFloat = compact ? 106 : 116
+
+            ZStack(alignment: .bottom) {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: contentSpacing) {
+                        workspaceHeader(availableWidth: availableWidth)
+
+                        Group {
+                            switch viewModel.selectedSection {
+                            case .copy:
+                                copyWorkspace(availableWidth: availableWidth)
+                            case .dashboard:
+                                dashboardWorkspace(availableWidth: availableWidth)
+                            case .backup:
+                                backupWorkspace
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    }
+                    .padding(.horizontal, contentPadding)
+                    .padding(.top, contentPadding)
+                    .padding(.bottom, bottomBarReserve)
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .top)
+                }
+                .background(ScrollActivityMonitor(onScroll: markScrollActivity))
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { _ in markScrollActivity() }
+                        .onEnded { _ in markScrollActivity() }
+                )
+
+                bottomTabBar(availableWidth: availableWidth)
+                    .padding(.horizontal, contentPadding)
+                    .padding(.bottom, max(proxy.safeAreaInsets.bottom, compact ? 10 : 16))
+            }
+            .onChange(of: proxy.size) { _, _ in
+                markWindowResizing()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceHeader(availableWidth: CGFloat) -> some View {
+        if availableWidth < 1050 {
+            VStack(alignment: .leading, spacing: 14) {
+                headerTitle
+                headerControls(stacked: availableWidth < 720)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                headerTitle
+                Spacer(minLength: 16)
+                headerControls(stacked: false)
+            }
+        }
+    }
+
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Airwang DIT for Mac")
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .minimumScaleFactor(0.8)
+                .lineLimit(1)
+                .foregroundStyle(primaryTextColor)
+            Text("多项目拷贝队列、主盘校验、串行备份与可追溯报告")
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func headerControls(stacked: Bool) -> some View {
+        if stacked {
+            VStack(alignment: .leading, spacing: 8) {
+                themePicker
+                targetPickerButton
+                refreshVolumesButton
+            }
+        } else {
+            HStack(spacing: 10) {
+                themePicker
+                targetPickerButton
+                refreshVolumesButton
+            }
+        }
+    }
+
+    private var themePicker: some View {
+        Picker("主题", selection: Binding(
+            get: { viewModel.selectedTheme },
+            set: { viewModel.setTheme($0) }
+        )) {
+            ForEach(AppTheme.allCases) { theme in
+                Text(theme.title).tag(theme)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 170)
+    }
+
+    private var targetPickerButton: some View {
+        Button("选择主目标盘") {
+            viewModel.openFolderPicker(for: .target)
+        }
+        .buttonStyle(.bordered)
+        .tint(accentColor)
+    }
+
+    private var refreshVolumesButton: some View {
+        Button("刷新设备") {
+            viewModel.refreshVolumes()
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(accentColor)
+    }
+
+    @ViewBuilder
+    private func copyWorkspace(availableWidth: CGFloat) -> some View {
+        if availableWidth < 1180 {
+            VStack(spacing: 14) {
+                copyPresetCard(availableWidth: availableWidth)
+                volumeListCard
+                projectQueueCard
+                    .frame(maxWidth: .infinity)
+            }
+        } else {
+            let queueWidth = min(520, max(420, availableWidth * 0.36))
+            let presetWidth = max(0, availableWidth - queueWidth - 18)
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(spacing: 18) {
+                    copyPresetCard(availableWidth: presetWidth)
+                    volumeListCard
+                }
+                .frame(maxWidth: .infinity)
+
+                projectQueueCard
+                    .frame(width: queueWidth)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dashboardWorkspace(availableWidth: CGFloat) -> some View {
+        if availableWidth < 1180 {
+            VStack(spacing: 14) {
+                queueControlStrip(availableWidth: availableWidth)
+                dashboardProjectList
+                logCard
+            }
+        } else {
+            let logWidth = min(420, max(360, availableWidth * 0.30))
+            let listWidth = max(0, availableWidth - logWidth - 18)
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(spacing: 18) {
+                    queueControlStrip(availableWidth: listWidth)
+                    dashboardProjectList
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+
+                logCard
+                    .frame(width: logWidth)
+            }
+        }
+    }
+
+    private var dashboardProjectList: some View {
+        let orderedProjects = viewModel.orderedProjects
+
+        return ScrollView {
+            LazyVStack(spacing: 14) {
+                if orderedProjects.isEmpty {
+                    emptyState(
+                        title: "还没有拷贝项目",
+                        detail: "去「拷贝」页选择源文件夹、目标盘和校验方式，创建项目后这里会按项目显示实时速度、ETA 和报告入口。"
+                    )
+                }
+                ForEach(orderedProjects) { project in
+                    projectDashboardCard(project)
+                }
+            }
+        }
+    }
+
+    private var backupWorkspace: some View {
+        let backupProjects = viewModel.backupProjects
+
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("备份工作台")
+                        .sectionTitle()
+                    Text("这里只显示在拷贝项目里配置了备份盘的项目，备份来源固定为主目标盘。")
+                        .foregroundStyle(secondaryTextColor)
+                }
+                Spacer()
+                Button("执行队列") {
+                    viewModel.startQueue()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accentColor)
+                .disabled(!viewModel.canStartQueue)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    if backupProjects.isEmpty {
+                        emptyState(title: "暂无备份项目", detail: "创建拷贝项目时开启备份盘后，这里会自动出现对应的备份进度。")
+                    }
+                    ForEach(backupProjects) { project in
+                        backupProjectCard(project)
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func bottomTabBar(availableWidth: CGFloat) -> some View {
+        let compact = availableWidth < 520
+        let buttonWidth = compact ? max(82, min(104, (availableWidth - 58) / 3)) : 112
+        let dashboardWidth = compact ? buttonWidth : 128
+        let buttonHeight: CGFloat = compact ? 52 : 58
+        let cornerRadius: CGFloat = compact ? 22 : 30
+
+        return HStack(spacing: compact ? 7 : 10) {
+            ForEach(MainSection.allCases) { section in
+                Button {
+                    viewModel.selectedSection = section
+                } label: {
+                    VStack(spacing: compact ? 4 : 5) {
+                        Image(systemName: section.systemImage)
+                            .font(.system(size: compact ? 18 : (section == .dashboard ? 22 : 20), weight: .semibold))
+                        Text(section.title)
+                            .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
+                    .foregroundStyle(viewModel.selectedSection == section ? Color.white : secondaryTextColor)
+                    .frame(width: section == .dashboard ? dashboardWidth : buttonWidth, height: buttonHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: compact ? 18 : 22, style: .continuous)
+                            .fill(viewModel.selectedSection == section ? accentColor : Color.white.opacity(viewModel.selectedTheme == .night ? 0.09 : 0.34))
+                    )
+                    .airwangSoftShadow(
+                        theme: viewModel.selectedTheme,
+                        tint: viewModel.selectedSection == section ? accentColor : .clear,
+                        tintStrength: viewModel.selectedSection == section ? 1 : 0,
+                        elevation: viewModel.selectedSection == section ? .selected : .tile,
+                        enabled: !reduceVisualEffects
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(compact ? 8 : 10)
+        .background(glassSurface(cornerRadius: cornerRadius))
+        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .floating, enabled: !reduceVisualEffects)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func copyPresetCard(availableWidth: CGFloat) -> some View {
+        let innerWidth = max(0, availableWidth - 48)
+        let pickerWidth = min(240, max(200, innerWidth))
+        let useCompactHeader = innerWidth < 560
+        let useStackedTargets = innerWidth < 680
+        let useStackedStats = innerWidth < 660
+
+        return VStack(alignment: .leading, spacing: 18) {
+            if useCompactHeader {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("拷贝项目创建")
+                        .sectionTitle()
+                    executionModePicker(width: pickerWidth)
+                }
+            } else {
+                HStack {
+                    Text("拷贝项目创建")
+                        .sectionTitle()
+                    Spacer()
+                    executionModePicker(width: pickerWidth)
+                }
+            }
+
+            Text(viewModel.executionMode.subtitle)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(secondaryTextColor)
+
+            if useStackedTargets {
+                VStack(spacing: 12) {
+                    primaryTargetPresetBlock
+                    backupTargetPresetBlock
+                }
+            } else {
+                HStack(spacing: 14) {
+                    primaryTargetPresetBlock
+                    backupTargetPresetBlock
+                }
+            }
+
+            if useStackedStats {
+                VStack(spacing: 10) {
+                    compactInfo(label: "默认校验", value: viewModel.selectedVerificationMode.shortTitle)
+                    compactInfo(label: "项目数", value: "\(viewModel.copyProjects.count)")
+                    compactInfo(label: "运行中", value: "\(viewModel.activeProjectIDs.count)")
+                }
+            } else {
+                HStack(spacing: 12) {
+                    compactInfo(label: "默认校验", value: viewModel.selectedVerificationMode.shortTitle)
+                    compactInfo(label: "项目数", value: "\(viewModel.copyProjects.count)")
+                    compactInfo(label: "运行中", value: "\(viewModel.activeProjectIDs.count)")
+                }
+            }
+
+            Button {
+                viewModel.startQueue()
+            } label: {
+                Label("执行任务队列", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accentColor)
+            .disabled(!viewModel.canStartQueue)
+        }
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func executionModePicker(width: CGFloat) -> some View {
+        Picker("执行方式", selection: $viewModel.executionMode) {
+            ForEach(ProjectExecutionMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: width)
+    }
+
+    private var primaryTargetPresetBlock: some View {
+        clickablePresetBlock(
+            label: "主目标盘",
+            value: viewModel.preferences.targetPath ?? "尚未设置",
+            capacityLine: viewModel.targetCapacity?.capacityLine,
+            accent: accentColor
+        ) {
+            viewModel.openFolderPicker(for: .target)
+        }
+    }
+
+    private var backupTargetPresetBlock: some View {
+        clickablePresetBlock(
+            label: "备份盘",
+            value: viewModel.preferences.backupEnabled ? (viewModel.preferences.backupPath ?? "未设置备份位置") : "未启用",
+            capacityLine: viewModel.preferences.backupEnabled ? viewModel.backupCapacity?.capacityLine : "点击选择后自动启用备份",
+            accent: secondaryAccentColor
+        ) {
+            viewModel.openFolderPicker(for: .backup)
+        }
+    }
+
+    private func queueControlStrip(availableWidth: CGFloat) -> some View {
+        let innerWidth = max(0, availableWidth - 36)
+        let pickerWidth = min(250, max(200, innerWidth))
+        let useStackedLayout = innerWidth < 720
+
+        return Group {
+            if useStackedLayout {
+                VStack(alignment: .leading, spacing: 10) {
+                    executionModePicker(width: pickerWidth)
+
+                    Text(viewModel.executionMode.subtitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        if viewModel.hasUnsavedChanges {
+                            Button("重试保存") {
+                                viewModel.retrySavingPendingChanges()
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.orange)
+                        }
+
+                        Button("执行队列") {
+                            viewModel.startQueue()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(accentColor)
+                        .disabled(!viewModel.canStartQueue)
+                    }
+                }
+            } else {
+                HStack(spacing: 12) {
+                    executionModePicker(width: pickerWidth)
+
+                    Text(viewModel.executionMode.subtitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+
+                    if viewModel.hasUnsavedChanges {
+                        Button("重试保存") {
+                            viewModel.retrySavingPendingChanges()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+
+                    Spacer()
+
+                    Button("执行队列") {
+                        viewModel.startQueue()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accentColor)
+                    .disabled(!viewModel.canStartQueue)
+                }
+            }
+        }
+        .padding(18)
+        .background(glassSurface(cornerRadius: 22, elevation: .card))
+    }
+
+    private var projectQueueCard: some View {
+        let orderedProjects = viewModel.orderedProjects
+        let firstProjectID = orderedProjects.first?.id
+        let lastProjectID = orderedProjects.last?.id
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("任务队列")
+                    .sectionTitle()
+                Spacer()
+                Text(viewModel.executionMode.title)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(accentColor.opacity(0.14), in: Capsule())
+                    .foregroundStyle(accentColor)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    if orderedProjects.isEmpty {
+                        emptyState(title: "队列为空", detail: "从左侧检测到的设备进入素材选择，创建项目后会出现在这里。")
+                    }
+
+                    ForEach(orderedProjects) { project in
+                        projectQueueRow(
+                            project,
+                            canMoveUp: firstProjectID != project.id,
+                            canMoveDown: lastProjectID != project.id
+                        )
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func clickablePresetBlock(
+        label: String,
+        value: String,
+        capacityLine: String?,
+        accent: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(label.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Text(value)
+                    .font(.headline)
+                    .foregroundStyle(primaryTextColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+                Text(capacityLine ?? "容量暂不可读")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                Label("点击选择", systemImage: "folder")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(accent)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+            .background(glassSurface(cornerRadius: 18, tint: accent, elevation: .tile))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func projectQueueRow(_ project: CopyProject, canMoveUp: Bool, canMoveDown: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(project.name)
+                        .font(.headline)
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                    Text(project.status.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor(project.status))
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    Button {
+                        viewModel.moveProjectUp(project)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!canMoveUp)
+
+                    Button {
+                        viewModel.moveProjectDown(project)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!canMoveDown)
+                }
+            }
+
+            if project.status == .running || project.status == .cancelling {
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    projectQueueProgress(project, now: timeline.date)
+                }
+            } else {
+                projectQueueProgress(project, now: Date())
+            }
+
+            Text(project.sourceRootPath)
+                .font(.caption)
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+            Text("目标: \(project.primaryImportURL.path)")
+                .font(.caption)
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+            if let backupImportURL = project.backupImportURL {
+                Text("备份: \(backupImportURL.path)")
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                Text(project.verificationMode.shortTitle)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(secondaryAccentColor.opacity(0.14), in: Capsule())
+                    .foregroundStyle(secondaryAccentColor)
+
+                Text(project.hasBackup ? "含备份" : "仅主盘")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background((project.hasBackup ? accentColor : secondaryTextColor).opacity(0.12), in: Capsule())
+                    .foregroundStyle(project.hasBackup ? accentColor : secondaryTextColor)
+
+                Spacer()
+
+                if viewModel.canEditBackup(for: project) {
+                    Button(project.hasBackup ? "更换备份" : "添加备份") {
+                        viewModel.openProjectBackupPicker(for: project)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(secondaryAccentColor)
+
+                    if project.hasBackup {
+                        Button("取消备份") {
+                            viewModel.removeBackup(from: project)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+                }
+
+                if project.status == .running {
+                    Button("取消") {
+                        viewModel.cancelProject(project)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                } else if project.status == .failed || project.status == .blocked || project.status == .cancelled {
+                    Button("重试") {
+                        viewModel.retryProject(project)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                }
+
+                Button("改名") {
+                    viewModel.promptRenameProject(project)
+                }
+                .buttonStyle(.bordered)
+                .disabled(project.status == .running || project.status == .cancelling)
+
+                Button("删除") {
+                    viewModel.deleteProject(project)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(viewModel.activeProjectIDs.contains(project.id))
+            }
+        }
+        .padding(14)
+        .background(glassSurface(cornerRadius: 18, elevation: .tile))
+    }
+
+    private func projectQueueProgress(_ project: CopyProject, now: Date) -> some View {
+        let progress = projectProgressFraction(project)
+        let timeLine = projectTimeLine(project, now: now)
+
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Text(projectProgressTitle(project))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(statusColor(project.status))
+                Spacer()
+                Text("\(Int((progress * 100).rounded()))%")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(primaryTextColor)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(secondaryTextColor.opacity(viewModel.selectedTheme == .night ? 0.18 : 0.14))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [statusColor(project.status).opacity(0.95), statusColor(project.status).opacity(0.52)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(0, proxy.size.width * progress))
+                }
+            }
+            .frame(height: 7)
+
+            HStack(spacing: 8) {
+                Label(timeLine, systemImage: project.status == .running || project.status == .cancelling ? "timer" : "clock")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                Spacer()
+                Text(projectStageSummary(project))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            }
+        }
+        .padding(12)
+        .background(
+            AirwangGlassSurface(
+                cornerRadius: 16,
+                theme: viewModel.selectedTheme,
+                tint: statusColor(project.status),
+                tintStrength: project.status == .running || project.status == .cancelling ? 0.30 : 0.12,
+                elevation: .tile,
+                reduceEffects: reduceGlassEffects
+            )
+        )
+    }
+
+    private func projectDashboardCard(_ project: CopyProject) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(project.name)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(primaryTextColor)
+                    Text("\(project.sourceName) · \(byteFormatter.string(fromByteCount: project.totalBytes)) · \(project.verificationMode.title)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                }
+                Spacer()
+                Text(project.status.title)
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(statusColor(project.status).opacity(0.16), in: Capsule())
+                    .foregroundStyle(statusColor(project.status))
+            }
+
+            VStack(spacing: 10) {
+                projectStageTrack(project.primaryCopyState, tint: accentColor)
+                projectStageTrack(project.primaryVerifyState, tint: secondaryAccentColor)
+                projectStageTrack(project.backupCopyState, tint: Color(red: 0.28, green: 0.58, blue: 1.00))
+                projectStageTrack(project.backupVerifyState, tint: Color(red: 0.29, green: 0.78, blue: 0.58))
+            }
+
+            if let errorMessage = project.errorMessage {
+                Text(errorMessage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button("跳过校验") {
+                    viewModel.requestSkipVerification(for: project)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .disabled(project.verificationMode == .skipped || (project.status != .queued && project.status != .running))
+
+                if viewModel.canEditBackup(for: project) {
+                    Button(project.hasBackup ? "更换备份盘" : "添加备份盘") {
+                        viewModel.openProjectBackupPicker(for: project)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(secondaryAccentColor)
+
+                    if project.hasBackup {
+                        Button("取消备份") {
+                            viewModel.removeBackup(from: project)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+                }
+
+                Button("打开主盘") {
+                    viewModel.revealProjectOutput(project)
+                }
+                .buttonStyle(.bordered)
+                .tint(accentColor)
+
+                Button("主盘报告") {
+                    viewModel.openProjectReport(project, stage: .primary)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accentColor)
+                .disabled(!viewModel.canOpenProjectReport(project, stage: .primary))
+
+                if project.hasBackup {
+                    Button("备份报告") {
+                        viewModel.openProjectReport(project, stage: .backup)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(secondaryAccentColor)
+                    .disabled(!viewModel.canOpenProjectReport(project, stage: .backup))
+                }
+
+                Spacer()
+            }
+        }
+        .padding(20)
+        .background(glassSurface(cornerRadius: 24, tint: project.status == .running || project.status == .cancelling ? accentColor : nil, elevation: project.status == .running || project.status == .cancelling ? .selected : .panel))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(project.status == .running || project.status == .cancelling ? accentColor.opacity(0.54) : Color.clear, lineWidth: 1.4)
+        )
+    }
+
+    private func backupProjectCard(_ project: CopyProject) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(project.name)
+                        .font(.headline)
+                        .foregroundStyle(primaryTextColor)
+                    Text(backupStatusText(project))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor(project.status))
+                }
+                Spacer()
+                if project.backupReportID != nil {
+                    Button("查看备份报告") {
+                        viewModel.openProjectReport(project, stage: .backup)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(secondaryAccentColor)
+                }
+            }
+
+            projectStageTrack(project.backupCopyState, tint: Color(red: 0.28, green: 0.58, blue: 1.00))
+            projectStageTrack(project.backupVerifyState, tint: Color(red: 0.29, green: 0.78, blue: 0.58))
+
+            detailRow("主目标地址", value: project.primaryImportURL.path)
+            detailRow("备份地址", value: project.backupImportURL?.path ?? "未配置")
+        }
+        .padding(18)
+        .background(glassSurface(cornerRadius: 20, elevation: .card))
+    }
+
+    private func projectStageTrack(_ state: ProjectStageState, tint: Color) -> some View {
+        progressTrack(
+            title: state.title,
+            detail: "\(state.completedFiles)/\(state.totalFiles) · \(byteFormatter.string(fromByteCount: state.processedBytes))/\(byteFormatter.string(fromByteCount: state.totalBytes)) · \(byteFormatter.string(fromByteCount: Int64(state.speedBytesPerSecond)))/s · 剩余 \(etaText(state.eta)) · \(state.currentFile.isEmpty ? state.detail : state.currentFile)",
+            value: state.fraction,
+            tint: state.isBlocked ? .orange : tint
+        )
+        .opacity(state.title.contains("备份") && state.detail == "未配置备份盘" ? 0.58 : 1)
+    }
+
+    private func statusColor(_ status: CopyProjectStatus) -> Color {
+        switch status {
+        case .queued: secondaryTextColor
+        case .running: accentColor
+        case .cancelling: .orange
+        case .completed: .mint
+        case .failed: .red
+        case .blocked: .orange
+        case .cancelled: .gray
+        }
+    }
+
+    private func projectProgressTitle(_ project: CopyProject) -> String {
+        switch project.status {
+        case .queued:
+            return "等待执行"
+        case .running:
+            if project.backupVerifyState.isActive { return "备份校验中" }
+            if project.backupCopyState.isActive { return "备份中" }
+            if project.primaryVerifyState.isActive { return "主盘校验中" }
+            if project.primaryCopyState.isActive { return "主盘拷贝中" }
+            return "正在准备"
+        case .cancelling:
+            return "取消收尾中"
+        case .completed:
+            return "已完成"
+        case .failed:
+            return "执行异常"
+        case .blocked:
+            return "备份阻塞"
+        case .cancelled:
+            return "已取消"
+        }
+    }
+
+    private func projectStageSummary(_ project: CopyProject) -> String {
+        if project.backupVerifyState.isActive || project.backupVerifyState.isComplete {
+            return ProjectStageKind.backupVerify.title
+        }
+        if project.backupCopyState.isActive || project.backupCopyState.isComplete {
+            return ProjectStageKind.backupCopy.title
+        }
+        if project.primaryVerifyState.isActive || project.primaryVerifyState.isComplete {
+            return ProjectStageKind.primaryVerify.title
+        }
+        if project.primaryCopyState.isActive || project.primaryCopyState.isComplete {
+            return ProjectStageKind.primaryCopy.title
+        }
+        return "尚未开始"
+    }
+
+    private func projectTimeLine(_ project: CopyProject, now: Date) -> String {
+        switch project.status {
+        case .queued:
+            return "排队中"
+        case .running:
+            return "已用 \(stopwatchText(projectElapsed(project, now: now)))"
+        case .cancelling:
+            return "取消中，已用 \(stopwatchText(projectElapsed(project, now: now)))"
+        case .completed:
+            return "此项目用了 \(stopwatchText(projectElapsed(project, now: now)))"
+        case .failed:
+            return "异常前已用 \(stopwatchText(projectElapsed(project, now: now)))"
+        case .blocked:
+            return "阻塞前已用 \(stopwatchText(projectElapsed(project, now: now)))"
+        case .cancelled:
+            return "取消前已用 \(stopwatchText(projectElapsed(project, now: now)))"
+        }
+    }
+
+    private func projectProgressFraction(_ project: CopyProject) -> Double {
+        if project.status == .completed {
+            return 1
+        }
+
+        let expectedStages = projectExpectedStages(project)
+        let total = expectedStages.reduce(0) { $0 + $1.expectedBytes }
+        guard total > 0 else { return 0 }
+
+        let completed = expectedStages.reduce(Int64(0)) { partial, stage in
+            partial + stageProcessedBytes(stage.state, expectedBytes: stage.expectedBytes)
+        }
+        return min(max(Double(completed) / Double(total), 0), 1)
+    }
+
+    private func projectExpectedStages(_ project: CopyProject) -> [(state: ProjectStageState, expectedBytes: Int64)] {
+        var stages: [(ProjectStageState, Int64)] = [
+            (project.primaryCopyState, max(project.primaryCopyState.totalBytes, project.totalBytes)),
+            (project.primaryVerifyState, max(project.primaryVerifyState.totalBytes, project.totalBytes))
+        ]
+
+        if project.hasBackup {
+            stages.append((project.backupCopyState, max(project.backupCopyState.totalBytes, project.totalBytes)))
+            stages.append((project.backupVerifyState, max(project.backupVerifyState.totalBytes, project.totalBytes)))
+        }
+
+        return stages
+    }
+
+    private func stageProcessedBytes(_ state: ProjectStageState, expectedBytes: Int64) -> Int64 {
+        guard expectedBytes > 0 else { return state.isComplete ? 1 : 0 }
+        if state.isComplete {
+            return expectedBytes
+        }
+        if state.totalBytes > 0 {
+            return Int64((Double(expectedBytes) * state.fraction).rounded())
+        }
+        return min(max(state.processedBytes, 0), expectedBytes)
+    }
+
+    private func projectElapsed(_ project: CopyProject, now: Date) -> TimeInterval {
+        guard let startedAt = projectStartedAt(project) else { return 0 }
+        let finishedAt = projectFinishedAt(project) ?? (project.status == .running || project.status == .cancelling ? now : project.updatedAt)
+        return max(finishedAt.timeIntervalSince(startedAt), 0)
+    }
+
+    private func projectStartedAt(_ project: CopyProject) -> Date? {
+        let startedDates = [
+            project.primaryCopyState.startedAt,
+            project.primaryVerifyState.startedAt,
+            project.backupCopyState.startedAt,
+            project.backupVerifyState.startedAt
+        ].compactMap { $0 }
+
+        if let firstStageStart = startedDates.min() {
+            return firstStageStart
+        }
+
+        switch project.status {
+        case .running, .cancelling, .completed, .failed, .blocked, .cancelled:
+            return project.createdAt
+        case .queued:
+            return nil
+        }
+    }
+
+    private func projectFinishedAt(_ project: CopyProject) -> Date? {
+        [
+            project.primaryCopyState.finishedAt,
+            project.primaryVerifyState.finishedAt,
+            project.backupCopyState.finishedAt,
+            project.backupVerifyState.finishedAt
+        ]
+        .compactMap { $0 }
+        .max()
+    }
+
+    private func backupStatusText(_ project: CopyProject) -> String {
+        if project.status == .blocked {
+            return "主盘异常，备份已阻塞"
+        }
+        if project.backupVerifyState.isComplete {
+            return "已完成"
+        }
+        if project.backupVerifyState.isActive {
+            return "正在校验备份"
+        }
+        if project.backupCopyState.isActive {
+            return "正在备份"
+        }
+        if project.primaryVerifyState.isComplete {
+            return "等待备份"
+        }
+        return "等待主盘完成"
+    }
+
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("默认工作预设")
+                .sectionTitle()
+
+            emphasisBlock(
+                label: "主目标盘",
+                value: viewModel.preferences.targetPath ?? "尚未设置",
+                capacityLine: viewModel.targetCapacity?.capacityLine,
+                accent: accentColor
+            )
+
+            emphasisBlock(
+                label: "备份盘",
+                value: viewModel.preferences.backupEnabled ? (viewModel.preferences.backupPath ?? "未设置备份位置") : "未启用",
+                capacityLine: viewModel.preferences.backupEnabled ? viewModel.backupCapacity?.capacityLine : "关闭后不会写入第二份素材",
+                accent: secondaryAccentColor
+            )
+
+            HStack(spacing: 12) {
+                compactInfo(label: "校验", value: "SHA-256")
+                compactInfo(label: "命名", value: "时间戳+源盘")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private var transferCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("导入状态")
+                    .sectionTitle()
+                Spacer()
+                if viewModel.isImporting {
+                    Text("进行中")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(accentColor.opacity(0.14), in: Capsule())
+                }
+                Text(viewModel.transferState.phaseTitle)
+                    .font(.headline)
+                    .foregroundStyle(primaryTextColor)
+            }
+
+            HStack(spacing: 12) {
+                metricTile(title: "已拷贝", value: "\(viewModel.transferState.copiedFiles)/\(viewModel.transferState.totalFiles)")
+                metricTile(title: "已校验", value: "\(viewModel.transferState.verifiedFiles)/\(viewModel.transferState.totalFiles)")
+                metricTile(title: "实时速度", value: byteFormatter.string(fromByteCount: Int64(viewModel.transferState.speedBytesPerSecond)) + "/s")
+                metricTile(title: "预估剩余", value: etaText(viewModel.transferState.eta))
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                progressTrack(
+                    title: "导入进度",
+                    detail: "\(viewModel.transferState.copiedFiles)/\(viewModel.transferState.totalFiles) · 已写入 \(byteFormatter.string(fromByteCount: viewModel.transferState.processedBytes))/\(byteFormatter.string(fromByteCount: viewModel.transferState.totalBytes)) · \(byteFormatter.string(fromByteCount: Int64(viewModel.transferState.copySpeedBytesPerSecond)))/s · 剩余 \(etaText(viewModel.transferState.copyETA))",
+                    value: viewModel.transferState.copyFraction,
+                    tint: accentColor
+                )
+
+                progressTrack(
+                    title: "校验进度",
+                    detail: "\(viewModel.transferState.verifiedFiles)/\(viewModel.transferState.totalFiles) · 已校验 \(byteFormatter.string(fromByteCount: viewModel.transferState.verificationProcessedBytes))/\(byteFormatter.string(fromByteCount: viewModel.transferState.verificationTotalBytes)) · \(byteFormatter.string(fromByteCount: Int64(viewModel.transferState.verificationSpeedBytesPerSecond)))/s · 剩余 \(etaText(viewModel.transferState.verificationETA))",
+                    value: viewModel.transferState.verificationFraction,
+                    tint: secondaryAccentColor
+                )
+            }
+
+            HStack {
+                Text(viewModel.transferState.verificationStatus)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(viewModel.transferState.verificationStatus.contains("异常") ? .red : secondaryTextColor)
+                Spacer()
+            }
+
+            detailRow("当前文件", value: viewModel.transferState.currentFile.isEmpty ? "等待新的导入任务" : viewModel.transferState.currentFile)
+            if let interruptionReason = viewModel.transferState.interruptionReason {
+                detailRow("安全事件", value: interruptionReason)
+            }
+            if !viewModel.transferState.reportSummary.isEmpty {
+                detailRow("校验报告", value: viewModel.transferState.reportSummary)
+            }
+
+            HStack(spacing: 10) {
+                if viewModel.isImporting {
+                    Button("取消任务") {
+                        viewModel.cancelImport()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
+
+                if let latestReport = viewModel.latestReport {
+                    Button("打开目标") {
+                        viewModel.revealReportInFinder(latestReport)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(accentColor)
+
+                    Button("查看报告") {
+                        viewModel.openReportDocument(latestReport)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(secondaryAccentColor)
+
+                    if !latestReport.failedFiles.isEmpty {
+                        Button("重试异常") {
+                            viewModel.retryLatestFailedItems()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+                }
+
+                Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, tint: viewModel.isImporting ? accentColor : nil, elevation: viewModel.isImporting ? .selected : .panel))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(viewModel.isImporting ? accentColor.opacity(0.58) : Color.clear, lineWidth: 1.4)
+        )
+    }
+
+    private var volumeListCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("已检测设备")
+                .sectionTitle()
+
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    if viewModel.displayVolumes.isEmpty {
+                        emptyState(
+                            title: "暂未发现可导入设备",
+                            detail: "插入 SD 卡、相机盘或 SSD 后点击刷新设备。系统识别后这里会出现开始导入入口。"
+                        )
+                    }
+
+                    ForEach(viewModel.displayVolumes) { volume in
+                        HStack(alignment: .center, spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(accentColor.opacity(0.12))
+                                    .frame(width: 50, height: 50)
+                                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.35, elevation: .tile, enabled: !reduceVisualEffects)
+                                Image(systemName: volume.isRemovable ? "externaldrive.connected.to.line.below.fill" : "internaldrive.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(accentColor)
+                                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.25, elevation: .tile, enabled: !reduceVisualEffects)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Text(volume.name)
+                                        .font(.headline)
+                                    Text(volume.isRemovable ? "外部设备" : "可用卷")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(accentColor.opacity(0.12), in: Capsule())
+                                        .foregroundStyle(accentColor)
+                                }
+                                Text(volume.url.path)
+                                    .font(.caption)
+                                    .foregroundStyle(secondaryTextColor)
+                                    .lineLimit(1)
+                                Text(volume.capacityDescription)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(primaryTextColor)
+                                CapacityMeter(
+                                    totalCapacity: volume.totalCapacity,
+                                    availableCapacity: volume.availableCapacity,
+                                    tint: accentColor,
+                                    backgroundColor: secondaryTextColor.opacity(0.16)
+                                )
+                                .frame(maxWidth: 320)
+                            }
+                            Spacer()
+                            Button("开始导入") {
+                                viewModel.prepareImport(for: volume)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(accentColor)
+                        }
+                        .padding(16)
+                        .background(glassSurface(cornerRadius: 20, tint: accentColor, elevation: .card))
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 320, alignment: .topLeading)
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private var logCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("任务日志")
+                    .sectionTitle()
+                Spacer()
+                Text("存储：\(viewModel.taskLogScopeName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    if viewModel.reports.isEmpty {
+                        Text("当前 App 存储暂无任务日志")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(secondaryTextColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(glassSurface(cornerRadius: 18))
+                    }
+
+                    ForEach(viewModel.reports.prefix(8)) { report in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(report.title)
+                                    .font(.headline)
+                                Spacer()
+                                Text(report.success ? "成功" : "异常")
+                                    .foregroundStyle(report.success ? .mint : .red)
+                            }
+                            Text(report.sourceName)
+                                .foregroundStyle(primaryTextColor)
+                            Text(report.targetPath)
+                                .font(.caption)
+                                .foregroundStyle(secondaryTextColor)
+                            Text("\(report.selectedFileCount) 个文件  ·  \(byteFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))")
+                                .font(.caption)
+                                .foregroundStyle(secondaryTextColor)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Label("开始 \(preciseDateTimeText(report.startedAt))", systemImage: "play.circle")
+                                Label("完成 \(preciseDateTimeText(report.finishedAt))", systemImage: "checkmark.circle")
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(secondaryTextColor)
+                            Text(report.verificationSummary)
+                                .font(.caption)
+                                .foregroundStyle(secondaryTextColor)
+                            if let interruptionReason = report.interruptionReason {
+                                Text("安全事件：\(interruptionReason)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
+                            if report.reportDocumentWriteFailed {
+                                Text("报告写入异常：请优先查看 App 本地报告或重新导出。")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
+                            HStack(spacing: 10) {
+                                Button("在访达中打开") {
+                                    viewModel.revealReportInFinder(report)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(accentColor)
+
+                                Button("查看拷贝报告") {
+                                    viewModel.openReportDocument(report)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(secondaryAccentColor)
+
+                                Spacer()
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(glassSurface(cornerRadius: 18, elevation: .tile))
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 320, alignment: .topLeading)
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func destinationCard(badge: String, title: String, path: String?, actionTitle: String, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(badge.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(primaryTextColor)
+            Text(path ?? "尚未选择目录")
+                .font(.body.weight(.medium))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(2)
+            Button(actionTitle, action: action)
+                .buttonStyle(.borderedProminent)
+                .tint(accentColor)
+        }
+        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+        .padding(22)
+        .background(glassSurface(cornerRadius: 24, tint: accentColor, elevation: .card))
+    }
+
+    private func detailRow(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .font(.body.weight(.medium))
+                .foregroundStyle(primaryTextColor)
+        }
+    }
+
+    private func progressTrack(title: String, detail: String, value: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                Spacer()
+                Text("\(Int((value * 100).rounded()))%")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+
+            ProgressView(value: value)
+                .tint(tint)
+
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(secondaryTextColor)
+        }
+        .padding(14)
+        .background(glassSurface(cornerRadius: 16))
+    }
+
+    private func glassSurface(
+        cornerRadius: CGFloat,
+        tint: Color? = nil,
+        elevation: AirwangGlassElevation = .panel
+    ) -> some View {
+        AirwangGlassSurface(
+            cornerRadius: cornerRadius,
+            theme: viewModel.selectedTheme,
+            tint: tint ?? accentColor,
+            tintStrength: tint == nil ? 0.0 : 1.0,
+            elevation: elevation,
+            reduceEffects: reduceGlassEffects
+        )
+    }
+
+    private var byteFormatter: ByteCountFormatter {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }
+
+    private func etaText(_ value: TimeInterval?) -> String {
+        guard let value else { return "--" }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = value > 3600 ? [.hour, .minute] : [.minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: value) ?? "--"
+    }
+
+    private func stopwatchText(_ value: TimeInterval) -> String {
+        let totalSeconds = max(Int(value.rounded()), 0)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func preciseDateTimeText(_ value: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 HH:mm:ss"
+        return formatter.string(from: value)
+    }
+
+    private func durationText(_ value: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: value) ?? "--"
+    }
+
+    private func onboardingFeature(label: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.headline)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(glassSurface(cornerRadius: 18, elevation: .tile))
+    }
+
+    private func emphasisBlock(label: String, value: String, capacityLine: String?, accent: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(accent.opacity(0.08))
+                .overlay(
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(value)
+                            .font(.headline)
+                            .foregroundStyle(primaryTextColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.88)
+                        if let capacityLine {
+                            Text(capacityLine)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(secondaryTextColor)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(14)
+                )
+                .frame(height: 96)
+                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accent, tintStrength: 0.35, elevation: .tile, enabled: !reduceVisualEffects)
+        }
+    }
+
+    private func emptyState(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: "externaldrive.badge.questionmark")
+                .font(.headline)
+                .foregroundStyle(primaryTextColor)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(glassSurface(cornerRadius: 18, elevation: .tile))
+    }
+
+    private func compactInfo(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .font(.headline)
+                .foregroundStyle(primaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(glassSurface(cornerRadius: 16, elevation: .tile))
+    }
+
+    private func metricTile(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(glassSurface(cornerRadius: 16, elevation: .tile))
+    }
+
+    private var musicBackdrop: some View {
+        Group {
+            if viewModel.selectedTheme == .night {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.025, green: 0.028, blue: 0.042),
+                        Color(red: 0.070, green: 0.036, blue: 0.070),
+                        Color(red: 0.110, green: 0.052, blue: 0.080),
+                        Color(red: 0.035, green: 0.045, blue: 0.068)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color(red: 1.000, green: 0.965, blue: 0.955),
+                        Color(red: 0.990, green: 0.905, blue: 0.915),
+                        Color(red: 0.972, green: 0.835, blue: 0.875),
+                        Color(red: 0.940, green: 0.835, blue: 0.920)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+    }
+
+    private var ambientAurora: some View {
+        Group {
+            if reduceGlassEffects {
+                Color.clear
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.23))
+                        .frame(width: 620, height: 620)
+                        .blur(radius: 120)
+                        .offset(x: -390, y: -210)
+
+                    Circle()
+                        .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.18))
+                        .frame(width: 740, height: 740)
+                        .blur(radius: 145)
+                        .offset(x: 430, y: -250)
+
+                    Circle()
+                        .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.10))
+                        .frame(width: 560, height: 560)
+                        .blur(radius: 150)
+                        .offset(x: 230, y: 500)
+
+                    RoundedRectangle(cornerRadius: 60, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(viewModel.selectedTheme == .night ? 0.42 : 0.68))
+                        .frame(height: 340)
+                        .blur(radius: 34)
+                        .offset(y: -170)
+                        .opacity(0.88)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var reduceVisualEffects: Bool {
+        isWindowResizing || isScrolling
+    }
+
+    private var reduceGlassEffects: Bool {
+        isWindowResizing
+    }
+
+    private var reduceMotionEffects: Bool {
+        isWindowResizing || isScrolling
+    }
+
+    private func markWindowResizing() {
+        if !isWindowResizing {
+            isWindowResizing = true
+        }
+
+        resizeSettlingTask?.cancel()
+        resizeSettlingTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            isWindowResizing = false
+        }
+    }
+
+    private func markScrollActivity() {
+        if !isScrolling {
+            isScrolling = true
+        }
+
+        scrollSettlingTask?.cancel()
+        scrollSettlingTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            isScrolling = false
+        }
+    }
+
+    private var primaryTextColor: Color {
+        viewModel.selectedTheme == .night ? .white : Color(red: 0.16, green: 0.08, blue: 0.11)
+    }
+
+    private var secondaryTextColor: Color {
+        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.black.opacity(0.58)
+    }
+
+    private var accentColor: Color {
+        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
+    }
+
+    private var secondaryAccentColor: Color {
+        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.65, blue: 0.40) : Color(red: 0.98, green: 0.58, blue: 0.39)
+    }
+
+}
+
+private enum AirwangGlassElevation {
+    case panel
+    case card
+    case tile
+    case floating
+    case selected
+
+    var ambientRadius: CGFloat {
+        switch self {
+        case .panel: 34
+        case .card: 24
+        case .tile: 16
+        case .floating: 42
+        case .selected: 30
+        }
+    }
+
+    var ambientY: CGFloat {
+        switch self {
+        case .panel: 18
+        case .card: 13
+        case .tile: 8
+        case .floating: 22
+        case .selected: 14
+        }
+    }
+
+    var contactRadius: CGFloat {
+        switch self {
+        case .panel: 12
+        case .card: 9
+        case .tile: 6
+        case .floating: 16
+        case .selected: 10
+        }
+    }
+
+    var contactY: CGFloat {
+        switch self {
+        case .panel: 7
+        case .card: 5
+        case .tile: 3
+        case .floating: 9
+        case .selected: 5
+        }
+    }
+}
+
+private struct ScrollActivityMonitor: NSViewRepresentable {
+    var onScroll: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScroll: onScroll)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.view = view
+        context.coordinator.installMonitorIfNeeded()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.view = nsView
+        context.coordinator.installMonitorIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        let onScroll: @MainActor () -> Void
+        private var monitor: Any?
+
+        init(onScroll: @escaping @MainActor () -> Void) {
+            self.onScroll = onScroll
+        }
+
+        func installMonitorIfNeeded() {
+            guard monitor == nil else { return }
+            let onScroll = onScroll
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                Task { @MainActor in
+                    onScroll()
+                }
+                return event
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
+
+        deinit {
+            removeMonitor()
+        }
+    }
+}
+
+private struct AirwangGlassSurface: View {
+    let cornerRadius: CGFloat
+    let theme: AppTheme
+    let tint: Color
+    let tintStrength: Double
+    let elevation: AirwangGlassElevation
+    var reduceEffects = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if reduceEffects {
+            ZStack {
+                shape
+                    .fill(theme == .night ? Color.white.opacity(0.075) : Color.white.opacity(0.48))
+                shape
+                    .fill(tint.opacity(theme == .night ? 0.035 * tintStrength : 0.045 * tintStrength))
+                shape
+                    .strokeBorder(Color.white.opacity(theme == .night ? 0.18 : 0.58), lineWidth: theme == .night ? 0.9 : 0.75)
+                shape
+                    .strokeBorder(Color.black.opacity(theme == .night ? 0.22 : 0.05), lineWidth: 0.6)
+            }
+        } else {
+            ZStack {
+                shape
+                    .fill(.ultraThinMaterial.opacity(theme == .night ? 0.44 : 0.78))
+
+                shape
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme == .night ? 0.13 : 0.34),
+                                tint.opacity(theme == .night ? 0.05 * tintStrength : 0.07 * tintStrength),
+                                Color.black.opacity(theme == .night ? 0.20 : 0.045)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .blendMode(theme == .night ? .plusLighter : .screen)
+
+                shape
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme == .night ? 0.34 : 0.86),
+                                Color.white.opacity(theme == .night ? 0.10 : 0.22),
+                                tint.opacity(theme == .night ? 0.14 * tintStrength : 0.12 * tintStrength)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: theme == .night ? 1.15 : 0.9
+                    )
+
+                shape
+                    .strokeBorder(Color.black.opacity(theme == .night ? 0.25 : 0.055), lineWidth: 0.7)
+                    .blendMode(.multiply)
+
+                shape
+                    .inset(by: 1.2)
+                    .strokeBorder(Color.white.opacity(theme == .night ? 0.08 : 0.42), lineWidth: 0.6)
+            }
+            .airwangNativeGlass(in: shape)
+            .compositingGroup()
+            .modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation))
+        }
+    }
+}
+
+private struct AirwangLayeredShadow: ViewModifier {
+    let theme: AppTheme
+    let tint: Color
+    let tintStrength: Double
+    let elevation: AirwangGlassElevation
+
+    func body(content: Content) -> some View {
+        content
+            .shadow(
+                color: Color.white.opacity(theme == .night ? 0.045 : 0.34),
+                radius: theme == .night ? 1.0 : 1.8,
+                x: 0,
+                y: -1
+            )
+            .shadow(
+                color: tint.opacity(theme == .night ? 0.16 * tintStrength : 0.12 * tintStrength),
+                radius: elevation.ambientRadius * 0.95,
+                x: 0,
+                y: elevation.ambientY * 0.75
+            )
+            .shadow(
+                color: Color.black.opacity(theme == .night ? 0.52 : 0.13),
+                radius: elevation.ambientRadius,
+                x: 0,
+                y: elevation.ambientY
+            )
+            .shadow(
+                color: Color.black.opacity(theme == .night ? 0.30 : 0.075),
+                radius: elevation.contactRadius,
+                x: 0,
+                y: elevation.contactY
+            )
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func airwangNativeGlass<S: Shape>(in shape: S) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func airwangSoftShadow(
+        theme: AppTheme,
+        tint: Color,
+        tintStrength: Double = 0,
+        elevation: AirwangGlassElevation = .tile,
+        enabled: Bool = true
+    ) -> some View {
+        if enabled {
+            modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation))
+        } else {
+            self
+        }
+    }
+}
+
+private struct ImportSheet: View {
+    let volume: StorageVolume
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var expandedGroupIDs: Set<String> = []
+    @State private var selectedBrowserFolder = ""
+    @State private var focusedGalleryItemID: String?
+    @State private var isSheetScrolling = false
+    @State private var sheetScrollSettlingTask: Task<Void, Never>?
+
+    private let columns = [GridItem(.adaptive(minimum: 130), spacing: 14)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Button {
+                    handlePrimaryBackAction()
+                } label: {
+                    Label(primaryBackTitle, systemImage: primaryBackIcon)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+                .disabled(viewModel.isScanning || (!viewModel.hasScannedSource && !canGoUp))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("新存储设备已接入")
+                        .font(.title2.bold())
+                    Text(volume.name)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if viewModel.hasScannedSource {
+                    Picker("模式", selection: $viewModel.selectedImportMode) {
+                        ForEach(ImportMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 260)
+                }
+
+                Button {
+                    viewModel.closeImportSheet()
+                } label: {
+                    Label("退出", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
+
+            importStepRail
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
+                    if viewModel.hasScannedSource {
+                        Text(viewModel.selectedImportMode.subtitle)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(secondaryTextColor)
+                    } else {
+                        Text("先在当前设备里选择一个具体文件夹，再点击扫描。扫描完成后再选择需要拷贝的素材。")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(secondaryTextColor)
+                    }
+
+                    if viewModel.isScanning {
+                        scanningState
+                    } else if viewModel.hasScannedSource {
+                        content
+                    } else {
+                        sourcePickerSection
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 500, alignment: .topLeading)
+
+                ScrollView {
+                    summarySection
+                }
+                .frame(width: 340)
+            }
+        }
+        .padding(28)
+        .frame(minWidth: 980, idealWidth: 1180, maxWidth: 1280, minHeight: 660, idealHeight: 760, maxHeight: 840)
+        .background(importSheetBackground)
+        .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
+        .transaction { transaction in
+            if reduceSheetVisualEffects {
+                transaction.animation = nil
+            }
+        }
+        .background(ScrollActivityMonitor(onScroll: markSheetScrollActivity))
+        .onDisappear {
+            sheetScrollSettlingTask?.cancel()
+        }
+    }
+
+    private func handlePrimaryBackAction() {
+        if viewModel.hasScannedSource {
+            viewModel.returnToSourceFolderSelection()
+        } else if canGoUp {
+            viewModel.navigateSourceFolderUp()
+        }
+    }
+
+    private var primaryBackTitle: String {
+        if viewModel.isScanning {
+            return "正在扫描"
+        }
+        if viewModel.hasScannedSource {
+            return "重新选择文件夹"
+        }
+        if canGoUp {
+            return "上一级"
+        }
+        return "设备根目录"
+    }
+
+    private var primaryBackIcon: String {
+        if viewModel.isScanning {
+            return "hourglass"
+        }
+        return "chevron.left"
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            scannedSelectionHeader
+
+            if viewModel.scannedItems.isEmpty {
+                importEmptyState(
+                    title: "没有找到匹配素材",
+                    detail: "可以切换扫描类型，或返回上一级选择更大的源文件夹后重新扫描。"
+                )
+            } else {
+                switch viewModel.selectedImportMode {
+                case .time:
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(viewModel.timeGroups) { group in
+                                timeGroupCard(group)
+                            }
+                        }
+                    }
+                case .free:
+                    assetBrowserContent
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var assetBrowserContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            browserModeBar
+
+            switch viewModel.selectedAssetBrowserMode {
+            case .icon:
+                iconBrowser
+            case .list:
+                listBrowser
+            case .column:
+                columnBrowser
+            case .gallery:
+                galleryBrowser
+            }
+        }
+    }
+
+    private var browserModeBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("自由浏览")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                Text(viewModel.selectedAssetBrowserMode.subtitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(secondaryTextColor)
+            }
+            Spacer()
+            Picker("浏览方式", selection: $viewModel.selectedAssetBrowserMode) {
+                ForEach(AssetBrowserMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.systemImage).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 390)
+        }
+        .padding(14)
+        .background(glassPanel(cornerRadius: 18))
+    }
+
+    private var iconBrowser: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 14) {
+                ForEach(viewModel.scannedItems) { item in
+                    freeSelectionTile(item)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var listBrowser: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("名称")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("类型")
+                    .frame(width: 72, alignment: .leading)
+                Text("大小")
+                    .frame(width: 100, alignment: .trailing)
+                Text("创建时间")
+                    .frame(width: 128, alignment: .trailing)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(secondaryTextColor)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider().opacity(0.35)
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(viewModel.scannedItems) { item in
+                        listSelectionRow(item: item)
+                    }
+                }
+                .padding(8)
+            }
+        }
+        .background(glassPanel(cornerRadius: 20))
+    }
+
+    private var columnBrowser: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("文件夹")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(browserFolders, id: \.self) { folder in
+                            Button {
+                                selectedBrowserFolder = folder
+                            } label: {
+                                HStack {
+                                    Image(systemName: folder.isEmpty ? "externaldrive.fill" : "folder.fill")
+                                        .foregroundStyle(folder.isEmpty ? accentColor : .orange)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(folder.isEmpty ? "扫描根目录" : folderName(folder))
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(primaryTextColor)
+                                            .lineLimit(1)
+                                        Text(folder.isEmpty ? "根目录文件" : folder)
+                                            .font(.caption2)
+                                            .foregroundStyle(secondaryTextColor)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Text("\(items(in: folder).count)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(secondaryTextColor)
+                                }
+                                .padding(10)
+                                .background(
+                                    selectedBrowserFolder == folder ? accentColor.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+            .frame(width: 260)
+            .padding(14)
+            .background(glassPanel(cornerRadius: 20))
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(selectedBrowserFolder.isEmpty ? "扫描根目录" : folderName(selectedBrowserFolder))
+                            .font(.headline)
+                            .foregroundStyle(primaryTextColor)
+                        Text(selectedBrowserFolder.isEmpty ? "显示根目录下匹配文件" : selectedBrowserFolder)
+                            .font(.caption)
+                            .foregroundStyle(secondaryTextColor)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text("\(columnItems.count) 个文件")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                }
+
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(columnItems) { item in
+                            listSelectionRow(item: item)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(glassPanel(cornerRadius: 20))
+        }
+        .onAppear {
+            normalizeSelectedBrowserFolder()
+        }
+        .onChange(of: viewModel.scannedItems) { _, _ in
+            normalizeSelectedBrowserFolder()
+        }
+    }
+
+    private var galleryBrowser: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            let item = focusedGalleryItem
+            HStack(alignment: .top, spacing: 16) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(thumbFill)
+                    if let item {
+                        ThumbnailView(url: item.fileURL)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .padding(14)
+                    } else {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 58, weight: .semibold))
+                            .foregroundStyle(secondaryTextColor)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 330)
+                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.24, elevation: .card, enabled: !reduceSheetVisualEffects)
+                .onTapGesture {
+                    if let item {
+                        viewModel.toggle(item: item)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("预览详情")
+                        .font(.headline)
+                        .foregroundStyle(primaryTextColor)
+                    if let item {
+                        galleryDetail(label: "文件名", value: item.displayName)
+                        galleryDetail(label: "路径", value: item.relativePath)
+                    galleryDetail(label: "类型", value: mediaKindTitle(for: item))
+                        galleryDetail(label: "大小", value: byteText(item.size))
+                        galleryDetail(label: "创建时间", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
+
+                        Button(viewModel.selectedItemIDs.contains(item.id) ? "从导入中移除" : "加入导入选择") {
+                            viewModel.toggle(item: item)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(viewModel.selectedItemIDs.contains(item.id) ? .red : accentColor)
+                        .controlSize(.large)
+                    } else {
+                        Text("没有可预览的素材")
+                            .foregroundStyle(secondaryTextColor)
+                    }
+                    Spacer()
+                }
+                .frame(width: 240, alignment: .topLeading)
+                .padding(16)
+                .background(glassPanel(cornerRadius: 20))
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(viewModel.scannedItems) { item in
+                        galleryStripTile(item)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .background(glassPanel(cornerRadius: 22))
+        .onAppear {
+            normalizeFocusedGalleryItem()
+        }
+        .onChange(of: viewModel.scannedItems) { _, _ in
+            normalizeFocusedGalleryItem()
+        }
+    }
+
+    private var importStepRail: some View {
+        HStack(spacing: 10) {
+            stepPill(index: "1", title: "选源文件夹", isActive: !viewModel.hasScannedSource && !viewModel.isScanning, isDone: viewModel.isScanning || viewModel.hasScannedSource)
+            stepPill(index: "2", title: "扫描素材", isActive: viewModel.isScanning, isDone: viewModel.hasScannedSource)
+            stepPill(index: "3", title: "选择素材", isActive: viewModel.hasScannedSource && viewModel.selectedItems.isEmpty, isDone: !viewModel.selectedItems.isEmpty)
+            stepPill(index: "4", title: "开始拷贝+校验", isActive: viewModel.canStartImport, isDone: false)
+        }
+        .padding(12)
+        .background(glassPanel(cornerRadius: 22))
+    }
+
+    private func stepPill(index: String, title: String, isActive: Bool, isDone: Bool) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(isDone ? accentColor : (isActive ? accentColor.opacity(0.16) : secondaryTextColor.opacity(0.14)))
+                    .frame(width: 26, height: 26)
+                if isDone {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Text(index)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(isActive ? accentColor : secondaryTextColor)
+                }
+            }
+
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isActive || isDone ? primaryTextColor : secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(isActive ? accentColor.opacity(0.10) : Color.clear, in: Capsule())
+    }
+
+    private var scanningState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            ProgressView()
+                .scaleEffect(1.15)
+            Text("正在扫描素材...")
+                .font(.headline)
+                .foregroundStyle(primaryTextColor)
+            Text("当前只读取你选择的文件夹，不会浪费资源扫描整张卡。")
+                .font(.subheadline)
+                .foregroundStyle(secondaryTextColor)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, minHeight: 420)
+        .background(glassPanel(cornerRadius: 24))
+    }
+
+    private var scannedSelectionHeader: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("已扫描 \(viewModel.scannedItems.count) 个文件")
+                    .font(.headline)
+                    .foregroundStyle(primaryTextColor)
+                Text("当前选择 \(viewModel.selectedItems.count) 个 · \(byteText(viewModel.selectedTotalBytes)) / 扫描总量 \(byteText(viewModel.scannedTotalBytes))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Text("勾选素材时会自动带上同文件夹、同文件名的 sidecar / 元数据文件。")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(secondaryTextColor)
+            }
+            Spacer()
+            Button("全选") {
+                viewModel.selectAllScannedItems()
+            }
+            .buttonStyle(.bordered)
+            .tint(accentColor)
+
+            Button("清空选择") {
+                viewModel.clearScannedSelection()
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+        }
+        .padding(16)
+        .background(glassPanel(cornerRadius: 20))
+    }
+
+    private func timeGroupCard(_ group: TimeGroup) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button {
+                    viewModel.toggle(group: group)
+                } label: {
+                    Image(systemName: isGroupSelected(group) ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isGroupSelected(group) ? accentColor : secondaryTextColor)
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(group.date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.headline)
+                        .foregroundStyle(primaryTextColor)
+                    Text("\(group.items.count) 个文件 · \(byteText(group.totalSize))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                }
+                Spacer()
+                Text(isGroupSelected(group) ? "整组已选" : "点击圆圈选择整组")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isGroupSelected(group) ? accentColor : secondaryTextColor)
+            }
+
+            ForEach(expandedGroupIDs.contains(group.id) ? group.items : Array(group.items.prefix(6))) { item in
+                selectionRow(item: item)
+            }
+
+            if group.items.count > 6 {
+                Button(expandedGroupIDs.contains(group.id) ? "收起" : "展开全部 \(group.items.count) 个文件") {
+                    if expandedGroupIDs.contains(group.id) {
+                        expandedGroupIDs.remove(group.id)
+                    } else {
+                        expandedGroupIDs.insert(group.id)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .tint(accentColor)
+            }
+        }
+        .padding(16)
+        .background(glassPanel(cornerRadius: 20))
+    }
+
+    private func freeSelectionTile(_ item: MediaItem) -> some View {
+        let isSelected = viewModel.selectedItemIDs.contains(item.id)
+
+        return Button {
+            viewModel.toggle(item: item)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                ThumbnailView(url: item.fileURL)
+                    .frame(height: 104)
+                    .frame(maxWidth: .infinity)
+                    .background(thumbFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile, enabled: !reduceSheetVisualEffects)
+
+                Text(item.displayName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(primaryTextColor)
+                    .lineLimit(2)
+                Text(byteText(item.size))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isSelected ? accentColor : Color.clear, lineWidth: 2)
+            )
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(accentColor)
+                            .padding(8)
+                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.45, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                }
+            }
+            .background(glassPanel(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func listSelectionRow(item: MediaItem) -> some View {
+        let isSelected = viewModel.selectedItemIDs.contains(item.id)
+
+        return Button {
+            viewModel.toggle(item: item)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? accentColor : secondaryTextColor)
+                    .frame(width: 24)
+
+                Image(systemName: mediaIcon(for: item))
+                    .font(.headline)
+                    .foregroundStyle(accentColor)
+                    .frame(width: 24)
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile, enabled: !reduceSheetVisualEffects)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                    Text(item.relativePath)
+                        .font(.caption2)
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(mediaKindTitle(for: item))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .frame(width: 72, alignment: .leading)
+
+                Text(byteText(item.size))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .frame(width: 100, alignment: .trailing)
+
+                Text(item.createdAt.formatted(date: .numeric, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .frame(width: 128, alignment: .trailing)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(
+                isSelected ? accentColor.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func galleryDetail(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(3)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func galleryStripTile(_ item: MediaItem) -> some View {
+        let isFocused = focusedGalleryItem?.id == item.id
+        let isSelected = viewModel.selectedItemIDs.contains(item.id)
+
+        return Button {
+            focusedGalleryItemID = item.id
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                ThumbnailView(url: item.fileURL)
+                    .frame(width: 118, height: 72)
+                    .background(thumbFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.15, elevation: .tile, enabled: !reduceSheetVisualEffects)
+
+                Text(item.displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                    .lineLimit(1)
+            }
+            .padding(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isFocused ? accentColor : (isSelected ? secondaryAccentColor : Color.clear), lineWidth: 2)
+            )
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(secondaryAccentColor)
+                            .padding(5)
+                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: secondaryAccentColor, tintStrength: 0.45, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                }
+            }
+            .background(glassPanel(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var browserFolders: [String] {
+        let folders = Set(viewModel.scannedItems.map(folderPath(for:)))
+        return folders.sorted { lhs, rhs in
+            if lhs.isEmpty { return true }
+            if rhs.isEmpty { return false }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+    }
+
+    private var columnItems: [MediaItem] {
+        items(in: selectedBrowserFolder)
+    }
+
+    private var focusedGalleryItem: MediaItem? {
+        if let focusedGalleryItemID,
+           let item = viewModel.scannedItems.first(where: { $0.id == focusedGalleryItemID }) {
+            return item
+        }
+        return viewModel.scannedItems.first
+    }
+
+    private func normalizeSelectedBrowserFolder() {
+        guard !browserFolders.isEmpty else {
+            selectedBrowserFolder = ""
+            return
+        }
+        if !browserFolders.contains(selectedBrowserFolder) {
+            selectedBrowserFolder = browserFolders.first ?? ""
+        }
+    }
+
+    private func normalizeFocusedGalleryItem() {
+        guard !viewModel.scannedItems.isEmpty else {
+            focusedGalleryItemID = nil
+            return
+        }
+        if let focusedGalleryItemID,
+           viewModel.scannedItems.contains(where: { $0.id == focusedGalleryItemID }) {
+            return
+        }
+        focusedGalleryItemID = viewModel.scannedItems.first?.id
+    }
+
+    private func items(in folder: String) -> [MediaItem] {
+        viewModel.scannedItems.filter { folderPath(for: $0) == folder }
+    }
+
+    private func folderPath(for item: MediaItem) -> String {
+        guard let slashIndex = item.relativePath.lastIndex(of: "/") else { return "" }
+        return String(item.relativePath[..<slashIndex])
+    }
+
+    private func folderName(_ path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? path
+    }
+
+    private func mediaIcon(for item: MediaItem) -> String {
+        switch item.mediaKind {
+        case .video:
+            return "film.fill"
+        case .photo:
+            return "photo.fill"
+        case .audio:
+            return "waveform"
+        case .all:
+            return "doc.fill"
+        }
+    }
+
+    private func mediaKindTitle(for item: MediaItem) -> String {
+        switch item.mediaKind {
+        case .video:
+            return "视频"
+        case .photo:
+            return "照片"
+        case .audio:
+            return "音频"
+        case .all:
+            return item.fileURL.pathExtension.isEmpty ? "其他" : item.fileURL.pathExtension.uppercased()
+        }
+    }
+
+    private func importEmptyState(title: String, detail: String) -> some View {
+        VStack(alignment: .center, spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.largeTitle)
+                .foregroundStyle(accentColor)
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(primaryTextColor)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(secondaryTextColor)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 360)
+        .padding(24)
+        .background(glassPanel(cornerRadius: 24))
+    }
+
+    private var sourcePickerSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                sourceGuideCard(number: "1", title: "进入文件夹", detail: "只扫描你确认的目录")
+                sourceGuideCard(number: "2", title: "选择类型", detail: "视频 / 照片 / 音频 / 全部")
+                sourceGuideCard(number: "3", title: "开始扫描", detail: "扫描后再勾选素材")
+            }
+
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("选择源文件夹")
+                        .font(.headline)
+                    Text(viewModel.sourceFolderURL?.path ?? volume.url.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    viewModel.navigateSourceFolderUp()
+                } label: {
+                    Label("上一级", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canGoUp)
+            }
+
+            Picker("扫描类型", selection: Binding(
+                get: { viewModel.selectedScanFilter },
+                set: { viewModel.setScanFilter($0) }
+            )) {
+                ForEach(ScanFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 320)
+
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    currentSourceFolderCard
+
+                    if viewModel.isLoadingSourceFolderChildren {
+                        ProgressView("正在读取文件夹...")
+                            .frame(maxWidth: .infinity)
+                            .padding(24)
+                    }
+
+                    ForEach(viewModel.sourceFolderChildren) { item in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.name)
+                                    .font(.headline)
+                                    .foregroundStyle(primaryTextColor)
+                                Text(item.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(secondaryTextColor)
+                                    .lineLimit(1)
+                                Text(item.capacityLine)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(secondaryTextColor)
+                                CapacityMeter(
+                                    totalCapacity: item.totalCapacity,
+                                    availableCapacity: item.availableCapacity,
+                                    tint: accentColor,
+                                    backgroundColor: secondaryTextColor.opacity(0.15)
+                                )
+                                .frame(maxWidth: 260)
+                            }
+                            Spacer()
+                            Button("进入并设为当前") {
+                                viewModel.navigateSourceFolder(to: item.url)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(accentColor)
+                        }
+                        .padding(14)
+                        .background(glassPanel(cornerRadius: 18))
+                    }
+                }
+            }
+        }
+    }
+
+    private var currentSourceFolderCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("当前准备扫描")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(viewModel.selectedSourceFolderItem?.name ?? volume.name)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+            Text(viewModel.selectedSourceFolderItem?.subtitle ?? volume.url.path)
+                .font(.caption)
+                .foregroundStyle(secondaryTextColor)
+            if let selectedSourceFolderItem = viewModel.selectedSourceFolderItem {
+                Text(selectedSourceFolderItem.capacityLine)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                CapacityMeter(
+                    totalCapacity: selectedSourceFolderItem.totalCapacity,
+                    availableCapacity: selectedSourceFolderItem.availableCapacity,
+                    tint: accentColor,
+                    backgroundColor: secondaryTextColor.opacity(0.15)
+                )
+            }
+            HStack {
+                Text("只扫描这个目录")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Spacer()
+                Button("扫描此文件夹") {
+                    viewModel.scanSelectedSourceFolder()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accentColor)
+            }
+        }
+        .padding(18)
+        .background(glassPanel(cornerRadius: 20))
+    }
+
+    private func sourceGuideCard(number: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(accentColor, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(12)
+        .background(glassPanel(cornerRadius: 16))
+    }
+
+    private var summarySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("导入摘要")
+                    .font(.headline)
+                    .foregroundStyle(primaryTextColor)
+                Spacer()
+                Text(viewModel.hasScannedSource ? "已扫描" : "待扫描")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background((viewModel.hasScannedSource ? accentColor : secondaryTextColor).opacity(0.14), in: Capsule())
+                    .foregroundStyle(viewModel.hasScannedSource ? accentColor : secondaryTextColor)
+            }
+
+            let selectedItems = viewModel.selectedItems
+            let totalBytes = viewModel.selectedTotalBytes
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("\(selectedItems.count) 个文件")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(primaryTextColor)
+                Text("待拷贝总量 \(byteText(totalBytes))")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Group {
+                summaryRow("扫描目录", value: viewModel.sourceFolderURL?.path ?? volume.url.path)
+                summaryRow("扫描类型", value: viewModel.selectedScanFilter.title)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("项目名称")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Picker("项目名称", selection: $viewModel.projectNameMode) {
+                    ForEach(ProjectNameMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if viewModel.projectNameMode == .custom {
+                    TextField("例如 A_CAM_Day01_Card03", text: $viewModel.draftProjectName)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("当前名称：\(viewModel.projectNamePreview)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+            }
+            .padding(12)
+            .background(glassPanel(cornerRadius: 16))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("校验方式")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Picker("校验方式", selection: $viewModel.selectedVerificationMode) {
+                    ForEach(VerificationMode.selectableCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(viewModel.selectedVerificationMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .background(glassPanel(cornerRadius: 16))
+
+            destinationSummaryCard(
+                title: "主目标盘",
+                path: viewModel.preferences.targetPath ?? "-",
+                capacity: viewModel.targetCapacity,
+                tint: accentColor
+            )
+
+            if viewModel.preferences.backupEnabled {
+                destinationSummaryCard(
+                    title: "备份盘",
+                    path: viewModel.preferences.backupPath ?? "未设置",
+                    capacity: viewModel.backupCapacity,
+                    tint: secondaryAccentColor
+                )
+            }
+
+            ForEach(viewModel.destinationWarnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(startDisabledReason)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(viewModel.canStartImport && viewModel.hasScannedSource ? accentColor : secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("创建项目并加入队列") {
+                viewModel.startImport()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accentColor)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity)
+            .disabled(!viewModel.canStartImport || !viewModel.hasScannedSource)
+        }
+        .padding(18)
+        .background(glassPanel(cornerRadius: 24))
+    }
+
+    private func destinationSummaryCard(
+        title: String,
+        path: String,
+        capacity: StorageCapacitySnapshot?,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Text(path)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Text(capacity?.capacityLine ?? "容量暂不可读")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            CapacityMeter(
+                totalCapacity: capacity?.totalCapacity,
+                availableCapacity: capacity?.availableCapacity,
+                tint: tint,
+                backgroundColor: secondaryTextColor.opacity(0.16)
+            )
+        }
+        .padding(12)
+        .background(
+            AirwangGlassSurface(
+                cornerRadius: 16,
+                theme: viewModel.selectedTheme,
+                tint: tint,
+                tintStrength: 0.35,
+                elevation: .tile,
+                reduceEffects: false
+            )
+        )
+    }
+
+    private var startDisabledReason: String {
+        if !viewModel.hasScannedSource {
+            return "请先扫描源文件夹。"
+        }
+        if viewModel.selectedItems.isEmpty {
+            return "请至少选择一个素材文件。"
+        }
+        if let warning = viewModel.destinationWarnings.first {
+            return warning
+        }
+        return "准备就绪：开始后会创建项目，先主盘拷贝与校验，再按需从主盘串行备份。"
+    }
+
+    private func isGroupSelected(_ group: TimeGroup) -> Bool {
+        Set(group.items.map(\.id)).isSubset(of: viewModel.selectedItemIDs)
+    }
+
+    private func selectionRow(item: MediaItem) -> some View {
+        let isSelected = viewModel.selectedItemIDs.contains(item.id)
+
+        return HStack {
+            Button {
+                viewModel.toggle(item: item)
+            } label: {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? accentColor : secondaryTextColor)
+            }
+            .buttonStyle(.plain)
+            ThumbnailView(url: item.fileURL)
+                .frame(width: 54, height: 40)
+                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.16, elevation: .tile, enabled: !reduceSheetVisualEffects)
+            VStack(alignment: .leading) {
+                Text(item.displayName)
+                    .foregroundStyle(primaryTextColor)
+                Text(item.relativePath)
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(byteText(item.size))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .padding(8)
+        .background(isSelected ? accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func summaryRow(_ label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .frame(width: 100, alignment: .leading)
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .foregroundStyle(primaryTextColor)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+    }
+
+    private func byteText(_ value: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: value)
+    }
+
+    private var importSheetBackground: some View {
+        Group {
+            if viewModel.selectedTheme == .night {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.025, green: 0.028, blue: 0.042),
+                        Color(red: 0.070, green: 0.036, blue: 0.070),
+                        Color(red: 0.110, green: 0.052, blue: 0.080),
+                        Color(red: 0.035, green: 0.045, blue: 0.068)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.96),
+                        Color(red: 0.995, green: 0.925, blue: 0.930),
+                        Color(red: 0.970, green: 0.860, blue: 0.895),
+                        Color(red: 0.940, green: 0.835, blue: 0.920)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+    }
+
+    private func glassPanel(cornerRadius: CGFloat) -> some View {
+        AirwangGlassSurface(
+            cornerRadius: cornerRadius,
+            theme: viewModel.selectedTheme,
+            tint: accentColor,
+            tintStrength: 0.22,
+            elevation: .card,
+            reduceEffects: false
+        )
+    }
+
+    private var reduceSheetVisualEffects: Bool {
+        isSheetScrolling
+    }
+
+    private func markSheetScrollActivity() {
+        if !isSheetScrolling {
+            isSheetScrolling = true
+        }
+
+        sheetScrollSettlingTask?.cancel()
+        sheetScrollSettlingTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            isSheetScrolling = false
+        }
+    }
+
+    private var primaryTextColor: Color {
+        viewModel.selectedTheme == .night ? .white : Color.primary
+    }
+
+    private var secondaryTextColor: Color {
+        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.secondary
+    }
+
+    private var accentColor: Color {
+        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
+    }
+
+    private var secondaryAccentColor: Color {
+        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.65, blue: 0.40) : Color(red: 0.98, green: 0.58, blue: 0.39)
+    }
+
+    private var groupFill: Color {
+        viewModel.selectedTheme == .night ? Color.white.opacity(0.08) : Color.gray.opacity(0.08)
+    }
+
+    private var thumbFill: Color {
+        viewModel.selectedTheme == .night ? Color.white.opacity(0.06) : Color.black.opacity(0.08)
+    }
+
+    private var canGoUp: Bool {
+        guard let sourceFolderURL = viewModel.sourceFolderURL else { return false }
+        return sourceFolderURL.path != volume.url.path && sourceFolderURL.path != sourceFolderURL.deletingLastPathComponent().path
+    }
+}
+
+private struct FolderPickerSheet: View {
+    let purpose: FolderPickerPurpose
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var isSheetScrolling = false
+    @State private var sheetScrollSettlingTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    viewModel.closeFolderPicker()
+                } label: {
+                    Label("返回", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(purpose.title)
+                        .font(.title2.weight(.semibold))
+                    Text("在软件内浏览目录，并直接查看目标位置的可用容量。")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(24)
+
+            Divider()
+
+            HStack(spacing: 0) {
+                rootSidebar
+                Divider()
+                folderBrowser
+                Divider()
+                selectionInspector
+            }
+        }
+        .frame(minWidth: 980, idealWidth: 1160, maxWidth: 1280, minHeight: 640, idealHeight: 740, maxHeight: 820)
+        .background(
+            Group {
+                if viewModel.selectedTheme == .night {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.025, green: 0.028, blue: 0.042),
+                            Color(red: 0.070, green: 0.036, blue: 0.070),
+                            Color(red: 0.110, green: 0.052, blue: 0.080),
+                            Color(red: 0.035, green: 0.045, blue: 0.068)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.96),
+                            Color(red: 0.995, green: 0.925, blue: 0.930),
+                            Color(red: 0.970, green: 0.860, blue: 0.895),
+                            Color(red: 0.940, green: 0.835, blue: 0.920)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+            }
+        )
+        .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
+        .transaction { transaction in
+            if reduceSheetVisualEffects {
+                transaction.animation = nil
+            }
+        }
+        .background(ScrollActivityMonitor(onScroll: markSheetScrollActivity))
+        .onDisappear {
+            sheetScrollSettlingTask?.cancel()
+        }
+    }
+
+    private var rootSidebar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("位置")
+                .font(.headline)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(viewModel.folderRoots) { item in
+                        Button {
+                            viewModel.navigate(to: item.url)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: sidebarIcon(for: item.url))
+                                    .foregroundStyle(themeAccentColor)
+                                    .frame(width: 20)
+                                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: themeAccentColor, tintStrength: 0.20, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name)
+                                        .font(.headline)
+                                        .foregroundStyle(themePrimaryTextColor)
+                                    Text(item.subtitle)
+                                        .font(.caption2)
+                                        .foregroundStyle(themeSecondaryTextColor)
+                                        .lineLimit(1)
+                                    Text(item.capacityLine)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(themeSecondaryTextColor)
+                                    CapacityMeter(
+                                        totalCapacity: item.totalCapacity,
+                                        availableCapacity: item.availableCapacity,
+                                        tint: themeAccentColor,
+                                        backgroundColor: themeSecondaryTextColor.opacity(0.16)
+                                    )
+                                }
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(themeGlassPanel(cornerRadius: 14, tint: isCurrent(item.url) ? themeAccentColor : nil))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .frame(width: 260, alignment: .topLeading)
+    }
+
+    private var folderBrowser: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Button {
+                    viewModel.navigateUp()
+                } label: {
+                    Label("上一级", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .tint(themeAccentColor)
+                .disabled(!canGoUp)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.currentFolderURL?.lastPathComponent.isEmpty == false ? (viewModel.currentFolderURL?.lastPathComponent ?? "目录") : "目录")
+                        .font(.headline)
+                        .foregroundStyle(themePrimaryTextColor)
+                    Text(viewModel.currentFolderURL?.path ?? "")
+                        .font(.caption)
+                        .foregroundStyle(themeSecondaryTextColor)
+                }
+                Spacer()
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    if viewModel.isLoadingFolderChildren {
+                        ProgressView("正在读取文件夹...")
+                            .frame(maxWidth: .infinity)
+                            .padding(24)
+                    }
+
+                    ForEach(viewModel.folderChildren) { item in
+                        HStack(spacing: 12) {
+                            Button {
+                                viewModel.selectFolder(item.url)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(.orange)
+                                        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.20, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.name)
+                                            .font(.headline)
+                                            .foregroundStyle(themePrimaryTextColor)
+                                        Text(item.subtitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(themeSecondaryTextColor)
+                                            .lineLimit(1)
+                                        Text(item.capacityLine)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(themeSecondaryTextColor)
+                                        CapacityMeter(
+                                            totalCapacity: item.totalCapacity,
+                                            availableCapacity: item.availableCapacity,
+                                            tint: themeAccentColor,
+                                            backgroundColor: themeSecondaryTextColor.opacity(0.16)
+                                        )
+                                    }
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+
+                            Button("进入") {
+                                viewModel.navigate(to: item.url)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(themeAccentColor)
+                        }
+                        .padding(12)
+                        .background(themeGlassPanel(cornerRadius: 16, tint: isSelected(item.url) ? themeAccentColor : nil))
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var selectionInspector: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    Text("已选目录")
+                        .font(.headline)
+                        .foregroundStyle(themePrimaryTextColor)
+
+                    if let selection = viewModel.folderSelection {
+                        inspectorCard(title: "目标路径", value: selection.subtitle)
+                        inspectorCard(title: "目录名称", value: selection.name)
+                        inspectorCard(title: "剩余容量", value: selection.availableCapacity.map(byteText) ?? "-")
+                        inspectorCard(title: "总容量", value: selection.totalCapacity.map(byteText) ?? "-")
+                        CapacityMeter(
+                            totalCapacity: selection.totalCapacity,
+                            availableCapacity: selection.availableCapacity,
+                            tint: themeAccentColor,
+                            backgroundColor: themeSecondaryTextColor.opacity(0.16)
+                        )
+                        Text("容量读取使用系统文件系统属性，并在不可读时自动回退，避免外置盘剩余空间显示错误。")
+                            .font(.caption)
+                            .foregroundStyle(themeSecondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("请选择一个目录")
+                            .foregroundStyle(themeSecondaryTextColor)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+
+            Button(purpose.confirmTitle) {
+                viewModel.confirmFolderSelection()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(themeAccentColor)
+            .disabled(viewModel.selectedFolderURL == nil)
+        }
+        .padding(20)
+        .frame(width: 280, alignment: .topLeading)
+    }
+
+    private func inspectorCard(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeSecondaryTextColor)
+            Text(value)
+                .font(.body.weight(.medium))
+                .foregroundStyle(themePrimaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(themeGlassPanel(cornerRadius: 16))
+    }
+
+    private func sidebarIcon(for url: URL) -> String {
+        Self.sidebarSpecialPaths[url.standardizedFileURL.path] ?? "externaldrive.fill"
+    }
+
+    private static let sidebarSpecialPaths: [String: String] = {
+        let fileManager = FileManager.default
+        let homePath = fileManager.homeDirectoryForCurrentUser.standardizedFileURL.path
+        var paths: [String: String] = [homePath: "house.fill"]
+
+        if let desktopPath = userDirectoryPath(.desktopDirectory) {
+            paths[desktopPath] = "desktopcomputer"
+        }
+        if let moviesPath = userDirectoryPath(.moviesDirectory) {
+            paths[moviesPath] = "film.fill"
+        }
+        if let documentsPath = userDirectoryPath(.documentDirectory) {
+            paths[documentsPath] = "doc.text.fill"
+        }
+
+        return paths
+    }()
+
+    private static func userDirectoryPath(_ directory: FileManager.SearchPathDirectory) -> String? {
+        FileManager.default.urls(for: directory, in: .userDomainMask).first?.standardizedFileURL.path
+    }
+
+    private func byteText(_ value: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: value)
+    }
+
+    private func isCurrent(_ url: URL) -> Bool {
+        viewModel.currentFolderURL?.path == url.path
+    }
+
+    private func isSelected(_ url: URL) -> Bool {
+        viewModel.selectedFolderURL?.path == url.path
+    }
+
+    private var canGoUp: Bool {
+        guard let current = viewModel.currentFolderURL else { return false }
+        return current.path != current.deletingLastPathComponent().path
+    }
+
+    private func themeGlassPanel(cornerRadius: CGFloat, tint: Color? = nil) -> some View {
+        AirwangGlassSurface(
+            cornerRadius: cornerRadius,
+            theme: viewModel.selectedTheme,
+            tint: tint ?? themeAccentColor,
+            tintStrength: tint == nil ? 0.0 : 0.32,
+            elevation: .tile,
+            reduceEffects: false
+        )
+    }
+
+    private var reduceSheetVisualEffects: Bool {
+        isSheetScrolling
+    }
+
+    private func markSheetScrollActivity() {
+        if !isSheetScrolling {
+            isSheetScrolling = true
+        }
+
+        sheetScrollSettlingTask?.cancel()
+        sheetScrollSettlingTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            isSheetScrolling = false
+        }
+    }
+
+    private var themePrimaryTextColor: Color {
+        viewModel.selectedTheme == .night ? .white : Color.primary
+    }
+
+    private var themeSecondaryTextColor: Color {
+        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.secondary
+    }
+
+    private var themeAccentColor: Color {
+        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
+    }
+
+}
+
+private struct CapacityMeter: View {
+    let totalCapacity: Int64?
+    let availableCapacity: Int64?
+    let tint: Color
+    let backgroundColor: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(backgroundColor)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [tint.opacity(0.95), tint.opacity(0.55)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * usedFraction)
+            }
+        }
+        .frame(height: 6)
+        .opacity(totalCapacity == nil || availableCapacity == nil ? 0.42 : 1)
+    }
+
+    private var usedFraction: CGFloat {
+        guard let totalCapacity, totalCapacity > 0, let availableCapacity else { return 0 }
+        let used = 1 - (Double(availableCapacity) / Double(totalCapacity))
+        return CGFloat(min(max(used, 0), 1))
+    }
+}
+
+private struct ThumbnailView: View {
+    let url: URL
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .scaledToFit()
+                    .padding(10)
+            }
+        }
+        .task(id: "\(url.path)-\(viewModel.isImporting)") {
+            guard !viewModel.isImporting else {
+                image = nil
+                return
+            }
+            image = await ThumbnailCache.shared.image(for: url)
+        }
+    }
+}
+
+@MainActor
+private final class ThumbnailCache {
+    static let shared = ThumbnailCache()
+
+    private let cache = NSCache<NSString, NSImage>()
+    private var inFlight: [String: Task<NSImage?, Never>] = [:]
+    private var activeRequests = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let maxConcurrentRequests = 4
+
+    func image(for url: URL) async -> NSImage? {
+        let key = url.path as NSString
+        if let cachedImage = cache.object(forKey: key) {
+            return cachedImage
+        }
+        if let task = inFlight[url.path] {
+            return await task.value
+        }
+
+        let task = Task { @MainActor in
+            await acquireSlot()
+            defer { releaseSlot() }
+            return await Self.generateThumbnail(for: url)
+        }
+        inFlight[url.path] = task
+
+        let generatedImage = await task.value
+        if let generatedImage {
+            cache.setObject(generatedImage, forKey: key)
+        }
+        inFlight[url.path] = nil
+        return generatedImage
+    }
+
+    private func acquireSlot() async {
+        if activeRequests < maxConcurrentRequests {
+            activeRequests += 1
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+        activeRequests += 1
+    }
+
+    private func releaseSlot() {
+        activeRequests = max(activeRequests - 1, 0)
+        guard !waiters.isEmpty else { return }
+        let continuation = waiters.removeFirst()
+        continuation.resume()
+    }
+
+    private static func generateThumbnail(for url: URL) async -> NSImage? {
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: 320, height: 180),
+            scale: 2,
+            representationTypes: .thumbnail
+        )
+        return await withCheckedContinuation { continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, error in
+                if let thumbnail {
+                    continuation.resume(returning: thumbnail.nsImage)
+                } else if error != nil {
+                    continuation.resume(returning: NSWorkspace.shared.icon(forFile: url.path))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+}
+
+private extension Text {
+    func sectionTitle() -> some View {
+        self.font(.title3.weight(.semibold))
+    }
+}

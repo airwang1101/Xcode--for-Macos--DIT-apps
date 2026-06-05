@@ -1,0 +1,23 @@
+.DS_Store
+
+# Xcode user state and local indexes
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+DerivedData/
+.derivedData/
+Build/
+Builds/
+
+# Local IDE metadata
+.idea/
+
+# Distribution output
+Dist/
+AppArtifactArchive/
+
+# Swift/Xcode build products
+*.dSYM/
+*.ipa
+*.xcarchive
+*.xcresult

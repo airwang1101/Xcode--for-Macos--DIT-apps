@@ -1,0 +1,444 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* AirwangDITForMacApp.swift */; };
+		A10000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* Models.swift */; };
+		A10000000000000000000003 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* SettingsStore.swift */; };
+		A10000000000000000000004 /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* VolumeMonitor.swift */; };
+		A10000000000000000000005 /* MediaScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* MediaScanner.swift */; };
+		A10000000000000000000006 /* TransferService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* TransferService.swift */; };
+		A10000000000000000000007 /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* AppViewModel.swift */; };
+		A10000000000000000000008 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* ContentView.swift */; };
+		A10000000000000000000026 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* Assets.xcassets */; };
+		A20000000000000000000001 /* PathSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* PathSafety.swift */; };
+		A20000000000000000000002 /* StoreFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* StoreFiles.swift */; };
+		A20000000000000000000003 /* PathSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* PathSafetyTests.swift */; };
+		A20000000000000000000004 /* MediaScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* MediaScannerTests.swift */; };
+		A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* PersistenceCompatibilityTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A20000000000000000000030 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000000F0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000009;
+			remoteInfo = "Airwang DIT for Mac";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A1000000000000000000000A /* Airwang DIT for Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Airwang DIT for Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000011 /* AirwangDITForMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwangDITForMacApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000012 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A10000000000000000000013 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		A10000000000000000000014 /* VolumeMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeMonitor.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* MediaScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaScanner.swift; sourceTree = "<group>"; };
+		A10000000000000000000016 /* TransferService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferService.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		A10000000000000000000018 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A10000000000000000000027 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000000000000000000A /* Airwang DIT for MacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Airwang DIT for MacTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000011 /* PathSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafety.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* StoreFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreFiles.swift; sourceTree = "<group>"; };
+		A20000000000000000000013 /* PathSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafetyTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* MediaScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaScannerTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* PersistenceCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceCompatibilityTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000000000000000000000B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000000000000000000000B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1000000000000000000000C = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000000D /* Airwang DIT for Mac */,
+				A2000000000000000000000D /* Airwang DIT for MacTests */,
+				A1000000000000000000000E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1000000000000000000000D /* Airwang DIT for Mac */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000011 /* AirwangDITForMacApp.swift */,
+				A10000000000000000000027 /* Assets.xcassets */,
+				A1000000000000000000001A /* Models */,
+				A1000000000000000000001B /* Services */,
+				A1000000000000000000001C /* ViewModels */,
+				A1000000000000000000001D /* Views */,
+			);
+			path = "Airwang DIT for Mac";
+			sourceTree = "<group>";
+		};
+		A1000000000000000000000E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000000A /* Airwang DIT for Mac.app */,
+				A2000000000000000000000A /* Airwang DIT for MacTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A1000000000000000000001A /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000012 /* Models.swift */,
+				A20000000000000000000012 /* StoreFiles.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A1000000000000000000001B /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000013 /* SettingsStore.swift */,
+				A10000000000000000000014 /* VolumeMonitor.swift */,
+				A10000000000000000000015 /* MediaScanner.swift */,
+				A10000000000000000000016 /* TransferService.swift */,
+				A20000000000000000000011 /* PathSafety.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A1000000000000000000001C /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000017 /* AppViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A1000000000000000000001D /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000018 /* ContentView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A2000000000000000000000D /* Airwang DIT for MacTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000013 /* PathSafetyTests.swift */,
+				A20000000000000000000014 /* MediaScannerTests.swift */,
+				A20000000000000000000015 /* PersistenceCompatibilityTests.swift */,
+			);
+			path = "Airwang DIT for MacTests";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000009 /* Airwang DIT for Mac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000023 /* Build configuration list for PBXNativeTarget "Airwang DIT for Mac" */;
+			buildPhases = (
+				A1000000000000000000000F /* Sources */,
+				A1000000000000000000000B /* Frameworks */,
+				A10000000000000000000010 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+			);
+			name = "Airwang DIT for Mac";
+			packageProductDependencies = (
+			);
+			productName = "Airwang DIT for Mac";
+			productReference = A1000000000000000000000A /* Airwang DIT for Mac.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A20000000000000000000009 /* Airwang DIT for MacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A20000000000000000000023 /* Build configuration list for PBXNativeTarget "Airwang DIT for MacTests" */;
+			buildPhases = (
+				A2000000000000000000000F /* Sources */,
+				A2000000000000000000000B /* Frameworks */,
+				A20000000000000000000010 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A20000000000000000000031 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+			);
+			name = "Airwang DIT for MacTests";
+			packageProductDependencies = (
+			);
+			productName = "Airwang DIT for MacTests";
+			productReference = A2000000000000000000000A /* Airwang DIT for MacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000000000000000000000F0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					A10000000000000000000009 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A20000000000000000000009 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = A10000000000000000000009;
+					};
+				};
+			};
+			buildConfigurationList = A10000000000000000000020 /* Build configuration list for PBXProject "Airwang DIT for Mac" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1000000000000000000000C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A1000000000000000000000E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000000000000000000009 /* Airwang DIT for Mac */,
+				A20000000000000000000009 /* Airwang DIT for MacTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000010 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000026 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A20000000000000000000010 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000000000000000000000F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */,
+				A10000000000000000000002 /* Models.swift in Sources */,
+				A10000000000000000000003 /* SettingsStore.swift in Sources */,
+				A10000000000000000000004 /* VolumeMonitor.swift in Sources */,
+				A10000000000000000000005 /* MediaScanner.swift in Sources */,
+				A10000000000000000000006 /* TransferService.swift in Sources */,
+				A20000000000000000000001 /* PathSafety.swift in Sources */,
+				A10000000000000000000007 /* AppViewModel.swift in Sources */,
+				A20000000000000000000002 /* StoreFiles.swift in Sources */,
+				A10000000000000000000008 /* ContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000000000000000000000F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A20000000000000000000003 /* PathSafetyTests.swift in Sources */,
+				A20000000000000000000004 /* MediaScannerTests.swift in Sources */,
+				A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A20000000000000000000031 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000009 /* Airwang DIT for Mac */;
+			targetProxy = A20000000000000000000030 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 20260531;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Airwang DIT for Mac";
+				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
+				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.airwang.ditformac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A10000000000000000000022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20260531;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Airwang DIT for Mac";
+				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
+				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.airwang.ditformac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A10000000000000000000024 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_TESTABILITY = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A10000000000000000000025 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		A20000000000000000000021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.airwang.ditformacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Airwang DIT for Mac.app/Contents/MacOS/Airwang DIT for Mac";
+			};
+			name = Debug;
+		};
+		A20000000000000000000022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.airwang.ditformacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Airwang DIT for Mac.app/Contents/MacOS/Airwang DIT for Mac";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000000020 /* Build configuration list for PBXProject "Airwang DIT for Mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000021 /* Debug */,
+				A10000000000000000000022 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000023 /* Build configuration list for PBXNativeTarget "Airwang DIT for Mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000024 /* Debug */,
+				A10000000000000000000025 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A20000000000000000000023 /* Build configuration list for PBXNativeTarget "Airwang DIT for MacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A20000000000000000000021 /* Debug */,
+				A20000000000000000000022 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1000000000000000000000F0 /* Project object */;
+}
