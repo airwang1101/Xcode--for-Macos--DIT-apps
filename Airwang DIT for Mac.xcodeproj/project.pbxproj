@@ -15,6 +15,7 @@
 		A10000000000000000000006 /* TransferService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* TransferService.swift */; };
 		A10000000000000000000007 /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* AppViewModel.swift */; };
 		A10000000000000000000008 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* ContentView.swift */; };
+		B10000000000000000000001 /* AirwangPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* AirwangPalette.swift */; };
 		A10000000000000000000026 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* Assets.xcassets */; };
 		A20000000000000000000001 /* PathSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* PathSafety.swift */; };
 		A20000000000000000000002 /* StoreFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* StoreFiles.swift */; };
@@ -43,6 +44,7 @@
 		A10000000000000000000016 /* TransferService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferService.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* AirwangPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwangPalette.swift; sourceTree = "<group>"; };
 		A10000000000000000000027 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000A /* Airwang DIT for MacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Airwang DIT for MacTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000011 /* PathSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafety.swift; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000018 /* ContentView.swift */,
+				B10000000000000000000011 /* AirwangPalette.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -266,6 +269,7 @@
 				A10000000000000000000007 /* AppViewModel.swift in Sources */,
 				A20000000000000000000002 /* StoreFiles.swift in Sources */,
 				A10000000000000000000008 /* ContentView.swift in Sources */,
+				B10000000000000000000001 /* AirwangPalette.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

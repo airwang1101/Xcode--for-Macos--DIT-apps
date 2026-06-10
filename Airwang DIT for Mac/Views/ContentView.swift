@@ -160,33 +160,25 @@ struct ContentView: View {
             let bottomBarReserve: CGFloat = compact ? 106 : 116
 
             ZStack(alignment: .bottom) {
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: contentSpacing) {
-                        workspaceHeader(availableWidth: availableWidth)
+                VStack(spacing: contentSpacing) {
+                    workspaceHeader(availableWidth: availableWidth)
 
-                        Group {
-                            switch viewModel.selectedSection {
-                            case .copy:
-                                copyWorkspace(availableWidth: availableWidth)
-                            case .dashboard:
-                                dashboardWorkspace(availableWidth: availableWidth)
-                            case .backup:
-                                backupWorkspace
-                            }
+                    Group {
+                        switch viewModel.selectedSection {
+                        case .copy:
+                            copyWorkspace(availableWidth: availableWidth)
+                        case .dashboard:
+                            dashboardWorkspace(availableWidth: availableWidth)
+                        case .backup:
+                            backupWorkspace
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
-                    .padding(.horizontal, contentPadding)
-                    .padding(.top, contentPadding)
-                    .padding(.bottom, bottomBarReserve)
-                    .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .background(ScrollActivityMonitor(onScroll: markScrollActivity))
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { _ in markScrollActivity() }
-                        .onEnded { _ in markScrollActivity() }
-                )
+                .padding(.horizontal, contentPadding)
+                .padding(.top, contentPadding)
+                .padding(.bottom, bottomBarReserve)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 bottomTabBar(availableWidth: availableWidth)
                     .padding(.horizontal, contentPadding)
@@ -233,12 +225,14 @@ struct ContentView: View {
         if stacked {
             VStack(alignment: .leading, spacing: 8) {
                 themePicker
+                languagePicker
                 targetPickerButton
                 refreshVolumesButton
             }
         } else {
             HStack(spacing: 10) {
                 themePicker
+                languagePicker
                 targetPickerButton
                 refreshVolumesButton
             }
@@ -246,29 +240,46 @@ struct ContentView: View {
     }
 
     private var themePicker: some View {
-        Picker("主题", selection: Binding(
+        Picker(viewModel.localized("主题"), selection: Binding(
             get: { viewModel.selectedTheme },
             set: { viewModel.setTheme($0) }
         )) {
             ForEach(AppTheme.allCases) { theme in
-                Text(theme.title).tag(theme)
+                Text(viewModel.localizedThemeTitle(theme)).tag(theme)
             }
         }
         .pickerStyle(.segmented)
         .frame(width: 170)
     }
 
-    private var targetPickerButton: some View {
-        Button("选择主目标盘") {
-            viewModel.openFolderPicker(for: .target)
+    private var languagePicker: some View {
+        Picker(viewModel.localized("语言"), selection: Binding(
+            get: { viewModel.selectedLanguage },
+            set: { viewModel.setLanguage($0) }
+        )) {
+            ForEach(AppLanguage.allCases) { language in
+                Text(language.shortTitle).tag(language)
+            }
         }
-        .buttonStyle(.bordered)
+        .pickerStyle(.segmented)
+        .frame(width: 116)
+    }
+
+    private var targetPickerButton: some View {
+        Button {
+            viewModel.openFolderPicker(for: .target)
+        } label: {
+            Label(viewModel.localized("选择主目标盘"), systemImage: "externaldrive.fill")
+        }
+        .buttonStyle(.borderedProminent)
         .tint(accentColor)
     }
 
     private var refreshVolumesButton: some View {
-        Button("刷新设备") {
+        Button {
             viewModel.refreshVolumes()
+        } label: {
+            Label(viewModel.localized("刷新设备"), systemImage: "arrow.clockwise")
         }
         .buttonStyle(.borderedProminent)
         .tint(accentColor)
@@ -280,9 +291,11 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 copyPresetCard(availableWidth: availableWidth)
                 volumeListCard
+                    .frame(maxHeight: .infinity)
                 projectQueueCard
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
         } else {
             let queueWidth = min(520, max(420, availableWidth * 0.36))
             let presetWidth = max(0, availableWidth - queueWidth - 18)
@@ -291,12 +304,15 @@ struct ContentView: View {
                 VStack(spacing: 18) {
                     copyPresetCard(availableWidth: presetWidth)
                     volumeListCard
+                        .frame(maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 projectQueueCard
                     .frame(width: queueWidth)
+                    .frame(maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -306,8 +322,11 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 queueControlStrip(availableWidth: availableWidth)
                 dashboardProjectList
+                    .frame(maxHeight: .infinity)
                 logCard
+                    .frame(maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
         } else {
             let logWidth = min(420, max(360, availableWidth * 0.30))
             let listWidth = max(0, availableWidth - logWidth - 18)
@@ -316,12 +335,15 @@ struct ContentView: View {
                 VStack(spacing: 18) {
                     queueControlStrip(availableWidth: listWidth)
                     dashboardProjectList
+                        .frame(maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 logCard
                     .frame(width: logWidth)
+                    .frame(maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
         }
     }
 
@@ -341,6 +363,7 @@ struct ContentView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var backupWorkspace: some View {
@@ -349,31 +372,36 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("备份工作台")
+                    Text(viewModel.localized("备份工作台"))
                         .sectionTitle()
-                    Text("这里只显示在拷贝项目里配置了备份盘的项目，备份来源固定为主目标盘。")
+                    Text(viewModel.localized("这里只显示在拷贝项目里配置了备份盘的项目，备份来源固定为主目标盘。"))
                         .foregroundStyle(secondaryTextColor)
                 }
                 Spacer()
-                Button("执行队列") {
+                Button {
                     viewModel.startQueue()
+                } label: {
+                    Label(viewModel.localized("执行队列"), systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accentColor)
                 .disabled(!viewModel.canStartQueue)
+                .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
             }
 
             ScrollView {
                 LazyVStack(spacing: 14) {
                     if backupProjects.isEmpty {
-                        emptyState(title: "暂无备份项目", detail: "创建拷贝项目时开启备份盘后，这里会自动出现对应的备份进度。")
+                        emptyState(title: viewModel.localized("暂无备份项目"), detail: viewModel.localized("创建拷贝项目时开启备份盘后，这里会自动出现对应的备份进度。"))
                     }
                     ForEach(backupProjects) { project in
                         backupProjectCard(project)
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
@@ -393,7 +421,7 @@ struct ContentView: View {
                     VStack(spacing: compact ? 4 : 5) {
                         Image(systemName: section.systemImage)
                             .font(.system(size: compact ? 18 : (section == .dashboard ? 22 : 20), weight: .semibold))
-                        Text(section.title)
+                        Text(viewModel.localized(section.title))
                             .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
@@ -431,13 +459,13 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 18) {
             if useCompactHeader {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("拷贝项目创建")
+                Text(viewModel.localized("拷贝项目创建"))
                         .sectionTitle()
                     executionModePicker(width: pickerWidth)
                 }
             } else {
                 HStack {
-                    Text("拷贝项目创建")
+                Text(viewModel.localized("拷贝项目创建"))
                         .sectionTitle()
                     Spacer()
                     executionModePicker(width: pickerWidth)
@@ -462,33 +490,34 @@ struct ContentView: View {
 
             if useStackedStats {
                 VStack(spacing: 10) {
-                    compactInfo(label: "默认校验", value: viewModel.selectedVerificationMode.shortTitle)
-                    compactInfo(label: "项目数", value: "\(viewModel.copyProjects.count)")
-                    compactInfo(label: "运行中", value: "\(viewModel.activeProjectIDs.count)")
+                compactInfo(label: viewModel.localized("默认校验"), value: viewModel.selectedVerificationMode.shortTitle)
+                compactInfo(label: viewModel.localized("项目数"), value: "\(viewModel.copyProjects.count)")
+                compactInfo(label: viewModel.localized("运行中"), value: "\(viewModel.activeProjectIDs.count)")
                 }
             } else {
                 HStack(spacing: 12) {
-                    compactInfo(label: "默认校验", value: viewModel.selectedVerificationMode.shortTitle)
-                    compactInfo(label: "项目数", value: "\(viewModel.copyProjects.count)")
-                    compactInfo(label: "运行中", value: "\(viewModel.activeProjectIDs.count)")
+                    compactInfo(label: viewModel.localized("默认校验"), value: viewModel.selectedVerificationMode.shortTitle)
+                    compactInfo(label: viewModel.localized("项目数"), value: "\(viewModel.copyProjects.count)")
+                    compactInfo(label: viewModel.localized("运行中"), value: "\(viewModel.activeProjectIDs.count)")
                 }
             }
 
             Button {
                 viewModel.startQueue()
             } label: {
-                Label("执行任务队列", systemImage: "play.fill")
+                Label(viewModel.localized("执行任务队列"), systemImage: "play.fill")
             }
             .buttonStyle(.borderedProminent)
             .tint(accentColor)
             .disabled(!viewModel.canStartQueue)
+            .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
         }
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
 
     private func executionModePicker(width: CGFloat) -> some View {
-        Picker("执行方式", selection: $viewModel.executionMode) {
+        Picker(viewModel.localized("执行方式"), selection: $viewModel.executionMode) {
             ForEach(ProjectExecutionMode.allCases) { mode in
                 Text(mode.title).tag(mode)
             }
@@ -499,8 +528,8 @@ struct ContentView: View {
 
     private var primaryTargetPresetBlock: some View {
         clickablePresetBlock(
-            label: "主目标盘",
-            value: viewModel.preferences.targetPath ?? "尚未设置",
+            label: viewModel.localized("主目标盘"),
+            value: viewModel.preferences.targetPath ?? viewModel.localized("尚未设置"),
             capacityLine: viewModel.targetCapacity?.capacityLine,
             accent: accentColor
         ) {
@@ -510,9 +539,9 @@ struct ContentView: View {
 
     private var backupTargetPresetBlock: some View {
         clickablePresetBlock(
-            label: "备份盘",
-            value: viewModel.preferences.backupEnabled ? (viewModel.preferences.backupPath ?? "未设置备份位置") : "未启用",
-            capacityLine: viewModel.preferences.backupEnabled ? viewModel.backupCapacity?.capacityLine : "点击选择后自动启用备份",
+            label: viewModel.localized("备份盘"),
+            value: viewModel.preferences.backupEnabled ? (viewModel.preferences.backupPath ?? viewModel.localized("未设置备份位置")) : viewModel.localized("未启用"),
+            capacityLine: viewModel.preferences.backupEnabled ? viewModel.backupCapacity?.capacityLine : viewModel.localized("点击选择后自动启用备份"),
             accent: secondaryAccentColor
         ) {
             viewModel.openFolderPicker(for: .backup)
@@ -536,19 +565,20 @@ struct ContentView: View {
 
                     HStack(spacing: 10) {
                         if viewModel.hasUnsavedChanges {
-                            Button("重试保存") {
+                            Button(viewModel.localized("重试保存")) {
                                 viewModel.retrySavingPendingChanges()
                             }
                             .buttonStyle(.bordered)
                             .tint(.orange)
                         }
 
-                        Button("执行队列") {
+                        Button(viewModel.localized("执行队列")) {
                             viewModel.startQueue()
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(accentColor)
                         .disabled(!viewModel.canStartQueue)
+                        .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
                     }
                 }
             } else {
@@ -560,7 +590,7 @@ struct ContentView: View {
                         .foregroundStyle(secondaryTextColor)
 
                     if viewModel.hasUnsavedChanges {
-                        Button("重试保存") {
+                        Button(viewModel.localized("重试保存")) {
                             viewModel.retrySavingPendingChanges()
                         }
                         .buttonStyle(.bordered)
@@ -569,12 +599,13 @@ struct ContentView: View {
 
                     Spacer()
 
-                    Button("执行队列") {
+                    Button(viewModel.localized("执行队列")) {
                         viewModel.startQueue()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(accentColor)
                     .disabled(!viewModel.canStartQueue)
+                    .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
                 }
             }
         }
@@ -589,10 +620,10 @@ struct ContentView: View {
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("任务队列")
+                Text(viewModel.localized("任务队列"))
                     .sectionTitle()
                 Spacer()
-                Text(viewModel.executionMode.title)
+                Text(viewModel.localized(viewModel.executionMode.title))
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -603,7 +634,7 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     if orderedProjects.isEmpty {
-                        emptyState(title: "队列为空", detail: "从左侧检测到的设备进入素材选择，创建项目后会出现在这里。")
+                        emptyState(title: viewModel.localized("队列为空"), detail: viewModel.localized("从左侧检测到的设备进入素材选择，创建项目后会出现在这里。"))
                     }
 
                     ForEach(orderedProjects) { project in
@@ -615,7 +646,9 @@ struct ContentView: View {
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
@@ -661,7 +694,7 @@ struct ContentView: View {
                         .font(.headline)
                         .foregroundStyle(primaryTextColor)
                         .lineLimit(1)
-                    Text(project.status.title)
+                    Text(viewModel.localizedStatus(project.status))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(statusColor(project.status))
                 }
@@ -693,16 +726,22 @@ struct ContentView: View {
                 projectQueueProgress(project, now: Date())
             }
 
+            if project.status == .queued, project.autoStartEnabled, project.autoStartDeadline != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    autoStartCountdownRow(project, now: timeline.date)
+                }
+            }
+
             Text(project.sourceRootPath)
                 .font(.caption)
                 .foregroundStyle(secondaryTextColor)
                 .lineLimit(1)
-            Text("目标: \(project.primaryImportURL.path)")
+            Text("\(viewModel.localized("目标")): \(project.primaryImportURL.path)")
                 .font(.caption)
                 .foregroundStyle(secondaryTextColor)
                 .lineLimit(1)
             if let backupImportURL = project.backupImportURL {
-                Text("备份: \(backupImportURL.path)")
+                Text("\(viewModel.localized("备份")): \(backupImportURL.path)")
                     .font(.caption)
                     .foregroundStyle(secondaryTextColor)
                     .lineLimit(1)
@@ -716,7 +755,7 @@ struct ContentView: View {
                     .background(secondaryAccentColor.opacity(0.14), in: Capsule())
                     .foregroundStyle(secondaryAccentColor)
 
-                Text(project.hasBackup ? "含备份" : "仅主盘")
+                Text(project.hasBackup ? viewModel.localized("含备份") : viewModel.localized("仅主盘"))
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -725,15 +764,23 @@ struct ContentView: View {
 
                 Spacer()
 
+                if project.status == .queued, project.autoStartEnabled || project.autoStartDeadline != nil {
+                    Button(viewModel.localized("取消自动执行")) {
+                        viewModel.cancelAutoStart(for: project)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                }
+
                 if viewModel.canEditBackup(for: project) {
-                    Button(project.hasBackup ? "更换备份" : "添加备份") {
+                    Button(project.hasBackup ? viewModel.localized("更换备份") : viewModel.localized("添加备份")) {
                         viewModel.openProjectBackupPicker(for: project)
                     }
                     .buttonStyle(.bordered)
                     .tint(secondaryAccentColor)
 
                     if project.hasBackup {
-                        Button("取消备份") {
+                        Button(viewModel.localized("取消备份")) {
                             viewModel.removeBackup(from: project)
                         }
                         .buttonStyle(.bordered)
@@ -742,26 +789,26 @@ struct ContentView: View {
                 }
 
                 if project.status == .running {
-                    Button("取消") {
+                    Button(viewModel.localized("取消")) {
                         viewModel.cancelProject(project)
                     }
                     .buttonStyle(.bordered)
                     .tint(.red)
                 } else if project.status == .failed || project.status == .blocked || project.status == .cancelled {
-                    Button("重试") {
+                    Button(viewModel.localized("重试")) {
                         viewModel.retryProject(project)
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
                 }
 
-                Button("改名") {
+                Button(viewModel.localized("改名")) {
                     viewModel.promptRenameProject(project)
                 }
                 .buttonStyle(.bordered)
                 .disabled(project.status == .running || project.status == .cancelling)
 
-                Button("删除") {
+                Button(viewModel.localized("删除")) {
                     viewModel.deleteProject(project)
                 }
                 .buttonStyle(.bordered)
@@ -771,6 +818,34 @@ struct ContentView: View {
         }
         .padding(14)
         .background(glassSurface(cornerRadius: 18, elevation: .tile))
+    }
+
+    private func autoStartCountdownRow(_ project: CopyProject, now: Date) -> some View {
+        HStack(spacing: 8) {
+            Label(autoStartCountdownText(project, now: now), systemImage: "timer")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(viewModel.localized("创建后可在这里取消自动执行"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(viewModel.selectedTheme == .night ? 0.14 : 0.10), in: Capsule())
+    }
+
+    private func autoStartCountdownText(_ project: CopyProject, now: Date) -> String {
+        guard let deadline = project.autoStartDeadline else {
+            return viewModel.localized("等待自动执行")
+        }
+        let remaining = max(deadline.timeIntervalSince(now), 0)
+        if viewModel.selectedLanguage == .english {
+            return "Auto-start in \(stopwatchText(remaining))"
+        }
+        return "\(stopwatchText(remaining)) 后自动执行"
     }
 
     private func projectQueueProgress(_ project: CopyProject, now: Date) -> some View {
@@ -842,7 +917,7 @@ struct ContentView: View {
                         .foregroundStyle(secondaryTextColor)
                 }
                 Spacer()
-                Text(project.status.title)
+                Text(viewModel.localizedStatus(project.status))
                     .font(.caption.weight(.bold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -865,7 +940,7 @@ struct ContentView: View {
             }
 
             HStack(spacing: 10) {
-                Button("跳过校验") {
+                Button(viewModel.localized("跳过校验")) {
                     viewModel.requestSkipVerification(for: project)
                 }
                 .buttonStyle(.bordered)
@@ -873,14 +948,14 @@ struct ContentView: View {
                 .disabled(project.verificationMode == .skipped || (project.status != .queued && project.status != .running))
 
                 if viewModel.canEditBackup(for: project) {
-                    Button(project.hasBackup ? "更换备份盘" : "添加备份盘") {
+                    Button(project.hasBackup ? viewModel.localized("更换备份盘") : viewModel.localized("添加备份盘")) {
                         viewModel.openProjectBackupPicker(for: project)
                     }
                     .buttonStyle(.bordered)
                     .tint(secondaryAccentColor)
 
                     if project.hasBackup {
-                        Button("取消备份") {
+                        Button(viewModel.localized("取消备份")) {
                             viewModel.removeBackup(from: project)
                         }
                         .buttonStyle(.bordered)
@@ -888,13 +963,13 @@ struct ContentView: View {
                     }
                 }
 
-                Button("打开主盘") {
+                Button(viewModel.localized("打开主盘")) {
                     viewModel.revealProjectOutput(project)
                 }
                 .buttonStyle(.bordered)
                 .tint(accentColor)
 
-                Button("主盘报告") {
+                Button(viewModel.localized("主盘报告")) {
                     viewModel.openProjectReport(project, stage: .primary)
                 }
                 .buttonStyle(.borderedProminent)
@@ -902,7 +977,7 @@ struct ContentView: View {
                 .disabled(!viewModel.canOpenProjectReport(project, stage: .primary))
 
                 if project.hasBackup {
-                    Button("备份报告") {
+                    Button(viewModel.localized("备份报告")) {
                         viewModel.openProjectReport(project, stage: .backup)
                     }
                     .buttonStyle(.borderedProminent)
@@ -934,7 +1009,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 if project.backupReportID != nil {
-                    Button("查看备份报告") {
+                    Button(viewModel.localized("查看备份报告")) {
                         viewModel.openProjectReport(project, stage: .backup)
                     }
                     .buttonStyle(.borderedProminent)
@@ -945,8 +1020,8 @@ struct ContentView: View {
             projectStageTrack(project.backupCopyState, tint: Color(red: 0.28, green: 0.58, blue: 1.00))
             projectStageTrack(project.backupVerifyState, tint: Color(red: 0.29, green: 0.78, blue: 0.58))
 
-            detailRow("主目标地址", value: project.primaryImportURL.path)
-            detailRow("备份地址", value: project.backupImportURL?.path ?? "未配置")
+            detailRow(viewModel.localized("主目标地址"), value: project.primaryImportURL.path)
+            detailRow(viewModel.localized("备份地址"), value: project.backupImportURL?.path ?? viewModel.localized("未配置"))
         }
         .padding(18)
         .background(glassSurface(cornerRadius: 20, elevation: .card))
@@ -1111,162 +1186,34 @@ struct ContentView: View {
 
     private func backupStatusText(_ project: CopyProject) -> String {
         if project.status == .blocked {
-            return "主盘异常，备份已阻塞"
+            return viewModel.localized("主盘异常，备份已阻塞")
         }
         if project.backupVerifyState.isComplete {
-            return "已完成"
+            return viewModel.localized("已完成")
         }
         if project.backupVerifyState.isActive {
-            return "正在校验备份"
+            return viewModel.localized("正在校验备份")
         }
         if project.backupCopyState.isActive {
-            return "正在备份"
+            return viewModel.localized("正在备份")
         }
         if project.primaryVerifyState.isComplete {
-            return "等待备份"
+            return viewModel.localized("等待备份")
         }
-        return "等待主盘完成"
-    }
-
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("默认工作预设")
-                .sectionTitle()
-
-            emphasisBlock(
-                label: "主目标盘",
-                value: viewModel.preferences.targetPath ?? "尚未设置",
-                capacityLine: viewModel.targetCapacity?.capacityLine,
-                accent: accentColor
-            )
-
-            emphasisBlock(
-                label: "备份盘",
-                value: viewModel.preferences.backupEnabled ? (viewModel.preferences.backupPath ?? "未设置备份位置") : "未启用",
-                capacityLine: viewModel.preferences.backupEnabled ? viewModel.backupCapacity?.capacityLine : "关闭后不会写入第二份素材",
-                accent: secondaryAccentColor
-            )
-
-            HStack(spacing: 12) {
-                compactInfo(label: "校验", value: "SHA-256")
-                compactInfo(label: "命名", value: "时间戳+源盘")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(24)
-        .background(glassSurface(cornerRadius: 24, elevation: .panel))
-    }
-
-    private var transferCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("导入状态")
-                    .sectionTitle()
-                Spacer()
-                if viewModel.isImporting {
-                    Text("进行中")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(accentColor.opacity(0.14), in: Capsule())
-                }
-                Text(viewModel.transferState.phaseTitle)
-                    .font(.headline)
-                    .foregroundStyle(primaryTextColor)
-            }
-
-            HStack(spacing: 12) {
-                metricTile(title: "已拷贝", value: "\(viewModel.transferState.copiedFiles)/\(viewModel.transferState.totalFiles)")
-                metricTile(title: "已校验", value: "\(viewModel.transferState.verifiedFiles)/\(viewModel.transferState.totalFiles)")
-                metricTile(title: "实时速度", value: byteFormatter.string(fromByteCount: Int64(viewModel.transferState.speedBytesPerSecond)) + "/s")
-                metricTile(title: "预估剩余", value: etaText(viewModel.transferState.eta))
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                progressTrack(
-                    title: "导入进度",
-                    detail: "\(viewModel.transferState.copiedFiles)/\(viewModel.transferState.totalFiles) · 已写入 \(byteFormatter.string(fromByteCount: viewModel.transferState.processedBytes))/\(byteFormatter.string(fromByteCount: viewModel.transferState.totalBytes)) · \(byteFormatter.string(fromByteCount: Int64(viewModel.transferState.copySpeedBytesPerSecond)))/s · 剩余 \(etaText(viewModel.transferState.copyETA))",
-                    value: viewModel.transferState.copyFraction,
-                    tint: accentColor
-                )
-
-                progressTrack(
-                    title: "校验进度",
-                    detail: "\(viewModel.transferState.verifiedFiles)/\(viewModel.transferState.totalFiles) · 已校验 \(byteFormatter.string(fromByteCount: viewModel.transferState.verificationProcessedBytes))/\(byteFormatter.string(fromByteCount: viewModel.transferState.verificationTotalBytes)) · \(byteFormatter.string(fromByteCount: Int64(viewModel.transferState.verificationSpeedBytesPerSecond)))/s · 剩余 \(etaText(viewModel.transferState.verificationETA))",
-                    value: viewModel.transferState.verificationFraction,
-                    tint: secondaryAccentColor
-                )
-            }
-
-            HStack {
-                Text(viewModel.transferState.verificationStatus)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(viewModel.transferState.verificationStatus.contains("异常") ? .red : secondaryTextColor)
-                Spacer()
-            }
-
-            detailRow("当前文件", value: viewModel.transferState.currentFile.isEmpty ? "等待新的导入任务" : viewModel.transferState.currentFile)
-            if let interruptionReason = viewModel.transferState.interruptionReason {
-                detailRow("安全事件", value: interruptionReason)
-            }
-            if !viewModel.transferState.reportSummary.isEmpty {
-                detailRow("校验报告", value: viewModel.transferState.reportSummary)
-            }
-
-            HStack(spacing: 10) {
-                if viewModel.isImporting {
-                    Button("取消任务") {
-                        viewModel.cancelImport()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                }
-
-                if let latestReport = viewModel.latestReport {
-                    Button("打开目标") {
-                        viewModel.revealReportInFinder(latestReport)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(accentColor)
-
-                    Button("查看报告") {
-                        viewModel.openReportDocument(latestReport)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(secondaryAccentColor)
-
-                    if !latestReport.failedFiles.isEmpty {
-                        Button("重试异常") {
-                            viewModel.retryLatestFailedItems()
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.orange)
-                    }
-                }
-
-                Spacer()
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(24)
-        .background(glassSurface(cornerRadius: 24, tint: viewModel.isImporting ? accentColor : nil, elevation: viewModel.isImporting ? .selected : .panel))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(viewModel.isImporting ? accentColor.opacity(0.58) : Color.clear, lineWidth: 1.4)
-        )
+        return viewModel.localized("等待主盘完成")
     }
 
     private var volumeListCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("已检测设备")
+            Text(viewModel.localized("已检测设备"))
                 .sectionTitle()
 
             ScrollView {
                 LazyVStack(spacing: 12) {
                     if viewModel.displayVolumes.isEmpty {
                         emptyState(
-                            title: "暂未发现可导入设备",
-                            detail: "插入 SD 卡、相机盘或 SSD 后点击刷新设备。系统识别后这里会出现开始导入入口。"
+                            title: viewModel.localized("暂未发现可导入设备"),
+                            detail: viewModel.localized("插入 SD 卡、相机盘或 SSD 后点击刷新设备。系统识别后这里会出现开始导入入口。")
                         )
                     }
 
@@ -1286,7 +1233,7 @@ struct ContentView: View {
                                 HStack(spacing: 8) {
                                     Text(volume.name)
                                         .font(.headline)
-                                    Text(volume.isRemovable ? "外部设备" : "可用卷")
+                                    Text(volume.isRemovable ? viewModel.localized("外部设备") : viewModel.localized("可用卷"))
                                         .font(.caption.weight(.semibold))
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
@@ -1309,7 +1256,7 @@ struct ContentView: View {
                                 .frame(maxWidth: 320)
                             }
                             Spacer()
-                            Button("开始导入") {
+                            Button(viewModel.localized("开始导入")) {
                                 viewModel.prepareImport(for: volume)
                             }
                             .buttonStyle(.borderedProminent)
@@ -1320,8 +1267,9 @@ struct ContentView: View {
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, minHeight: 320, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
@@ -1329,10 +1277,10 @@ struct ContentView: View {
     private var logCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("任务日志")
+                Text(viewModel.localized("任务日志"))
                     .sectionTitle()
                 Spacer()
-                Text("存储：\(viewModel.taskLogScopeName)")
+                Text("\(viewModel.localized("存储")): \(viewModel.taskLogScopeName)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(secondaryTextColor)
                     .lineLimit(1)
@@ -1341,7 +1289,7 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     if viewModel.reports.isEmpty {
-                        Text("当前 App 存储暂无任务日志")
+                        Text(viewModel.localized("当前 App 存储暂无任务日志"))
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(secondaryTextColor)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1355,7 +1303,7 @@ struct ContentView: View {
                                 Text(report.title)
                                     .font(.headline)
                                 Spacer()
-                                Text(report.success ? "成功" : "异常")
+                                Text(report.success ? viewModel.localized("成功") : viewModel.localized("异常"))
                                     .foregroundStyle(report.success ? .mint : .red)
                             }
                             Text(report.sourceName)
@@ -1363,12 +1311,12 @@ struct ContentView: View {
                             Text(report.targetPath)
                                 .font(.caption)
                                 .foregroundStyle(secondaryTextColor)
-                            Text("\(report.selectedFileCount) 个文件  ·  \(byteFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))")
+                            Text(reportSummaryLine(report))
                                 .font(.caption)
                                 .foregroundStyle(secondaryTextColor)
                             VStack(alignment: .leading, spacing: 3) {
-                                Label("开始 \(preciseDateTimeText(report.startedAt))", systemImage: "play.circle")
-                                Label("完成 \(preciseDateTimeText(report.finishedAt))", systemImage: "checkmark.circle")
+                                Label("\(viewModel.localized("开始")) \(preciseDateTimeText(report.startedAt))", systemImage: "play.circle")
+                                Label("\(viewModel.localized("完成")) \(preciseDateTimeText(report.finishedAt))", systemImage: "checkmark.circle")
                             }
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(secondaryTextColor)
@@ -1376,23 +1324,23 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(secondaryTextColor)
                             if let interruptionReason = report.interruptionReason {
-                                Text("安全事件：\(interruptionReason)")
+                                Text("\(viewModel.localized("安全事件")): \(interruptionReason)")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
                             if report.reportDocumentWriteFailed {
-                                Text("报告写入异常：请优先查看 App 本地报告或重新导出。")
+                                Text(viewModel.localized("报告写入异常：请优先查看 App 本地报告或重新导出。"))
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.orange)
                             }
                             HStack(spacing: 10) {
-                                Button("在访达中打开") {
+                                Button(viewModel.localized("在访达中打开")) {
                                     viewModel.revealReportInFinder(report)
                                 }
                                 .buttonStyle(.bordered)
                                 .tint(accentColor)
 
-                                Button("查看拷贝报告") {
+                                Button(viewModel.localized("查看拷贝报告")) {
                                     viewModel.openReportDocument(report)
                                 }
                                 .buttonStyle(.borderedProminent)
@@ -1407,10 +1355,18 @@ struct ContentView: View {
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, minHeight: 320, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func reportSummaryLine(_ report: TransferReport) -> String {
+        if viewModel.selectedLanguage == .english {
+            return "\(report.selectedFileCount) files · \(byteFormatter.string(fromByteCount: report.totalBytes)) · total \(stopwatchText(report.duration))"
+        }
+        return "\(report.selectedFileCount) 个文件  ·  \(byteFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
     }
 
     private func destinationCard(badge: String, title: String, path: String?, actionTitle: String, action: @escaping () -> Void) -> some View {
@@ -1516,13 +1472,6 @@ struct ContentView: View {
         return formatter.string(from: value)
     }
 
-    private func durationText(_ value: TimeInterval) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.unitsStyle = .abbreviated
-        return formatter.string(from: value) ?? "--"
-    }
-
     private func onboardingFeature(label: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
@@ -1624,10 +1573,10 @@ struct ContentView: View {
             } else {
                 LinearGradient(
                     colors: [
-                        Color(red: 1.000, green: 0.965, blue: 0.955),
-                        Color(red: 0.990, green: 0.905, blue: 0.915),
-                        Color(red: 0.972, green: 0.835, blue: 0.875),
-                        Color(red: 0.940, green: 0.835, blue: 0.920)
+                        Color(red: 1.000, green: 0.978, blue: 0.965),
+                        Color(red: 0.982, green: 0.944, blue: 0.930),
+                        Color(red: 0.945, green: 0.922, blue: 0.938),
+                        Color(red: 0.918, green: 0.930, blue: 0.958)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -1643,25 +1592,25 @@ struct ContentView: View {
             } else {
                 ZStack {
                     Circle()
-                        .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.23))
+                        .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.12))
                         .frame(width: 620, height: 620)
                         .blur(radius: 120)
                         .offset(x: -390, y: -210)
 
                     Circle()
-                        .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.18))
+                        .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.10))
                         .frame(width: 740, height: 740)
                         .blur(radius: 145)
                         .offset(x: 430, y: -250)
 
                     Circle()
-                        .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.10))
+                        .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.08))
                         .frame(width: 560, height: 560)
                         .blur(radius: 150)
                         .offset(x: 230, y: 500)
 
                     RoundedRectangle(cornerRadius: 60, style: .continuous)
-                        .fill(.ultraThinMaterial.opacity(viewModel.selectedTheme == .night ? 0.42 : 0.68))
+                        .fill(.ultraThinMaterial.opacity(viewModel.selectedTheme == .night ? 0.42 : 0.50))
                         .frame(height: 340)
                         .blur(radius: 34)
                         .offset(y: -170)
@@ -1710,21 +1659,12 @@ struct ContentView: View {
         }
     }
 
-    private var primaryTextColor: Color {
-        viewModel.selectedTheme == .night ? .white : Color(red: 0.16, green: 0.08, blue: 0.11)
-    }
-
-    private var secondaryTextColor: Color {
-        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.black.opacity(0.58)
-    }
-
-    private var accentColor: Color {
-        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
-    }
-
-    private var secondaryAccentColor: Color {
-        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.65, blue: 0.40) : Color(red: 0.98, green: 0.58, blue: 0.39)
-    }
+    // 颜色全部委托给 `AppTheme` 扩展(Views/Theme/AirwangPalette.swift),避免再次出现
+    // 三套独立定义(见 TEST_REPORT.md #45/#46/#47)。
+    private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
+    private var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
+    private var accentColor: Color { viewModel.selectedTheme.accentColor }
+    private var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
 
 }
 
@@ -1846,13 +1786,23 @@ private struct AirwangGlassSurface: View {
         if reduceEffects {
             ZStack {
                 shape
-                    .fill(theme == .night ? Color.white.opacity(0.075) : Color.white.opacity(0.48))
+                    .fill(theme == .night ? Color(red: 0.16, green: 0.12, blue: 0.15).opacity(0.56) : Color.white.opacity(0.64))
                 shape
-                    .fill(tint.opacity(theme == .night ? 0.035 * tintStrength : 0.045 * tintStrength))
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(theme == .night ? 0.10 : 0.36),
+                                tint.opacity(theme == .night ? 0.055 * tintStrength : 0.035 * tintStrength),
+                                Color.black.opacity(theme == .night ? 0.10 : 0.018)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                 shape
-                    .strokeBorder(Color.white.opacity(theme == .night ? 0.18 : 0.58), lineWidth: theme == .night ? 0.9 : 0.75)
+                    .strokeBorder(Color.white.opacity(theme == .night ? 0.24 : 0.66), lineWidth: theme == .night ? 0.9 : 0.75)
                 shape
-                    .strokeBorder(Color.black.opacity(theme == .night ? 0.22 : 0.05), lineWidth: 0.6)
+                    .strokeBorder(Color.black.opacity(theme == .night ? 0.12 : 0.025), lineWidth: 0.6)
             }
         } else {
             ZStack {
@@ -1911,25 +1861,25 @@ private struct AirwangLayeredShadow: ViewModifier {
     func body(content: Content) -> some View {
         content
             .shadow(
-                color: Color.white.opacity(theme == .night ? 0.045 : 0.34),
-                radius: theme == .night ? 1.0 : 1.8,
+                color: Color.white.opacity(theme == .night ? 0.045 : 0.20),
+                radius: theme == .night ? 1.0 : 1.2,
                 x: 0,
                 y: -1
             )
             .shadow(
-                color: tint.opacity(theme == .night ? 0.16 * tintStrength : 0.12 * tintStrength),
-                radius: elevation.ambientRadius * 0.95,
+                color: tint.opacity(theme == .night ? 0.16 * tintStrength : 0.06 * tintStrength),
+                radius: elevation.ambientRadius * (theme == .night ? 0.95 : 0.70),
                 x: 0,
-                y: elevation.ambientY * 0.75
+                y: elevation.ambientY * (theme == .night ? 0.75 : 0.58)
             )
             .shadow(
-                color: Color.black.opacity(theme == .night ? 0.52 : 0.13),
-                radius: elevation.ambientRadius,
+                color: Color.black.opacity(theme == .night ? 0.52 : 0.055),
+                radius: elevation.ambientRadius * (theme == .night ? 1.0 : 0.72),
                 x: 0,
-                y: elevation.ambientY
+                y: elevation.ambientY * (theme == .night ? 1.0 : 0.72)
             )
             .shadow(
-                color: Color.black.opacity(theme == .night ? 0.30 : 0.075),
+                color: Color.black.opacity(theme == .night ? 0.30 : 0.040),
                 radius: elevation.contactRadius,
                 x: 0,
                 y: elevation.contactY
@@ -2350,11 +2300,19 @@ private struct ImportSheet: View {
     }
 
     private var importStepRail: some View {
-        HStack(spacing: 10) {
-            stepPill(index: "1", title: "选源文件夹", isActive: !viewModel.hasScannedSource && !viewModel.isScanning, isDone: viewModel.isScanning || viewModel.hasScannedSource)
-            stepPill(index: "2", title: "扫描素材", isActive: viewModel.isScanning, isDone: viewModel.hasScannedSource)
-            stepPill(index: "3", title: "选择素材", isActive: viewModel.hasScannedSource && viewModel.selectedItems.isEmpty, isDone: !viewModel.selectedItems.isEmpty)
-            stepPill(index: "4", title: "开始拷贝+校验", isActive: viewModel.canStartImport, isDone: false)
+        // 步骤 3 的 active 条件不再依赖 `selectedItems.isEmpty`(扫描完成后会自动全选,
+        // 导致这条件永远 false → 步骤 3 从未被点亮,见 TEST_REPORT.md #74)。
+        // 现在的语义是:扫描完成后,用户处于"选择 / 复核素材"阶段,步骤 3 一直
+        // 高亮直到 sheet 关闭。步骤 4 与之并列高亮,表示"下一步按钮已就绪"。
+        //
+        // 步骤 4 标题改为"加入任务队列",与按钮 `创建项目并加入队列` 的实际行为
+        // 保持一致(原"开始拷贝+校验"具有误导性,见 #54 / #75)。
+        let scanDone = viewModel.hasScannedSource
+        return HStack(spacing: 10) {
+            stepPill(index: "1", title: "选源文件夹", isActive: !scanDone && !viewModel.isScanning, isDone: viewModel.isScanning || scanDone)
+            stepPill(index: "2", title: "扫描素材", isActive: viewModel.isScanning, isDone: scanDone)
+            stepPill(index: "3", title: "选择素材", isActive: scanDone, isDone: false)
+            stepPill(index: "4", title: "加入任务队列", isActive: scanDone && viewModel.canStartImport, isDone: false)
         }
         .padding(12)
         .background(glassPanel(cornerRadius: 22))
@@ -3150,21 +3108,12 @@ private struct ImportSheet: View {
         }
     }
 
-    private var primaryTextColor: Color {
-        viewModel.selectedTheme == .night ? .white : Color.primary
-    }
-
-    private var secondaryTextColor: Color {
-        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.secondary
-    }
-
-    private var accentColor: Color {
-        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
-    }
-
-    private var secondaryAccentColor: Color {
-        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.65, blue: 0.40) : Color(red: 0.98, green: 0.58, blue: 0.39)
-    }
+    // 颜色委托给 `AppTheme` 扩展,与主面板保持一致(原本 ImportSheet 在白天模式
+    // 走 `Color.primary` / `Color.secondary`,与暖色背景不协调,见 #45)。
+    private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
+    private var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
+    private var accentColor: Color { viewModel.selectedTheme.accentColor }
+    private var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
 
     private var groupFill: Color {
         viewModel.selectedTheme == .night ? Color.white.opacity(0.08) : Color.gray.opacity(0.08)
@@ -3515,17 +3464,10 @@ private struct FolderPickerSheet: View {
         }
     }
 
-    private var themePrimaryTextColor: Color {
-        viewModel.selectedTheme == .night ? .white : Color.primary
-    }
-
-    private var themeSecondaryTextColor: Color {
-        viewModel.selectedTheme == .night ? Color.white.opacity(0.72) : Color.secondary
-    }
-
-    private var themeAccentColor: Color {
-        viewModel.selectedTheme == .night ? Color(red: 1.00, green: 0.34, blue: 0.54) : Color(red: 0.73, green: 0.14, blue: 0.27)
-    }
+    // 颜色委托给 `AppTheme` 扩展,与主面板和 ImportSheet 保持一致(见 #46)。
+    private var themePrimaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
+    private var themeSecondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
+    private var themeAccentColor: Color { viewModel.selectedTheme.accentColor }
 
 }
 

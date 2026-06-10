@@ -103,12 +103,14 @@ struct TransferService {
     func runPrimaryStage(
         project: CopyProject,
         interruptionToken: ImportInterruptionToken? = nil,
+        language: AppLanguage = .chinese,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> ProjectStageResult {
         try await runProjectStage(
             project: project,
             stage: .primary,
             interruptionToken: interruptionToken,
+            language: language,
             progress: progress
         )
     }
@@ -116,12 +118,14 @@ struct TransferService {
     func runBackupStage(
         project: CopyProject,
         interruptionToken: ImportInterruptionToken? = nil,
+        language: AppLanguage = .chinese,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> ProjectStageResult {
         try await runProjectStage(
             project: project,
             stage: .backup,
             interruptionToken: interruptionToken,
+            language: language,
             progress: progress
         )
     }
@@ -130,6 +134,7 @@ struct TransferService {
         project: CopyProject,
         stage: ProjectTransferStage,
         interruptionToken: ImportInterruptionToken?,
+        language: AppLanguage,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> ProjectStageResult {
         let startedAt = Date()
@@ -498,7 +503,8 @@ struct TransferService {
             fileRecords: fileRecords,
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
-            verificationSummary: verificationSummary
+            verificationSummary: verificationSummary,
+            language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
             .compactMap { $0 }
@@ -556,6 +562,7 @@ struct TransferService {
     func runImport(
         summary: ImportSelectionSummary,
         interruptionToken: ImportInterruptionToken? = nil,
+        language: AppLanguage = .chinese,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> TransferResult {
         let startedAt = Date()
@@ -612,7 +619,8 @@ struct TransferService {
                 destinations: destinations,
                 primaryImportFolder: primaryImportFolder,
                 reportDocumentURL: reportDocumentURL,
-                fallbackReportDocumentURL: fallbackReportDocumentURL
+                fallbackReportDocumentURL: fallbackReportDocumentURL,
+                language: language
             )
             await progress(state)
             return result
@@ -899,7 +907,8 @@ struct TransferService {
             fileRecords: fileRecords,
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
-            verificationSummary: verificationSummary
+            verificationSummary: verificationSummary,
+            language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
             .compactMap { $0 }
@@ -953,7 +962,8 @@ struct TransferService {
         destinations: [Destination],
         primaryImportFolder: URL,
         reportDocumentURL: URL,
-        fallbackReportDocumentURL: URL
+        fallbackReportDocumentURL: URL,
+        language: AppLanguage
     ) -> TransferResult {
         let finishedAt = Date()
         let failureMessage = error.localizedDescription
@@ -995,7 +1005,8 @@ struct TransferService {
             fileRecords: fileRecords,
             failedFiles: failedFiles,
             interruptionReason: nil,
-            verificationSummary: verificationSummary
+            verificationSummary: verificationSummary,
+            language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
             .compactMap { $0 }
@@ -1047,54 +1058,54 @@ struct TransferService {
 
         switch stage {
         case .primary:
-            if pathsOverlap(project.sourceRootURL, project.targetRootURL) {
+            if PathSafety.pathsOverlap(project.sourceRootURL, project.targetRootURL) {
                 throw TransferError.pathOverlap("主目标盘不能与源素材目录相同、包含源素材目录，或位于源素材目录内部。")
             }
-            if pathsShareVolume(sourceVolumeURL, project.targetRootURL)
-                || pathsShareVolume(project.sourceRootURL, project.targetRootURL) {
+            if PathSafety.pathsShareVolume(sourceVolumeURL, project.targetRootURL)
+                || PathSafety.pathsShareVolume(project.sourceRootURL, project.targetRootURL) {
                 throw TransferError.pathOverlap("主目标盘不能位于源设备同一个磁盘卷上，请选择独立工作盘，避免把素材写回源卡。")
             }
         case .backup:
             guard let backupRootURL = project.backupRootURL else {
                 throw TransferError.deviceUnavailable(role: "备份盘", path: project.backupRootPath ?? "未配置")
             }
-            if pathsOverlap(project.primaryImportURL, backupRootURL)
-                || pathsOverlap(project.targetRootURL, backupRootURL) {
+            if PathSafety.pathsOverlap(project.primaryImportURL, backupRootURL)
+                || PathSafety.pathsOverlap(project.targetRootURL, backupRootURL) {
                 throw TransferError.pathOverlap("备份盘不能与主目标盘相同，也不能互相包含。")
             }
-            if pathsShareVolume(project.targetRootURL, backupRootURL) {
+            if PathSafety.pathsShareVolume(project.targetRootURL, backupRootURL) {
                 throw TransferError.pathOverlap("备份盘不能与主目标盘位于同一个磁盘卷上，请选择独立备份盘。")
             }
-            if pathsOverlap(project.sourceRootURL, backupRootURL)
-                || pathsShareVolume(sourceVolumeURL, backupRootURL)
-                || pathsShareVolume(project.sourceRootURL, backupRootURL) {
+            if PathSafety.pathsOverlap(project.sourceRootURL, backupRootURL)
+                || PathSafety.pathsShareVolume(sourceVolumeURL, backupRootURL)
+                || PathSafety.pathsShareVolume(project.sourceRootURL, backupRootURL) {
                 throw TransferError.pathOverlap("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
             }
         }
     }
 
     private func validateDestinationSeparation(summary: ImportSelectionSummary) throws {
-        if pathsOverlap(summary.sourceRootURL, summary.targetURL) {
+        if PathSafety.pathsOverlap(summary.sourceRootURL, summary.targetURL) {
             throw TransferError.pathOverlap("主目标盘不能与源素材目录相同、包含源素材目录，或位于源素材目录内部。")
         }
-        if pathsShareVolume(summary.sourceVolume.url, summary.targetURL)
-            || pathsShareVolume(summary.sourceRootURL, summary.targetURL) {
+        if PathSafety.pathsShareVolume(summary.sourceVolume.url, summary.targetURL)
+            || PathSafety.pathsShareVolume(summary.sourceRootURL, summary.targetURL) {
             throw TransferError.pathOverlap("主目标盘不能位于源设备同一个磁盘卷上，请选择独立工作盘，避免把素材写回源卡。")
         }
 
         guard let backupURL = summary.backupURL else { return }
-        if pathsOverlap(summary.sourceRootURL, backupURL) {
+        if PathSafety.pathsOverlap(summary.sourceRootURL, backupURL) {
             throw TransferError.pathOverlap("备份盘不能与源素材目录相同、包含源素材目录，或位于源素材目录内部。")
         }
-        if pathsShareVolume(summary.sourceVolume.url, backupURL)
-            || pathsShareVolume(summary.sourceRootURL, backupURL) {
+        if PathSafety.pathsShareVolume(summary.sourceVolume.url, backupURL)
+            || PathSafety.pathsShareVolume(summary.sourceRootURL, backupURL) {
             throw TransferError.pathOverlap("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
         }
 
-        if pathsOverlap(summary.targetURL, backupURL) {
+        if PathSafety.pathsOverlap(summary.targetURL, backupURL) {
             throw TransferError.pathOverlap("主目标盘与备份盘不能相同，也不能互相包含。")
         }
-        if pathsShareVolume(summary.targetURL, backupURL) {
+        if PathSafety.pathsShareVolume(summary.targetURL, backupURL) {
             throw TransferError.pathOverlap("主目标盘与备份盘不能位于同一个磁盘卷上，请选择独立备份盘。")
         }
     }
@@ -1327,37 +1338,6 @@ struct TransferService {
             return true
         }
         return false
-    }
-
-    private func pathsOverlap(_ lhs: URL, _ rhs: URL) -> Bool {
-        let lhsPath = normalizedDirectoryPath(lhs)
-        let rhsPath = normalizedDirectoryPath(rhs)
-        if lhsPath == rhsPath {
-            return true
-        }
-        return isPath(lhsPath, inside: rhsPath) || isPath(rhsPath, inside: lhsPath)
-    }
-
-    private func pathsShareVolume(_ lhs: URL, _ rhs: URL) -> Bool {
-        guard let lhsRoot = DiskCapacityResolver.volumeRootPath(for: lhs),
-              let rhsRoot = DiskCapacityResolver.volumeRootPath(for: rhs) else {
-            return false
-        }
-        return normalizedDirectoryPath(URL(fileURLWithPath: lhsRoot, isDirectory: true))
-            == normalizedDirectoryPath(URL(fileURLWithPath: rhsRoot, isDirectory: true))
-    }
-
-    private func isPath(_ childPath: String, inside parentPath: String) -> Bool {
-        guard parentPath != "/" else { return childPath != "/" }
-        return childPath.hasPrefix(parentPath + "/")
-    }
-
-    private func normalizedDirectoryPath(_ url: URL) -> String {
-        var path = url.standardizedFileURL.path
-        while path.count > 1 && path.hasSuffix("/") {
-            path.removeLast()
-        }
-        return path
     }
 
     private func copy(
@@ -1825,10 +1805,12 @@ struct TransferService {
         fileRecords: [FileVerificationRecord],
         failedFiles: [String],
         interruptionReason: String?,
-        verificationSummary: String
+        verificationSummary: String,
+        language: AppLanguage
     ) -> ReportDocumentWriteResult {
+        let isEnglish = language == .english
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
         let byteFormatter = ByteCountFormatter()
@@ -1839,12 +1821,23 @@ struct TransferService {
             "\(index + 1). \(item.relativePath) | \(byteFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
         }
 
-        let failedSection = makeNumberedSection(failedFiles, emptyText: "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: "无跳过文件")
+        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
+        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
+        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
+        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
         let recordLines = fileRecords.enumerated().map { index, record in
-            """
+            if isEnglish {
+                return """
+                \(index + 1). \(record.relativePath)
+                   Status: \(record.status)
+                   Size: \(byteFormatter.string(fromByteCount: record.size))
+                   Source SHA-256: \(record.sourceChecksum ?? "-")
+                   Primary SHA-256: \(record.targetChecksum ?? "-")
+                   Backup SHA-256: \(record.backupChecksum ?? "-")
+                   Note: \(record.message)
+                """
+            }
+            return """
             \(index + 1). \(record.relativePath)
                状态: \(record.status)
                大小: \(byteFormatter.string(fromByteCount: record.size))
@@ -1855,7 +1848,65 @@ struct TransferService {
             """
         }.joined(separator: "\n")
 
-        let content = """
+        let content: String
+        if isEnglish {
+            content = """
+            Airwang DIT for Mac Copy Report
+            ========================================
+
+            [Task Summary]
+            Copy ID: \(taskFolder)
+            Started At: \(formatter.string(from: startedAt))
+            Finished At: \(formatter.string(from: finishedAt))
+            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+            Import Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+            Bundle ID: \(AppStorageScope.bundleIdentifier)
+            Local Storage: \(AppStorageScope.displayName)
+            Verification Mode: \(summary.verificationMode)
+            Naming Rule: \(summary.namingRule)
+            Verification Summary: \(verificationSummary)
+            Safety Event: \(interruptionReason ?? "None")
+
+            [Paths]
+            Source Device Name: \(summary.sourceVolume.name)
+            Source Device Path: \(summary.sourceVolume.url.path)
+            Actual Scan Folder: \(summary.sourceRootURL.path)
+            Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
+            Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
+            Target Capacity: \(capacityLines(for: destinations, formatter: byteFormatter))
+
+            [Media Stats]
+            File Count: \(summary.selectedItems.count)
+            Total Size: \(byteFormatter.string(fromByteCount: summary.totalSize))
+            Copy Failures: \(copyFailedFiles.count)
+            Verification Failures: \(verificationFailedFiles.count)
+            Skipped Verification: \(skippedFiles.count)
+
+            [Media List]
+            \(fileLines.joined(separator: "\n"))
+
+            [Copy Failures]
+            \(copyFailedSection)
+
+            [Verification Failures]
+            \(verificationFailedSection)
+
+            [Skipped Files]
+            \(skippedSection)
+
+            [Verification Details]
+            \(recordLines.isEmpty ? "No verification details" : recordLines)
+
+            [Issue Files]
+            \(failedSection)
+
+            [Handoff Confirmation]
+            DIT/Media Manager Signature:
+            Receiver Signature:
+            Notes:
+            """
+        } else {
+            content = """
         Airwang DIT for Mac 拷贝报告
         ========================================
 
@@ -1910,6 +1961,7 @@ struct TransferService {
         接收方签名:
         备注:
         """
+        }
 
         return writeReportContent(
             content,
@@ -1936,10 +1988,12 @@ struct TransferService {
         fileRecords: [FileVerificationRecord],
         failedFiles: [String],
         interruptionReason: String?,
-        verificationSummary: String
+        verificationSummary: String,
+        language: AppLanguage
     ) -> ReportDocumentWriteResult {
+        let isEnglish = language == .english
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
         let byteFormatter = ByteCountFormatter()
@@ -1949,12 +2003,23 @@ struct TransferService {
         let fileLines = project.selectedItems.enumerated().map { index, item in
             "\(index + 1). \(item.relativePath) | \(byteFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
         }
-        let failedSection = makeNumberedSection(failedFiles, emptyText: "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: "无跳过文件")
+        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
+        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
+        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
+        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
         let recordLines = fileRecords.enumerated().map { index, record in
-            """
+            if isEnglish {
+                return """
+                \(index + 1). \(record.relativePath)
+                   Status: \(record.status)
+                   Size: \(byteFormatter.string(fromByteCount: record.size))
+                   Source Checksum: \(record.sourceChecksum ?? "-")
+                   Primary Checksum: \(record.targetChecksum ?? "-")
+                   Backup Checksum: \(record.backupChecksum ?? "-")
+                   Note: \(record.message)
+                """
+            }
+            return """
             \(index + 1). \(record.relativePath)
                状态: \(record.status)
                大小: \(byteFormatter.string(fromByteCount: record.size))
@@ -1968,12 +2033,75 @@ struct TransferService {
         let routeLine: String
         switch stage {
         case .primary:
-            routeLine = "本阶段路径: 原始源地址 -> 主目标地址"
+            routeLine = isEnglish ? "Stage Route: original source path -> primary target path" : "本阶段路径: 原始源地址 -> 主目标地址"
         case .backup:
-            routeLine = "本阶段路径: 主目标地址 -> 备份地址（备份来源为主目标盘）"
+            routeLine = isEnglish ? "Stage Route: primary target path -> backup path. Backup reads from the primary target." : "本阶段路径: 主目标地址 -> 备份地址（备份来源为主目标盘）"
         }
 
-        let content = """
+        let content: String
+        if isEnglish {
+            content = """
+            \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
+            ========================================
+
+            [Task Summary]
+            Copy ID: \(project.taskFolderName)
+            Project Name: \(project.name)
+            Report Type: \(stage == .primary ? "Primary report" : "Backup report")
+            Started At: \(formatter.string(from: startedAt))
+            Finished At: \(formatter.string(from: finishedAt))
+            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+            Stage Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+            Bundle ID: \(AppStorageScope.bundleIdentifier)
+            Local Storage: \(AppStorageScope.displayName)
+            Verification Mode: \(project.verificationMode.title)
+            Verification Risk Note: \(project.verificationMode.reportWarning)
+            Verification Summary: \(verificationSummary)
+            Safety Event: \(interruptionReason ?? "None")
+
+            [Paths]
+            \(routeLine)
+            Original Source Name: \(project.sourceName)
+            Original Source Path: \(project.sourceVolumePath)
+            Original Scan Folder: \(project.sourceRootPath)
+            Stage Read Path: \(sourceBaseURL.path)
+            Primary Target Path: \(project.primaryImportURL.path)
+            Backup Path: \(project.backupImportURL?.path ?? "Disabled")
+            Stage Write Path: \(destinationFolderURL.path)
+            Target Capacity: \(capacityLines(for: [destination], formatter: byteFormatter))
+
+            [Media Stats]
+            File Count: \(project.selectedItems.count)
+            Total Size: \(byteFormatter.string(fromByteCount: project.totalBytes))
+            Copy Failures: \(copyFailedFiles.count)
+            Verification Failures: \(verificationFailedFiles.count)
+            Skipped Verification: \(skippedFiles.count)
+
+            [Media List]
+            \(fileLines.joined(separator: "\n"))
+
+            [Copy Failures]
+            \(copyFailedSection)
+
+            [Verification Failures]
+            \(verificationFailedSection)
+
+            [Skipped Files]
+            \(skippedSection)
+
+            [Verification Details]
+            \(recordLines.isEmpty ? "No verification details" : recordLines)
+
+            [Issue Files]
+            \(failedSection)
+
+            [Handoff Confirmation]
+            DIT/Media Manager Signature:
+            Receiver Signature:
+            Notes:
+            """
+        } else {
+            content = """
         \(stage.reportTitle)
         ========================================
 
@@ -2033,6 +2161,7 @@ struct TransferService {
         接收方签名:
         备注:
         """
+        }
 
         return writeReportContent(
             content,

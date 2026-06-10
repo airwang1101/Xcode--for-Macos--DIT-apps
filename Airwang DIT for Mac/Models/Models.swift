@@ -95,6 +95,185 @@ enum AppTheme: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum AppLanguage: String, CaseIterable, Identifiable, Codable {
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chinese: "中文"
+        case .english: "English"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .chinese: "中"
+        case .english: "EN"
+        }
+    }
+
+    var localeIdentifier: String {
+        switch self {
+        case .chinese: "zh_CN"
+        case .english: "en_US"
+        }
+    }
+}
+
+enum AppLocalization {
+    static func text(_ key: String, language: AppLanguage) -> String {
+        guard language == .english else { return key }
+        return english[key] ?? key
+    }
+
+    private static let english: [String: String] = [
+        "主题": "Theme",
+        "白天": "Day",
+        "夜晚": "Night",
+        "语言": "Language",
+        "中文": "Chinese",
+        "界面设置": "Interface Settings",
+        "自动执行": "Auto Start",
+        "新建任务默认 5 分钟后自动执行": "Auto-start new queued projects after 5 minutes",
+        "关闭后，新建项目只加入队列，需要手动执行。": "When off, new projects only enter the queue and require manual start.",
+        "拷贝": "Copy",
+        "仪表盘": "Dashboard",
+        "备份": "Backup",
+        "多项目拷贝队列、主盘校验、串行备份与可追溯报告": "Multi-project copy queue, primary verification, serial backup, and traceable reports",
+        "选择主目标盘": "Choose Primary Target",
+        "刷新设备": "Refresh Devices",
+        "执行队列": "Run Queue",
+        "执行任务队列": "Run Task Queue",
+        "拷贝项目创建": "Copy Project Setup",
+        "执行方式": "Run Mode",
+        "主目标盘": "Primary Target",
+        "备份盘": "Backup Drive",
+        "项目数": "Projects",
+        "运行中": "Running",
+        "默认校验": "Default Verify",
+        "已检测设备": "Detected Devices",
+        "任务队列": "Task Queue",
+        "任务日志": "Task Log",
+        "备份工作台": "Backup Workspace",
+        "暂无备份项目": "No Backup Projects",
+        "暂无任务": "No Tasks",
+        "队列为空": "Queue Empty",
+        "还没有拷贝项目": "No Copy Projects Yet",
+        "暂未发现可导入设备": "No Importable Devices Detected",
+        "当前 App 存储暂无任务日志": "No task logs in app storage",
+        "点击选择": "Choose",
+        "开始导入": "Start Import",
+        "开始": "Start",
+        "完成": "Finished",
+        "成功": "Success",
+        "异常": "Issue",
+        "在访达中打开": "Reveal in Finder",
+        "查看拷贝报告": "Open Copy Report",
+        "查看备份报告": "Open Backup Report",
+        "打开主盘": "Open Primary",
+        "主盘报告": "Primary Report",
+        "备份报告": "Backup Report",
+        "取消": "Cancel",
+        "重试": "Retry",
+        "改名": "Rename",
+        "删除": "Delete",
+        "更换备份": "Change Backup",
+        "添加备份": "Add Backup",
+        "取消备份": "Remove Backup",
+        "更换备份盘": "Change Backup Drive",
+        "添加备份盘": "Add Backup Drive",
+        "取消自动执行": "Cancel Auto Start",
+        "跳过校验": "Skip Verify",
+        "排队中": "Queued",
+        "执行中": "Running",
+        "取消中": "Cancelling",
+        "已完成": "Completed",
+        "已阻塞": "Blocked",
+        "已取消": "Cancelled",
+        "仅主盘": "Primary Only",
+        "含备份": "With Backup",
+        "未启用": "Disabled",
+        "未设置": "Not Set",
+        "尚未设置": "Not Set",
+        "未配置备份盘": "No Backup Drive",
+        "等待主盘完成": "Waiting for primary",
+        "等待备份完成": "Waiting for backup",
+        "外部设备": "External Device",
+        "可用卷": "Available Volume",
+        "容量暂不可读": "Capacity unavailable",
+        "存储": "Storage",
+        "源设备": "Source Device",
+        "目标": "Target",
+        "导入状态": "Import Status",
+        "进行中": "Running",
+        "已拷贝": "Copied",
+        "已校验": "Verified",
+        "实时速度": "Speed",
+        "预估剩余": "ETA",
+        "导入进度": "Import Progress",
+        "校验进度": "Verify Progress",
+        "当前文件": "Current File",
+        "安全事件": "Safety Event",
+        "校验报告": "Verification Report",
+        "取消任务": "Cancel Task",
+        "打开目标": "Open Target",
+        "查看报告": "Open Report",
+        "重试异常": "Retry Failed Items",
+        "新存储设备已接入": "New Storage Device Connected",
+        "模式": "Mode",
+        "退出": "Close",
+        "自由浏览": "Free Browse",
+        "浏览方式": "Browse Mode",
+        "名称": "Name",
+        "类型": "Type",
+        "大小": "Size",
+        "创建时间": "Created",
+        "文件夹": "Folder",
+        "扫描根目录": "Scan Root",
+        "根目录文件": "Root Files",
+        "预览详情": "Preview Details",
+        "没有可预览的素材": "No Preview Available",
+        "选择素材": "Select Media",
+        "开始拷贝+校验": "Start Copy + Verify",
+        "正在扫描素材...": "Scanning media...",
+        "全选": "Select All",
+        "清空选择": "Clear Selection",
+        "整组已选": "Group Selected",
+        "点击圆圈选择整组": "Click the circle to select the group",
+        "收起": "Collapse",
+        "从导入中移除": "Remove from Import",
+        "加入导入选择": "Add to Import",
+        "选择源文件夹": "Choose Source Folder",
+        "上一级": "Up",
+        "扫描类型": "Scan Type",
+        "进入并设为当前": "Enter and Set Current",
+        "当前准备扫描": "Ready to Scan",
+        "只扫描这个目录": "Scan This Folder Only",
+        "扫描此文件夹": "Scan This Folder",
+        "导入摘要": "Import Summary",
+        "已扫描": "Scanned",
+        "待扫描": "Waiting to Scan",
+        "项目名称": "Project Name",
+        "当前名称": "Current Name",
+        "校验方式": "Verification Mode",
+        "创建项目并加入队列": "Create Project and Queue",
+        "返回": "Back",
+        "位置": "Location",
+        "进入": "Enter",
+        "已选目录": "Selected Folder",
+        "请选择一个目录": "Choose a folder",
+        "设为主目标盘": "Set as Primary Target",
+        "设为备份盘": "Set as Backup Drive",
+        "数据正在保存中，请稍后再试": "Saving data, please try again shortly",
+        "当前没有排队中的项目，请先创建拷贝任务": "No queued projects. Create a copy task first",
+        "当前无法执行队列": "Queue cannot run right now",
+        "开始执行排队中的拷贝项目": "Start running queued copy projects"
+    ]
+}
+
 enum ScanFilter: String, CaseIterable, Identifiable {
     case video
     case photo
@@ -197,20 +376,32 @@ enum AppStorageScope {
 
 struct AppUISettings: Codable {
     var theme: AppTheme
+    var language: AppLanguage
+    var autoStartQueuedProjects: Bool
 
-    static let `default` = AppUISettings(theme: .day)
+    static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: true)
 
     enum CodingKeys: String, CodingKey {
         case theme
+        case language
+        case autoStartQueuedProjects
     }
 
-    init(theme: AppTheme) {
+    init(
+        theme: AppTheme,
+        language: AppLanguage = .chinese,
+        autoStartQueuedProjects: Bool = true
+    ) {
         self.theme = theme
+        self.language = language
+        self.autoStartQueuedProjects = autoStartQueuedProjects
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         theme = try container.decodeIfPresent(AppTheme.self, forKey: .theme) ?? .day
+        language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .chinese
+        autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? true
     }
 }
 
@@ -303,20 +494,32 @@ enum DiskCapacityResolver {
     }
 
     static func volumeRootPath(for url: URL) -> String? {
-        let candidatePaths = [url.standardizedFileURL.path]
+        let standardized = url.standardizedFileURL
+
+        // 存在的路径直接询问文件系统所属卷:自动处理 /var → /private/var、
+        // APFS firmlink(/Users 实际在 /System/Volumes/Data)等情况。
+        // 旧实现只做挂载点前缀匹配且对 "/" 不做前缀兜底,导致系统盘上的
+        // 普通路径(/Users/...、/var/...)一律返回 nil →
+        // pathsShareVolume(内置盘A, 内置盘B) 恒为 false,
+        // "目标盘与备份盘共卷"预检在内置盘场景从不命中。
+        if let volumeURL = try? standardized.resourceValues(forKeys: [.volumeURLKey]).volume {
+            return volumeURL.standardizedFileURL.path
+        }
+
+        // 路径不存在(典型:设备已拔出)→ 退回挂载点前缀匹配。
+        // 此时不把 "/" 当兜底:未挂载的 /Volumes/XXX 不属于根卷。
+        let candidatePath = standardized.path
         let mountedVolumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? []
-        let roots = (mountedVolumes + [URL(fileURLWithPath: "/", isDirectory: true)])
+        let roots = mountedVolumes
             .map { $0.standardizedFileURL.path }
             .sorted { $0.count > $1.count }
 
         for root in roots {
-            for path in candidatePaths {
-                if path == root {
-                    return root
-                }
-                if root != "/" && path.hasPrefix(root + "/") {
-                    return root
-                }
+            if candidatePath == root {
+                return root
+            }
+            if root != "/" && candidatePath.hasPrefix(root + "/") {
+                return root
             }
         }
 
@@ -781,6 +984,8 @@ struct CopyProject: Codable, Identifiable {
     var primaryReportID: UUID?
     var backupReportID: UUID?
     var skipVerificationConfirmations: Int
+    var autoStartEnabled: Bool
+    var autoStartDeadline: Date?
     var errorMessage: String?
 
     enum CodingKeys: String, CodingKey {
@@ -806,6 +1011,8 @@ struct CopyProject: Codable, Identifiable {
         case primaryReportID
         case backupReportID
         case skipVerificationConfirmations
+        case autoStartEnabled
+        case autoStartDeadline
         case errorMessage
     }
 
@@ -824,7 +1031,9 @@ struct CopyProject: Codable, Identifiable {
         totalBytes: Int64,
         verificationMode: VerificationMode,
         status: CopyProjectStatus = .queued,
-        orderIndex: Int
+        orderIndex: Int,
+        autoStartEnabled: Bool = false,
+        autoStartDeadline: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -848,6 +1057,8 @@ struct CopyProject: Codable, Identifiable {
         primaryReportID = nil
         backupReportID = nil
         skipVerificationConfirmations = 0
+        self.autoStartEnabled = autoStartEnabled
+        self.autoStartDeadline = autoStartDeadline
         errorMessage = nil
     }
 
@@ -905,6 +1116,8 @@ struct CopyProject: Codable, Identifiable {
         primaryReportID = try container.decodeIfPresent(UUID.self, forKey: .primaryReportID)
         backupReportID = try container.decodeIfPresent(UUID.self, forKey: .backupReportID)
         skipVerificationConfirmations = try container.decodeIfPresent(Int.self, forKey: .skipVerificationConfirmations) ?? 0
+        autoStartEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoStartEnabled) ?? false
+        autoStartDeadline = try container.decodeIfPresent(Date.self, forKey: .autoStartDeadline)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
     }
 
@@ -930,6 +1143,15 @@ struct CopyProject: Codable, Identifiable {
 
     var hasBackup: Bool {
         backupRootPath != nil
+    }
+
+    func isAutoStartReady(at now: Date) -> Bool {
+        guard status == .queued,
+              autoStartEnabled,
+              let autoStartDeadline else {
+            return false
+        }
+        return now >= autoStartDeadline
     }
 }
 

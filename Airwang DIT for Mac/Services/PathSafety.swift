@@ -153,6 +153,40 @@ enum PathSafety {
         }
     }
 
+    // MARK: - 卷与目录拓扑
+
+    /// 两个目录相同或互相包含。
+    ///
+    /// 这是"源/目标/备份盘不允许嵌套"规则的唯一实现:AppViewModel 在创建项目时
+    /// 用它做预检,TransferService 在执行阶段用它做硬校验。此前两边各持一份
+    /// 私有副本且都不做 NFC 规范化,与 `isContained` 的判断存在 NFD/NFC 分叉
+    /// 风险(TEST_REPORT #113);现在统一走 canonical comparison。
+    static func pathsOverlap(_ lhs: URL, _ rhs: URL) -> Bool {
+        let lhsPath = canonicalComparisonPath(normalizedPath(lhs))
+        let rhsPath = canonicalComparisonPath(normalizedPath(rhs))
+        if lhsPath == rhsPath {
+            return true
+        }
+        return isPath(lhsPath, inside: rhsPath) || isPath(rhsPath, inside: lhsPath)
+    }
+
+    /// 两个 URL 是否落在同一个物理卷上(按卷根路径比对)。
+    /// 卷根解析失败(典型场景:设备已拔出)时返回 `false`,
+    /// 调用方应将"无法判断"视为"不共卷"并依赖后续执行期校验兜底。
+    static func pathsShareVolume(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let lhsRoot = DiskCapacityResolver.volumeRootPath(for: lhs),
+              let rhsRoot = DiskCapacityResolver.volumeRootPath(for: rhs) else {
+            return false
+        }
+        return canonicalComparisonPath(normalizedPath(lhsRoot))
+            == canonicalComparisonPath(normalizedPath(rhsRoot))
+    }
+
+    private static func isPath(_ childPath: String, inside parentPath: String) -> Bool {
+        guard parentPath != "/" else { return childPath != "/" }
+        return childPath.hasPrefix(parentPath + "/")
+    }
+
     static func normalizedPath(_ url: URL) -> String {
         normalizedPath(url.standardizedFileURL.path)
     }

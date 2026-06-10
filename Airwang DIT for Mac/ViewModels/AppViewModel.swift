@@ -5,13 +5,15 @@ import SwiftUI
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var preferences: AppPreferences
-    @Published var selectedTheme: AppTheme
+    @Published var selectedTheme: AppTheme = .day
+    @Published var selectedLanguage: AppLanguage = .chinese
+    @Published var autoStartQueuedProjects = true
     @Published var selectedSection: MainSection = .copy
     @Published var copyProjects: [CopyProject] = []
     @Published var executionMode: ProjectExecutionMode = .sequential {
         didSet {
-            if oldValue != executionMode {
-                scheduleQueuedProjects()
+            if oldValue != executionMode, !activeProjectIDs.isEmpty {
+                continueQueueAfterStateChange()
             }
         }
     }
@@ -55,11 +57,13 @@ final class AppViewModel: ObservableObject {
     private let scanner = MediaScanner()
     private let transferService = TransferService()
     private let interruptionToken = ImportInterruptionToken()
+    private static let projectAutoStartDelay: TimeInterval = 300
     private let reportURL: URL
     private let projectURL: URL
     private var importTask: Task<Void, Never>?
     private var projectTasks: [UUID: Task<Void, Never>] = [:]
     private var projectTokens: [UUID: ImportInterruptionToken] = [:]
+    private var autoStartTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var folderChildrenTask: Task<Void, Never>?
     private var sourceFolderChildrenTask: Task<Void, Never>?
@@ -73,10 +77,14 @@ final class AppViewModel: ObservableObject {
     private var relatedIDsByItemID: [String: Set<String>] = [:]
     private var projectsNeedSave = false
     private var reportsNeedSave = false
+    private var manualQueueRunActive = false
 
     init() {
         preferences = settingsStore.load()
-        selectedTheme = settingsStore.loadUISettings().theme
+        let uiSettings = settingsStore.loadUISettings()
+        selectedTheme = uiSettings.theme
+        selectedLanguage = uiSettings.language
+        autoStartQueuedProjects = uiSettings.autoStartQueuedProjects
         reportURL = Self.makeReportURL()
         projectURL = Self.makeProjectURL()
         let reportLoad = Self.loadReports(from: reportURL)
@@ -104,10 +112,23 @@ final class AppViewModel: ObservableObject {
         if storedProjects.contains(where: { $0.status == .running || $0.status == .cancelling }) {
             saveProjects()
         }
+        scheduleNextAutoStartCheck()
     }
 
     var isConfigured: Bool {
         preferences.targetURL != nil
+    }
+
+    func localized(_ key: String) -> String {
+        AppLocalization.text(key, language: selectedLanguage)
+    }
+
+    func localizedStatus(_ status: CopyProjectStatus) -> String {
+        localized(status.title)
+    }
+
+    func localizedThemeTitle(_ theme: AppTheme) -> String {
+        localized(theme.title)
     }
 
     var selectedItems: [MediaItem] {
@@ -190,27 +211,27 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        if pathsOverlap(summary.sourceRootURL, summary.targetURL) {
+        if PathSafety.pathsOverlap(summary.sourceRootURL, summary.targetURL) {
             warnings.append("主目标盘不能与源素材目录相同、包含源素材目录，或位于源素材目录内部。")
         }
-        if pathsShareVolume(summary.sourceVolume.url, summary.targetURL)
-            || pathsShareVolume(summary.sourceRootURL, summary.targetURL) {
+        if PathSafety.pathsShareVolume(summary.sourceVolume.url, summary.targetURL)
+            || PathSafety.pathsShareVolume(summary.sourceRootURL, summary.targetURL) {
             warnings.append("主目标盘不能位于源设备同一个磁盘卷上，请选择独立工作盘。")
         }
 
         if let backupURL = summary.backupURL {
-            if pathsOverlap(summary.sourceRootURL, backupURL) {
+            if PathSafety.pathsOverlap(summary.sourceRootURL, backupURL) {
                 warnings.append("备份盘不能与源素材目录相同、包含源素材目录，或位于源素材目录内部。")
             }
-            if pathsShareVolume(summary.sourceVolume.url, backupURL)
-                || pathsShareVolume(summary.sourceRootURL, backupURL) {
+            if PathSafety.pathsShareVolume(summary.sourceVolume.url, backupURL)
+                || PathSafety.pathsShareVolume(summary.sourceRootURL, backupURL) {
                 warnings.append("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
             }
 
-            if pathsOverlap(summary.targetURL, backupURL) {
+            if PathSafety.pathsOverlap(summary.targetURL, backupURL) {
                 warnings.append("主目标盘与备份盘不能相同，也不能互相包含。")
             }
-            if pathsShareVolume(summary.targetURL, backupURL) {
+            if PathSafety.pathsShareVolume(summary.targetURL, backupURL) {
                 warnings.append("主目标盘与备份盘不能位于同一个磁盘卷上，请选择独立备份盘。")
             }
         }
@@ -224,6 +245,19 @@ final class AppViewModel: ObservableObject {
 
     var canStartQueue: Bool {
         orderedProjects.contains { $0.status == .queued } && !hasUnsavedChanges
+    }
+
+    /// 解释为什么"执行任务队列"按钮被禁用,给 SwiftUI `.help()` tooltip 用。
+    /// 见 TEST_REPORT #70 — 之前用户点禁用按钮没有任何反馈。
+    var startQueueDisabledHelp: String? {
+        if canStartQueue { return nil }
+        if hasUnsavedChanges {
+            return localized("数据正在保存中，请稍后再试")
+        }
+        if !orderedProjects.contains(where: { $0.status == .queued }) {
+            return localized("当前没有排队中的项目，请先创建拷贝任务")
+        }
+        return localized("当前无法执行队列")
     }
 
     var hasActiveTransfers: Bool {
@@ -449,8 +483,28 @@ final class AppViewModel: ObservableObject {
 
     func setTheme(_ theme: AppTheme) {
         selectedTheme = theme
+        saveUISettings()
+    }
+
+    func setLanguage(_ language: AppLanguage) {
+        selectedLanguage = language
+        saveUISettings()
+    }
+
+    func setAutoStartQueuedProjects(_ enabled: Bool) {
+        autoStartQueuedProjects = enabled
+        saveUISettings()
+    }
+
+    private func saveUISettings() {
         do {
-            try settingsStore.saveUISettings(AppUISettings(theme: theme))
+            try settingsStore.saveUISettings(
+                AppUISettings(
+                    theme: selectedTheme,
+                    language: selectedLanguage,
+                    autoStartQueuedProjects: autoStartQueuedProjects
+                )
+            )
         } catch {
             importError = "保存界面设置失败：\(error.localizedDescription)"
         }
@@ -652,6 +706,9 @@ final class AppViewModel: ObservableObject {
             rawName = cleaned.isEmpty ? automaticProjectName(sourceName: summary.sourceVolume.name, date: createdAt) : cleaned
         }
         let taskFolderName = FileNameSanitizer.safeComponent(rawName, fallback: automaticProjectName(sourceName: summary.sourceVolume.name, date: createdAt))
+        let autoStartDeadline = autoStartQueuedProjects
+            ? createdAt.addingTimeInterval(Self.projectAutoStartDelay)
+            : nil
         let project = CopyProject(
             name: rawName,
             taskFolderName: taskFolderName,
@@ -665,7 +722,9 @@ final class AppViewModel: ObservableObject {
             selectedItems: summary.selectedItems.map(ProjectMediaItem.init(mediaItem:)),
             totalBytes: summary.totalSize,
             verificationMode: selectedVerificationMode,
-            orderIndex: nextProjectOrderIndex()
+            orderIndex: nextProjectOrderIndex(),
+            autoStartEnabled: autoStartQueuedProjects,
+            autoStartDeadline: autoStartDeadline
         )
         let previousProjects = copyProjects
         copyProjects.append(project)
@@ -678,7 +737,12 @@ final class AppViewModel: ObservableObject {
         retrySourceItems = summary.selectedItems
         closeImportSheet()
         selectedSection = .copy
-        importError = "已创建项目“\(project.name)”并加入任务队列。需要手动点击“执行任务队列”才会开始写盘。"
+        scheduleNextAutoStartCheck()
+        if let autoStartDeadline {
+            importError = "已创建项目“\(project.name)”并加入任务队列。5 分钟内可取消自动执行，超时会自动开始写盘。预计启动：\(shortTimeText(autoStartDeadline))。"
+        } else {
+            importError = "已创建项目“\(project.name)”并加入任务队列。自动执行已在设置中关闭，需要手动点击“执行任务队列”才会开始写盘。"
+        }
     }
 
     func startQueue() {
@@ -690,7 +754,10 @@ final class AppViewModel: ObservableObject {
             importError = "当前没有排队中的项目。"
             return
         }
+        manualQueueRunActive = true
+        clearAutoStartForQueuedProjects()
         scheduleQueuedProjects()
+        scheduleNextAutoStartCheck()
     }
 
     func retrySavingPendingChanges() {
@@ -801,9 +868,29 @@ final class AppViewModel: ObservableObject {
             )
             item.primaryReportID = nil
             item.backupReportID = nil
+            item.autoStartEnabled = false
+            item.autoStartDeadline = nil
         }
+        scheduleNextAutoStartCheck()
         selectedSection = .copy
         importError = "已将项目“\(project.name)”重新加入任务队列。需要手动点击“执行任务队列”才会开始写盘。"
+    }
+
+    func cancelAutoStart(for project: CopyProject) {
+        guard project.status == .queued else {
+            importError = "项目“\(project.name)”已经不在排队状态，无法取消自动执行。"
+            return
+        }
+        guard project.autoStartEnabled || project.autoStartDeadline != nil else {
+            importError = "项目“\(project.name)”没有启用自动执行。"
+            return
+        }
+        updateProject(project.id) { item in
+            item.autoStartEnabled = false
+            item.autoStartDeadline = nil
+        }
+        scheduleNextAutoStartCheck()
+        importError = "已取消项目“\(project.name)”的 5 分钟自动执行。仍可手动执行任务队列。"
     }
 
     func moveProjectUp(_ project: CopyProject) {
@@ -926,6 +1013,9 @@ final class AppViewModel: ObservableObject {
         let verificationMode = VerificationMode.allCases.first {
             $0.title == latestReport.verificationMode || $0.shortTitle == latestReport.verificationMode
         } ?? selectedVerificationMode
+        let autoStartDeadline = autoStartQueuedProjects
+            ? createdAt.addingTimeInterval(Self.projectAutoStartDelay)
+            : nil
 
         let project = CopyProject(
             name: retryName,
@@ -940,14 +1030,21 @@ final class AppViewModel: ObservableObject {
             selectedItems: retryItems.map(ProjectMediaItem.init(mediaItem:)),
             totalBytes: retryItems.reduce(0) { $0 + $1.size },
             verificationMode: verificationMode,
-            orderIndex: nextProjectOrderIndex()
+            orderIndex: nextProjectOrderIndex(),
+            autoStartEnabled: autoStartQueuedProjects,
+            autoStartDeadline: autoStartDeadline
         )
 
         copyProjects.append(project)
         normalizeProjectOrder()
         saveProjects()
+        scheduleNextAutoStartCheck()
         selectedSection = .copy
-        importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目，需要手动执行队列才会开始。"
+        if let autoStartDeadline {
+            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目。5 分钟内可取消自动执行，预计启动：\(shortTimeText(autoStartDeadline))。"
+        } else {
+            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目，需要手动执行队列才会开始。"
+        }
     }
 
     private func startImport(with summary: ImportSelectionSummary) {
@@ -976,7 +1073,11 @@ final class AppViewModel: ObservableObject {
         importTask = Task { [weak self, summary, interruptionToken, transferService] in
             guard let self else { return }
             do {
-                let result = try await transferService.runImport(summary: summary, interruptionToken: interruptionToken) { [weak self] state in
+                let result = try await transferService.runImport(
+                    summary: summary,
+                    interruptionToken: interruptionToken,
+                    language: self.selectedLanguage
+                ) { [weak self] state in
                     await MainActor.run { [weak self] in
                         self?.transferState = state
                     }
@@ -998,7 +1099,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func scheduleQueuedProjects() {
+    private func scheduleQueuedProjects(automaticOnlyAt now: Date? = nil) {
         guard !hasUnsavedChanges else {
             updateGlobalImportFlag()
             return
@@ -1009,12 +1110,23 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let queued = orderedProjects.filter { $0.status == .queued }
+        let queued = orderedProjects.filter { project in
+            guard project.status == .queued else { return false }
+            if let now {
+                return project.isAutoStartReady(at: now)
+            }
+            return true
+        }
         var launched = 0
         for project in queued where launched < availableSlots {
             guard canRunAlongsideActiveProjects(project) else { continue }
             launchProject(project)
             launched += 1
+        }
+        if manualQueueRunActive,
+           activeProjectIDs.isEmpty,
+           !orderedProjects.contains(where: { $0.status == .queued }) {
+            manualQueueRunActive = false
         }
         updateGlobalImportFlag()
     }
@@ -1028,6 +1140,8 @@ final class AppViewModel: ObservableObject {
         updateProject(project.id) { item in
             item.status = .running
             item.errorMessage = nil
+            item.autoStartEnabled = false
+            item.autoStartDeadline = nil
             item.updatedAt = Date()
         }
 
@@ -1044,7 +1158,8 @@ final class AppViewModel: ObservableObject {
         do {
             let primaryResult = try await transferService.runPrimaryStage(
                 project: primaryProject,
-                interruptionToken: token
+                interruptionToken: token,
+                language: selectedLanguage
             ) { [weak self] state in
                 await MainActor.run { [weak self] in
                     self?.applyProgress(state, to: projectID, stage: .primary)
@@ -1100,7 +1215,8 @@ final class AppViewModel: ObservableObject {
 
             let backupResult = try await transferService.runBackupStage(
                 project: currentProject,
-                interruptionToken: token
+                interruptionToken: token,
+                language: selectedLanguage
             ) { [weak self] state in
                 await MainActor.run { [weak self] in
                     self?.applyProgress(state, to: projectID, stage: .backup)
@@ -1178,7 +1294,58 @@ final class AppViewModel: ObservableObject {
         activeProjectIDs.remove(projectID)
         updateGlobalImportFlag()
         saveProjects()
-        scheduleQueuedProjects()
+        continueQueueAfterStateChange()
+    }
+
+    private func continueQueueAfterStateChange() {
+        if manualQueueRunActive {
+            scheduleQueuedProjects()
+        } else {
+            scheduleQueuedProjects(automaticOnlyAt: Date())
+        }
+        scheduleNextAutoStartCheck()
+    }
+
+    private func scheduleNextAutoStartCheck() {
+        autoStartTask?.cancel()
+        autoStartTask = nil
+
+        guard !hasUnsavedChanges else { return }
+
+        let now = Date()
+        let candidates = orderedProjects
+            .filter { $0.status == .queued && $0.autoStartEnabled && $0.autoStartDeadline != nil }
+
+        guard let earliestDeadline = candidates.compactMap(\.autoStartDeadline).min() else { return }
+
+        let availableSlots = max(executionMode.maximumConcurrentProjects - activeProjectIDs.count, 0)
+        if earliestDeadline <= now, availableSlots > 0 {
+            scheduleQueuedProjects(automaticOnlyAt: now)
+            return
+        }
+
+        let delay = max(earliestDeadline.timeIntervalSince(now), 0.5)
+        autoStartTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(delay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.continueQueueAfterStateChange()
+        }
+    }
+
+    private func clearAutoStartForQueuedProjects() {
+        var changed = false
+        for index in copyProjects.indices where copyProjects[index].status == .queued {
+            if copyProjects[index].autoStartEnabled || copyProjects[index].autoStartDeadline != nil {
+                copyProjects[index].autoStartEnabled = false
+                copyProjects[index].autoStartDeadline = nil
+                copyProjects[index].updatedAt = Date()
+                changed = true
+            }
+        }
+        if changed {
+            saveProjects()
+        }
     }
 
     private func applyProgress(_ state: TransferState, to projectID: UUID, stage: TransferService.ProjectTransferStage) {
@@ -1249,24 +1416,24 @@ final class AppViewModel: ObservableObject {
     private func canRunAlongsideActiveProjects(_ project: CopyProject) -> Bool {
         for activeID in activeProjectIDs {
             guard let active = copyProjects.first(where: { $0.id == activeID }) else { continue }
-            if pathsShareVolume(project.sourceRootURL, active.sourceRootURL)
-                || pathsShareVolume(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)) {
+            if PathSafety.pathsShareVolume(project.sourceRootURL, active.sourceRootURL)
+                || PathSafety.pathsShareVolume(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)) {
                 return false
             }
-            if pathsShareVolume(project.targetRootURL, active.targetRootURL) {
+            if PathSafety.pathsShareVolume(project.targetRootURL, active.targetRootURL) {
                 return false
             }
             if let projectBackup = project.backupRootURL,
-               pathsShareVolume(projectBackup, active.targetRootURL) {
+               PathSafety.pathsShareVolume(projectBackup, active.targetRootURL) {
                 return false
             }
             if let activeBackup = active.backupRootURL,
-               pathsShareVolume(project.targetRootURL, activeBackup) {
+               PathSafety.pathsShareVolume(project.targetRootURL, activeBackup) {
                 return false
             }
             if let projectBackup = project.backupRootURL,
                let activeBackup = active.backupRootURL,
-               pathsShareVolume(projectBackup, activeBackup) {
+               PathSafety.pathsShareVolume(projectBackup, activeBackup) {
                 return false
             }
         }
@@ -1462,14 +1629,14 @@ final class AppViewModel: ObservableObject {
         var warnings: [String] = []
         let sourceVolumeURL = URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true)
 
-        if pathsOverlap(project.sourceRootURL, backupURL)
-            || pathsShareVolume(sourceVolumeURL, backupURL)
-            || pathsShareVolume(project.sourceRootURL, backupURL) {
+        if PathSafety.pathsOverlap(project.sourceRootURL, backupURL)
+            || PathSafety.pathsShareVolume(sourceVolumeURL, backupURL)
+            || PathSafety.pathsShareVolume(project.sourceRootURL, backupURL) {
             warnings.append("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
         }
 
-        if pathsOverlap(project.targetRootURL, backupURL)
-            || pathsShareVolume(project.targetRootURL, backupURL) {
+        if PathSafety.pathsOverlap(project.targetRootURL, backupURL)
+            || PathSafety.pathsShareVolume(project.targetRootURL, backupURL) {
             warnings.append("备份盘不能与主目标盘相同、互相包含，或位于同一个磁盘卷上。")
         }
 
@@ -1499,26 +1666,26 @@ final class AppViewModel: ObservableObject {
         mountedVolumes = volumeMonitor.volumes
         var messages: [String] = []
         if let pendingImportVolume,
-           isPath(pendingImportVolume.url, insideUnmountedVolume: url) {
+           PathSafety.isContained(pendingImportVolume.url, in: url) {
             closeImportSheet()
             messages.append("源设备已断开，导入窗口已关闭：\(url.path)")
         }
         if let selectedFolderURL,
-           isPath(selectedFolderURL, insideUnmountedVolume: url) {
+           PathSafety.isContained(selectedFolderURL, in: url) {
             closeFolderPicker()
             messages.append("所选文件夹所在磁盘已断开，请重新选择：\(url.path)")
         }
 
         for project in copyProjects where activeProjectIDs.contains(project.id) {
             let affectedRole: String?
-            if isPath(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), insideUnmountedVolume: url)
-                || isPath(project.sourceRootURL, insideUnmountedVolume: url) {
+            if PathSafety.isContained(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), in: url)
+                || PathSafety.isContained(project.sourceRootURL, in: url) {
                 affectedRole = "源设备"
-            } else if isPath(project.targetRootURL, insideUnmountedVolume: url)
-                || isPath(project.primaryImportURL, insideUnmountedVolume: url) {
+            } else if PathSafety.isContained(project.targetRootURL, in: url)
+                || PathSafety.isContained(project.primaryImportURL, in: url) {
                 affectedRole = "主目标盘"
             } else if let backupRootURL = project.backupRootURL,
-                      isPath(backupRootURL, insideUnmountedVolume: url) {
+                      PathSafety.isContained(backupRootURL, in: url) {
                 affectedRole = "备份盘"
             } else {
                 affectedRole = nil
@@ -1538,12 +1705,12 @@ final class AppViewModel: ObservableObject {
         guard isImporting, let activeImportSummary else { return }
 
         let affectedRole: String?
-        if isPath(activeImportSummary.sourceVolume.url, insideUnmountedVolume: url) {
+        if PathSafety.isContained(activeImportSummary.sourceVolume.url, in: url) {
             affectedRole = "源设备"
-        } else if isPath(activeImportSummary.targetURL, insideUnmountedVolume: url) {
+        } else if PathSafety.isContained(activeImportSummary.targetURL, in: url) {
             affectedRole = "主目标盘"
         } else if let backupURL = activeImportSummary.backupURL,
-                  isPath(backupURL, insideUnmountedVolume: url) {
+                  PathSafety.isContained(backupURL, in: url) {
             affectedRole = "备份盘"
         } else {
             affectedRole = nil
@@ -1558,12 +1725,6 @@ final class AppViewModel: ObservableObject {
         transferState.interruptionReason = reason
         transferState.reportSummary = reason
         importError = reason
-    }
-
-    private func isPath(_ candidateURL: URL, insideUnmountedVolume unmountedURL: URL) -> Bool {
-        let candidatePath = candidateURL.standardizedFileURL.path
-        let volumePath = unmountedURL.standardizedFileURL.path
-        return candidatePath == volumePath || candidatePath.hasPrefix(volumePath + "/")
     }
 
     private func existingReportDocumentURL(for report: TransferReport) -> URL? {
@@ -1635,33 +1796,15 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func pathsOverlap(_ lhs: URL, _ rhs: URL) -> Bool {
-        let lhsPath = normalizedDirectoryPath(lhs)
-        let rhsPath = normalizedDirectoryPath(rhs)
-        if lhsPath == rhsPath {
-            return true
-        }
-        return isPath(lhsPath, inside: rhsPath) || isPath(rhsPath, inside: lhsPath)
-    }
-
-    private func pathsShareVolume(_ lhs: URL, _ rhs: URL) -> Bool {
-        guard let lhsRoot = DiskCapacityResolver.volumeRootPath(for: lhs),
-              let rhsRoot = DiskCapacityResolver.volumeRootPath(for: rhs) else {
-            return false
-        }
-        return normalizedDirectoryPath(URL(fileURLWithPath: lhsRoot, isDirectory: true))
-            == normalizedDirectoryPath(URL(fileURLWithPath: rhsRoot, isDirectory: true))
-    }
-
     private func shouldShowAsImportSource(_ volume: StorageVolume) -> Bool {
         guard volume.url.path != "/",
               volume.isRemovable || !volume.isInternal || volume.url.path.hasPrefix("/Volumes/") else {
             return false
         }
-        if let targetURL = preferences.targetURL, pathsShareVolume(volume.url, targetURL) {
+        if let targetURL = preferences.targetURL, PathSafety.pathsShareVolume(volume.url, targetURL) {
             return false
         }
-        if let backupURL = preferences.backupURL, pathsShareVolume(volume.url, backupURL) {
+        if let backupURL = preferences.backupURL, PathSafety.pathsShareVolume(volume.url, backupURL) {
             return false
         }
         return true
@@ -1708,19 +1851,6 @@ final class AppViewModel: ObservableObject {
         return "\(folder)\u{0}\(base)"
     }
 
-    private func isPath(_ childPath: String, inside parentPath: String) -> Bool {
-        guard parentPath != "/" else { return childPath != "/" }
-        return childPath.hasPrefix(parentPath + "/")
-    }
-
-    private func normalizedDirectoryPath(_ url: URL) -> String {
-        var path = url.standardizedFileURL.path
-        while path.count > 1 && path.hasSuffix("/") {
-            path.removeLast()
-        }
-        return path
-    }
-
     private static func loadReports(from url: URL) -> (items: [TransferReport], warning: String?) {
         let result = JSONPersistence.loadReports(from: url)
         return (result.value.sorted { $0.startedAt > $1.startedAt }, result.warning)
@@ -1741,6 +1871,8 @@ final class AppViewModel: ObservableObject {
             guard project.status == .running || project.status == .cancelling else { return project }
             var recovered = project
             recovered.status = .failed
+            recovered.autoStartEnabled = false
+            recovered.autoStartDeadline = nil
             recovered.errorMessage = "应用上次退出或崩溃时任务仍在运行或取消收尾，已自动转为异常状态。"
             recovered.primaryCopyState.isActive = false
             recovered.primaryVerifyState.isActive = false
@@ -1763,6 +1895,13 @@ final class AppViewModel: ObservableObject {
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let source = FileNameSanitizer.safeComponent(sourceName, fallback: "Source")
         return "\(formatter.string(from: date))_\(source)"
+    }
+
+    private func shortTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: selectedLanguage.localeIdentifier)
+        formatter.dateFormat = selectedLanguage == .chinese ? "HH:mm:ss" : "HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private func makeFolderRoots() -> [FolderBrowserItem] {
