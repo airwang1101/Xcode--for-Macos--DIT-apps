@@ -5,9 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isWindowResizing = false
-    @State private var isScrolling = false
     @State private var resizeSettlingTask: Task<Void, Never>?
-    @State private var scrollSettlingTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -23,6 +21,7 @@ struct ContentView: View {
                 onboardingView
             }
         }
+        .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
         .transaction { transaction in
             if reduceMotionEffects {
@@ -31,7 +30,6 @@ struct ContentView: View {
         }
         .onDisappear {
             resizeSettlingTask?.cancel()
-            scrollSettlingTask?.cancel()
         }
         .sheet(item: $viewModel.pendingImportVolume) { volume in
             ImportSheet(volume: volume)
@@ -59,7 +57,7 @@ struct ContentView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: compact ? 20 : 28) {
                     Text("Airwang DIT for Mac")
-                        .font(.system(size: compact ? 32 : 38, weight: .semibold, design: .rounded))
+                        .font(.system(size: compact ? 32 : 38, weight: .semibold, design: .serif))
                         .minimumScaleFactor(0.82)
                         .lineLimit(1)
                         .foregroundStyle(primaryTextColor)
@@ -77,12 +75,6 @@ struct ContentView: View {
                 .padding(contentPadding)
                 .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
             }
-            .background(ScrollActivityMonitor(onScroll: markScrollActivity))
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { _ in markScrollActivity() }
-                    .onEnded { _ in markScrollActivity() }
-            )
             .onChange(of: proxy.size) { _, _ in
                 markWindowResizing()
             }
@@ -210,7 +202,7 @@ struct ContentView: View {
     private var headerTitle: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Airwang DIT for Mac")
-                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .font(.system(size: 34, weight: .semibold, design: .serif))
                 .minimumScaleFactor(0.8)
                 .lineLimit(1)
                 .foregroundStyle(primaryTextColor)
@@ -1591,24 +1583,30 @@ struct ContentView: View {
                 Color.clear
             } else {
                 ZStack {
-                    Circle()
-                        .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.12))
-                        .frame(width: 620, height: 620)
-                        .blur(radius: 120)
-                        .offset(x: -390, y: -210)
+                    // 三个大半径模糊圆是静态内容,drawingGroup 让 Metal 离屏栅格化一次,
+                    // 而不是每帧实时计算 120-150pt 的高斯模糊。
+                    ZStack {
+                        Circle()
+                            .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.12))
+                            .frame(width: 620, height: 620)
+                            .blur(radius: 120)
+                            .offset(x: -390, y: -210)
 
-                    Circle()
-                        .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.10))
-                        .frame(width: 740, height: 740)
-                        .blur(radius: 145)
-                        .offset(x: 430, y: -250)
+                        Circle()
+                            .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.10))
+                            .frame(width: 740, height: 740)
+                            .blur(radius: 145)
+                            .offset(x: 430, y: -250)
 
-                    Circle()
-                        .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.08))
-                        .frame(width: 560, height: 560)
-                        .blur(radius: 150)
-                        .offset(x: 230, y: 500)
+                        Circle()
+                            .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.08))
+                            .frame(width: 560, height: 560)
+                            .blur(radius: 150)
+                            .offset(x: 230, y: 500)
+                    }
+                    .drawingGroup()
 
+                    // material 依赖实时背景采样,不能进 drawingGroup,单独保留。
                     RoundedRectangle(cornerRadius: 60, style: .continuous)
                         .fill(.ultraThinMaterial.opacity(viewModel.selectedTheme == .night ? 0.42 : 0.50))
                         .frame(height: 340)
@@ -1621,8 +1619,11 @@ struct ContentView: View {
         .allowsHitTesting(false)
     }
 
+    // 只在窗口缩放时降级视觉效果。此前滚动也会触发降级(isScrolling),
+    // 导致滚动开始/结束时所有玻璃面板在两棵不同视图树之间整体切换,
+    // 这正是滚动顿挫感的来源 —— 降级开关比它要省的渲染更贵。
     private var reduceVisualEffects: Bool {
-        isWindowResizing || isScrolling
+        isWindowResizing
     }
 
     private var reduceGlassEffects: Bool {
@@ -1630,7 +1631,7 @@ struct ContentView: View {
     }
 
     private var reduceMotionEffects: Bool {
-        isWindowResizing || isScrolling
+        isWindowResizing
     }
 
     private func markWindowResizing() {
@@ -1646,19 +1647,6 @@ struct ContentView: View {
         }
     }
 
-    private func markScrollActivity() {
-        if !isScrolling {
-            isScrolling = true
-        }
-
-        scrollSettlingTask?.cancel()
-        scrollSettlingTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 140_000_000)
-            guard !Task.isCancelled else { return }
-            isScrolling = false
-        }
-    }
-
     // 颜色全部委托给 `AppTheme` 扩展(Views/Theme/AirwangPalette.swift),避免再次出现
     // 三套独立定义(见 TEST_REPORT.md #45/#46/#47)。
     private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
@@ -1668,6 +1656,12 @@ struct ContentView: View {
 
 }
 
+/// 全工程统一的投影标尺:每个海拔等级只有两层阴影 ——
+/// ambient(环境光,大半径低不透明度,决定"浮多高")+ contact(接触影,
+/// 小半径,把元素"压"在表面上)。此前每个表面叠 4 层(白色顶光 + 染色光晕 +
+/// 两层黑),且大量调用点没有先做 compositingGroup,阴影按内部每个图元分别
+/// 绘制,视觉上糊成一片、GPU 上是数倍浪费。顶光效果由玻璃面板的描边承担,
+/// 染色光晕由选中态的描边承担,阴影只负责深度,层级一目了然。
 private enum AirwangGlassElevation {
     case panel
     case card
@@ -1677,97 +1671,63 @@ private enum AirwangGlassElevation {
 
     var ambientRadius: CGFloat {
         switch self {
-        case .panel: 34
-        case .card: 24
-        case .tile: 16
-        case .floating: 42
-        case .selected: 30
+        case .panel: 26
+        case .card: 18
+        case .tile: 11
+        case .floating: 34
+        case .selected: 22
         }
     }
 
     var ambientY: CGFloat {
         switch self {
-        case .panel: 18
-        case .card: 13
-        case .tile: 8
-        case .floating: 22
-        case .selected: 14
+        case .panel: 13
+        case .card: 9
+        case .tile: 5
+        case .floating: 17
+        case .selected: 11
         }
     }
 
     var contactRadius: CGFloat {
         switch self {
-        case .panel: 12
-        case .card: 9
-        case .tile: 6
-        case .floating: 16
-        case .selected: 10
+        case .panel: 9
+        case .card: 7
+        case .tile: 4
+        case .floating: 12
+        case .selected: 8
         }
     }
 
     var contactY: CGFloat {
         switch self {
-        case .panel: 7
-        case .card: 5
-        case .tile: 3
-        case .floating: 9
-        case .selected: 5
+        case .panel: 4
+        case .card: 3
+        case .tile: 2
+        case .floating: 6
+        case .selected: 4
         }
     }
-}
 
-private struct ScrollActivityMonitor: NSViewRepresentable {
-    var onScroll: @MainActor () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onScroll: onScroll)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.view = view
-        context.coordinator.installMonitorIfNeeded()
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.view = nsView
-        context.coordinator.installMonitorIfNeeded()
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.removeMonitor()
-    }
-
-    final class Coordinator {
-        weak var view: NSView?
-        let onScroll: @MainActor () -> Void
-        private var monitor: Any?
-
-        init(onScroll: @escaping @MainActor () -> Void) {
-            self.onScroll = onScroll
+    /// 环境影不透明度(日 / 夜)。
+    var ambientOpacity: (day: Double, night: Double) {
+        switch self {
+        case .panel: (0.09, 0.46)
+        case .card: (0.08, 0.42)
+        case .tile: (0.06, 0.34)
+        case .floating: (0.13, 0.55)
+        case .selected: (0.11, 0.50)
         }
+    }
 
-        func installMonitorIfNeeded() {
-            guard monitor == nil else { return }
-            let onScroll = onScroll
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                Task { @MainActor in
-                    onScroll()
-                }
-                return event
-            }
-        }
-
-        func removeMonitor() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-            }
-            monitor = nil
-        }
-
-        deinit {
-            removeMonitor()
+    /// 接触影不透明度(日 / 夜)。
+    var contactOpacity: (day: Double, night: Double) {
+        switch self {
+        case .panel: (0.06, 0.24)
+        case .card: (0.05, 0.22)
+        case .tile: (0.04, 0.18)
+        case .floating: (0.08, 0.28)
+        case .selected: (0.07, 0.25)
         }
     }
 }
@@ -1845,7 +1805,8 @@ private struct AirwangGlassSurface: View {
                     .inset(by: 1.2)
                     .strokeBorder(Color.white.opacity(theme == .night ? 0.08 : 0.42), lineWidth: 0.6)
             }
-            .airwangNativeGlass(in: shape)
+            // 注意:这里不再叠加 macOS 26 的 glassEffect —— 上面的 material + 渐变
+            // 已经是完整的玻璃质感,双重玻璃 = 每帧两次背景采样,只贵不亮。
             .compositingGroup()
             .modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation))
         }
@@ -1859,27 +1820,20 @@ private struct AirwangLayeredShadow: ViewModifier {
     let elevation: AirwangGlassElevation
 
     func body(content: Content) -> some View {
-        content
+        let isNight = theme == .night
+        let ambient = elevation.ambientOpacity
+        let contact = elevation.contactOpacity
+        // tint / tintStrength 参数保留以兼容既有调用点;
+        // 染色光晕已从阴影系统移除(由选中态描边承担)。
+        return content
             .shadow(
-                color: Color.white.opacity(theme == .night ? 0.045 : 0.20),
-                radius: theme == .night ? 1.0 : 1.2,
+                color: Color.black.opacity(isNight ? ambient.night : ambient.day),
+                radius: elevation.ambientRadius,
                 x: 0,
-                y: -1
+                y: elevation.ambientY
             )
             .shadow(
-                color: tint.opacity(theme == .night ? 0.16 * tintStrength : 0.06 * tintStrength),
-                radius: elevation.ambientRadius * (theme == .night ? 0.95 : 0.70),
-                x: 0,
-                y: elevation.ambientY * (theme == .night ? 0.75 : 0.58)
-            )
-            .shadow(
-                color: Color.black.opacity(theme == .night ? 0.52 : 0.055),
-                radius: elevation.ambientRadius * (theme == .night ? 1.0 : 0.72),
-                x: 0,
-                y: elevation.ambientY * (theme == .night ? 1.0 : 0.72)
-            )
-            .shadow(
-                color: Color.black.opacity(theme == .night ? 0.30 : 0.040),
+                color: Color.black.opacity(isNight ? contact.night : contact.day),
                 radius: elevation.contactRadius,
                 x: 0,
                 y: elevation.contactY
@@ -1889,15 +1843,6 @@ private struct AirwangLayeredShadow: ViewModifier {
 
 private extension View {
     @ViewBuilder
-    func airwangNativeGlass<S: Shape>(in shape: S) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: shape)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
     func airwangSoftShadow(
         theme: AppTheme,
         tint: Color,
@@ -1906,7 +1851,10 @@ private extension View {
         enabled: Bool = true
     ) -> some View {
         if enabled {
-            modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation))
+            // compositingGroup 把内容先合成为单层再投影:没有它,.shadow 会给
+            // 视图内部每个图元各画一份阴影(文字、图标、描边各一份),又糊又慢。
+            compositingGroup()
+                .modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation))
         } else {
             self
         }
@@ -1919,8 +1867,6 @@ private struct ImportSheet: View {
     @State private var expandedGroupIDs: Set<String> = []
     @State private var selectedBrowserFolder = ""
     @State private var focusedGalleryItemID: String?
-    @State private var isSheetScrolling = false
-    @State private var sheetScrollSettlingTask: Task<Void, Never>?
 
     private let columns = [GridItem(.adaptive(minimum: 130), spacing: 14)]
 
@@ -1995,16 +1941,8 @@ private struct ImportSheet: View {
         .padding(28)
         .frame(minWidth: 980, idealWidth: 1180, maxWidth: 1280, minHeight: 660, idealHeight: 760, maxHeight: 840)
         .background(importSheetBackground)
+        .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
-        .transaction { transaction in
-            if reduceSheetVisualEffects {
-                transaction.animation = nil
-            }
-        }
-        .background(ScrollActivityMonitor(onScroll: markSheetScrollActivity))
-        .onDisappear {
-            sheetScrollSettlingTask?.cancel()
-        }
     }
 
     private func handlePrimaryBackAction() {
@@ -2245,7 +2183,7 @@ private struct ImportSheet: View {
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 330)
-                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.24, elevation: .card, enabled: !reduceSheetVisualEffects)
+                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.24, elevation: .card)
                 .onTapGesture {
                     if let item {
                         viewModel.toggle(item: item)
@@ -2448,7 +2386,7 @@ private struct ImportSheet: View {
                     .frame(height: 104)
                     .frame(maxWidth: .infinity)
                     .background(thumbFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile)
 
                 Text(item.displayName)
                     .font(.subheadline.weight(.medium))
@@ -2470,7 +2408,7 @@ private struct ImportSheet: View {
                             .font(.title3)
                             .foregroundStyle(accentColor)
                             .padding(8)
-                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.45, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.45, elevation: .tile)
                 }
             }
             .background(glassPanel(cornerRadius: 18))
@@ -2494,7 +2432,7 @@ private struct ImportSheet: View {
                     .font(.headline)
                     .foregroundStyle(accentColor)
                     .frame(width: 24)
-                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .tile)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.displayName)
@@ -2561,7 +2499,7 @@ private struct ImportSheet: View {
                     .frame(width: 118, height: 72)
                     .background(thumbFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.15, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.15, elevation: .tile)
 
                 Text(item.displayName)
                     .font(.caption.weight(.semibold))
@@ -2578,7 +2516,7 @@ private struct ImportSheet: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(secondaryAccentColor)
                             .padding(5)
-                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: secondaryAccentColor, tintStrength: 0.45, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                            .airwangSoftShadow(theme: viewModel.selectedTheme, tint: secondaryAccentColor, tintStrength: 0.45, elevation: .tile)
                 }
             }
             .background(glassPanel(cornerRadius: 16))
@@ -2850,7 +2788,7 @@ private struct ImportSheet: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("\(selectedItems.count) 个文件")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .font(.system(size: 28, weight: .bold, design: .serif))
                     .foregroundStyle(primaryTextColor)
                 Text("待拷贝总量 \(byteText(totalBytes))")
                     .font(.subheadline.weight(.semibold))
@@ -3016,7 +2954,7 @@ private struct ImportSheet: View {
             .buttonStyle(.plain)
             ThumbnailView(url: item.fileURL)
                 .frame(width: 54, height: 40)
-                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.16, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.16, elevation: .tile)
             VStack(alignment: .leading) {
                 Text(item.displayName)
                     .foregroundStyle(primaryTextColor)
@@ -3091,23 +3029,6 @@ private struct ImportSheet: View {
         )
     }
 
-    private var reduceSheetVisualEffects: Bool {
-        isSheetScrolling
-    }
-
-    private func markSheetScrollActivity() {
-        if !isSheetScrolling {
-            isSheetScrolling = true
-        }
-
-        sheetScrollSettlingTask?.cancel()
-        sheetScrollSettlingTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 140_000_000)
-            guard !Task.isCancelled else { return }
-            isSheetScrolling = false
-        }
-    }
-
     // 颜色委托给 `AppTheme` 扩展,与主面板保持一致(原本 ImportSheet 在白天模式
     // 走 `Color.primary` / `Color.secondary`,与暖色背景不协调,见 #45)。
     private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
@@ -3132,8 +3053,6 @@ private struct ImportSheet: View {
 private struct FolderPickerSheet: View {
     let purpose: FolderPickerPurpose
     @EnvironmentObject private var viewModel: AppViewModel
-    @State private var isSheetScrolling = false
-    @State private var sheetScrollSettlingTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3194,16 +3113,8 @@ private struct FolderPickerSheet: View {
                 }
             }
         )
+        .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
-        .transaction { transaction in
-            if reduceSheetVisualEffects {
-                transaction.animation = nil
-            }
-        }
-        .background(ScrollActivityMonitor(onScroll: markSheetScrollActivity))
-        .onDisappear {
-            sheetScrollSettlingTask?.cancel()
-        }
     }
 
     private var rootSidebar: some View {
@@ -3223,7 +3134,7 @@ private struct FolderPickerSheet: View {
                                 Image(systemName: sidebarIcon(for: item.url))
                                     .foregroundStyle(themeAccentColor)
                                     .frame(width: 20)
-                                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: themeAccentColor, tintStrength: 0.20, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: themeAccentColor, tintStrength: 0.20, elevation: .tile)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.name)
                                         .font(.headline)
@@ -3295,7 +3206,7 @@ private struct FolderPickerSheet: View {
                                 HStack(spacing: 12) {
                                     Image(systemName: "folder.fill")
                                         .foregroundStyle(.orange)
-                                        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.20, elevation: .tile, enabled: !reduceSheetVisualEffects)
+                                        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.20, elevation: .tile)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(item.name)
                                             .font(.headline)
@@ -3445,23 +3356,6 @@ private struct FolderPickerSheet: View {
             elevation: .tile,
             reduceEffects: false
         )
-    }
-
-    private var reduceSheetVisualEffects: Bool {
-        isSheetScrolling
-    }
-
-    private func markSheetScrollActivity() {
-        if !isSheetScrolling {
-            isSheetScrolling = true
-        }
-
-        sheetScrollSettlingTask?.cancel()
-        sheetScrollSettlingTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 140_000_000)
-            guard !Task.isCancelled else { return }
-            isSheetScrolling = false
-        }
     }
 
     // 颜色委托给 `AppTheme` 扩展,与主面板和 ImportSheet 保持一致(见 #46)。

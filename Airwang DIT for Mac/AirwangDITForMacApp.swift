@@ -82,6 +82,7 @@ private struct AppSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .fontDesign(.serif)
         .padding(24)
         .frame(width: 460)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)

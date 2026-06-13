@@ -164,7 +164,15 @@ struct TransferService {
         }
 
         let destination = Destination(rootURL: destinationRootURL, label: stage.destinationLabel)
-        let verificationTotalWorkBytes = verificationWorkBytes(for: sources, mode: project.verificationMode, destinationCount: 1)
+        // SHA-256 模式下源哈希在拷贝读取时内联计算,校验阶段只需重读目标一遍,
+        // 因此预估工作量按"全部源已预哈希"计。
+        let plannedInlineHashing = project.verificationMode == .sha256
+        let verificationTotalWorkBytes = verificationWorkBytes(
+            for: sources,
+            mode: project.verificationMode,
+            destinationCount: 1,
+            prehashedPaths: plannedInlineHashing ? Set(sources.map(\.relativePath)) : []
+        )
         let reportDocumentURL = destinationFolderURL
             .appendingPathComponent("Airwang_\(stage.reportKind)_Report_\(project.taskFolderName).txt")
         let fallbackReportDocumentURL = AppStorageScope.localReportDocumentURL(
@@ -200,6 +208,7 @@ struct TransferService {
         var fatalStopReason: String?
         var preflightFailureMessage: String?
         var stageVerificationMode = project.verificationMode
+        var inlineSourceHashes: [String: String] = [:]
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
@@ -244,7 +253,9 @@ struct TransferService {
                     try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
                     let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                     let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
-                    try await copySourceFile(
+                    // 校验模式可能在拷贝途中被用户改为"跳过",逐文件取当前生效模式。
+                    let wantsInlineHash = (interruptionToken?.verificationModeOverride ?? project.verificationMode) == .sha256
+                    if let inlineHash = try await copySourceFile(
                         sourceURL: sourceFileURL,
                         relativePath: item.relativePath,
                         expectedSize: item.size,
@@ -252,10 +263,13 @@ struct TransferService {
                         destination: destination,
                         sourceRoot: sourceBaseURL,
                         sourceRole: sourceLabel,
+                        computeSourceHash: wantsInlineHash,
                         interruptionToken: interruptionToken,
                         state: &state,
                         progress: progress
-                    )
+                    ) {
+                        inlineSourceHashes[item.relativePath] = inlineHash
+                    }
 
                     copiedItemPaths.insert(item.relativePath)
                     state.copiedFiles += 1
@@ -339,7 +353,7 @@ struct TransferService {
                 state.currentFile = "正在校验 \(stage.destinationLabel)"
                 state.currentSpeedBytesPerSecond = 0
                 state.verificationStartedAt = Date()
-                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1)
+                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
                 state.verificationProcessedBytes = 0
                 state.currentVerificationSpeedBytesPerSecond = 0
                 await progress(state)
@@ -349,14 +363,14 @@ struct TransferService {
                     if effectiveVerificationMode != stageVerificationMode {
                         stageVerificationMode = effectiveVerificationMode
                         let remainingWorkBytes = sources.dropFirst(index).reduce(Int64(0)) {
-                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1)
+                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
                         }
                         state.verificationTotalBytes = max(state.verificationProcessedBytes + remainingWorkBytes, state.verificationProcessedBytes)
                         state.verificationStatus = stageVerificationMode == .skipped ? "用户已跳过校验" : "校验中"
                         await progress(state)
                     }
 
-                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1)
+                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
                     let itemStartBytes = state.verificationProcessedBytes
 
                     if copyFailedFiles.contains(item.relativePath) {
@@ -388,6 +402,7 @@ struct TransferService {
                             stage: stage,
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
+                            precomputedSourceHash: inlineSourceHashes[item.relativePath],
                             interruptionToken: interruptionToken,
                             state: &state,
                             progress: progress
@@ -1190,10 +1205,11 @@ struct TransferService {
     private func verificationWorkBytes(
         for items: [ProjectMediaItem],
         mode: VerificationMode,
-        destinationCount: Int
+        destinationCount: Int,
+        prehashedPaths: Set<String> = []
     ) -> Int64 {
         let total = items.reduce(Int64(0)) {
-            $0 + verificationWorkBytes(for: $1, mode: mode, destinationCount: destinationCount)
+            $0 + verificationWorkBytes(for: $1, mode: mode, destinationCount: destinationCount, prehashedPaths: prehashedPaths)
         }
         return max(total, Int64(items.count))
     }
@@ -1201,11 +1217,14 @@ struct TransferService {
     private func verificationWorkBytes(
         for item: ProjectMediaItem,
         mode: VerificationMode,
-        destinationCount: Int
+        destinationCount: Int,
+        prehashedPaths: Set<String> = []
     ) -> Int64 {
         switch mode {
         case .sha256:
-            return item.size * Int64(1 + destinationCount)
+            // 源哈希已在拷贝时内联计算的文件,校验阶段只需读目标。
+            let sourcePasses = prehashedPaths.contains(item.relativePath) ? 0 : 1
+            return item.size * Int64(sourcePasses + destinationCount)
         case .fastFingerprint:
             return fingerprintLogicalBytes(fileSize: item.size) * Int64(1 + destinationCount)
         case .sizeOnly, .skipped:
@@ -1364,6 +1383,7 @@ struct TransferService {
         )
     }
 
+    @discardableResult
     private func copySourceFile(
         sourceURL: URL,
         relativePath: String,
@@ -1372,10 +1392,11 @@ struct TransferService {
         destination: Destination,
         sourceRoot: URL,
         sourceRole: String,
+        computeSourceHash: Bool = false,
         interruptionToken: ImportInterruptionToken?,
         state: inout TransferState,
         progress: @escaping @Sendable (TransferState) async -> Void
-    ) async throws {
+    ) async throws -> String? {
         try await copyFile(
             sourceURL: sourceURL,
             relativePath: relativePath,
@@ -1384,12 +1405,18 @@ struct TransferService {
             destination: destination,
             sourceRoot: sourceRoot,
             sourceRole: sourceRole,
+            computeSourceHash: computeSourceHash,
             interruptionToken: interruptionToken,
             state: &state,
             progress: progress
         )
     }
 
+    /// 拷贝单个文件。`computeSourceHash` 为 true 时,在读取源数据的同一遍 IO 里
+    /// 同步计算 SHA-256 并返回十六进制摘要 —— 这让 SHA-256 校验模式省掉对源
+    /// 文件的第二次全量读取(对 SD 卡等慢速源设备,整体耗时约降一半)。
+    /// 返回 nil 表示未启用内联哈希。
+    @discardableResult
     private func copyFile(
         sourceURL: URL,
         relativePath: String,
@@ -1398,10 +1425,11 @@ struct TransferService {
         destination: Destination,
         sourceRoot: URL,
         sourceRole: String,
+        computeSourceHash: Bool = false,
         interruptionToken: ImportInterruptionToken?,
         state: inout TransferState,
         progress: @escaping @Sendable (TransferState) async -> Void
-    ) async throws {
+    ) async throws -> String? {
         let folder = destinationURL.deletingLastPathComponent()
 
         try checkInterruption(interruptionToken)
@@ -1442,6 +1470,7 @@ struct TransferService {
             var bytesCopiedForFile: Int64 = 0
             var lastUpdateAt = Date()
             var lastAvailabilityCheckAt = Date()
+            var sourceHasher = computeSourceHash ? SHA256() : nil
 
             while true {
                 try checkInterruption(interruptionToken)
@@ -1454,16 +1483,25 @@ struct TransferService {
                     lastAvailabilityCheckAt = availabilityCheckAt
                 }
 
-                guard let data = try sourceHandle.read(upToCount: chunkSize), !data.isEmpty else {
+                // 读/写/哈希放在 autoreleasepool 内同步完成,只携带字节数出来:
+                // FileHandle.read 返回的 NSData 是 autoreleased,异步循环里的
+                // 排水点(await)间隔 0.5s,16MB 块不及时排水会让内存峰值飙到数百 MB。
+                var chunkBytes: Int64 = 0
+                try autoreleasepool {
+                    guard let data = try sourceHandle.read(upToCount: chunkSize), !data.isEmpty else {
+                        return
+                    }
+                    try destinationHandle?.write(contentsOf: data)
+                    sourceHasher?.update(data: data)
+                    chunkBytes = Int64(data.count)
+                }
+                if chunkBytes == 0 {
                     break
                 }
 
-                try destinationHandle?.write(contentsOf: data)
-
-                let copiedBytes = Int64(data.count)
-                bytesCopiedForFile += copiedBytes
-                state.processedBytes += copiedBytes
-                bytesSinceLastUpdate += copiedBytes
+                bytesCopiedForFile += chunkBytes
+                state.processedBytes += chunkBytes
+                bytesSinceLastUpdate += chunkBytes
 
                 let now = Date()
                 let elapsed = now.timeIntervalSince(lastUpdateAt)
@@ -1490,6 +1528,9 @@ struct TransferService {
 
             try installCopiedFile(from: temporaryURL, to: destinationURL, under: destination.rootURL)
             await progress(state)
+            return sourceHasher.map { hasher in
+                hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
         } catch {
             if temporaryFileCreated {
                 try? FileManager.default.removeItem(at: temporaryURL)
@@ -1554,15 +1595,21 @@ struct TransferService {
         defer { try? handle.close() }
 
         var hasher = SHA256()
+        // 8MB 块:1MB 块在快速 SSD 上 syscall 频率过高,拖低校验吞吐。
+        let chunkSize = 8 * 1024 * 1024
         let minimumUpdateInterval: TimeInterval = 0.15
         var lastUpdateAt = Date()
         while true {
             try checkInterruption(interruptionToken)
-            let data = try handle.read(upToCount: 1_048_576)
-            guard let data, !data.isEmpty else { break }
-            hasher.update(data: data)
+            var chunkBytes: Int64 = 0
+            try autoreleasepool {
+                guard let data = try handle.read(upToCount: chunkSize), !data.isEmpty else { return }
+                hasher.update(data: data)
+                chunkBytes = Int64(data.count)
+            }
+            if chunkBytes == 0 { break }
 
-            updateVerificationProgress(logicalBytes: Int64(data.count), state: &state)
+            updateVerificationProgress(logicalBytes: chunkBytes, state: &state)
             let now = Date()
             if now.timeIntervalSince(lastUpdateAt) >= minimumUpdateInterval
                 || state.verificationProcessedBytes >= state.verificationTotalBytes {
@@ -1584,6 +1631,7 @@ struct TransferService {
         stage: ProjectTransferStage,
         itemStartBytes: Int64,
         itemWorkBytes: Int64,
+        precomputedSourceHash: String? = nil,
         interruptionToken: ImportInterruptionToken?,
         state: inout TransferState,
         progress: @escaping @Sendable (TransferState) async -> Void
@@ -1640,12 +1688,19 @@ struct TransferService {
                 message: "大小校验通过：源文件与\(stage.destinationLabel)文件大小一致。\(mode.reportWarning)"
             )
         case .sha256:
-            let sourceHash = try await checksum(
-                for: sourceURL,
-                interruptionToken: interruptionToken,
-                state: &state,
-                progress: progress
-            )
+            // 优先使用拷贝阶段内联计算的源哈希(同一批源字节,免去第二次全量读源);
+            // 若该文件没有内联哈希(例如拷贝途中切换过校验模式),回退为重读源文件。
+            let sourceHash: String
+            if let precomputedSourceHash {
+                sourceHash = precomputedSourceHash
+            } else {
+                sourceHash = try await checksum(
+                    for: sourceURL,
+                    interruptionToken: interruptionToken,
+                    state: &state,
+                    progress: progress
+                )
+            }
             let targetHash = try await checksum(
                 for: targetURL,
                 interruptionToken: interruptionToken,
