@@ -9,7 +9,10 @@ final class AppViewModel: ObservableObject {
     @Published var selectedLanguage: AppLanguage = .chinese
     @Published var autoStartQueuedProjects = true
     @Published var selectedSection: MainSection = .copy
-    @Published var copyProjects: [CopyProject] = []
+    @Published var copyProjects: [CopyProject] = [] {
+        didSet { orderedProjectsCache = Self.sortedProjects(copyProjects) }
+    }
+    private(set) var orderedProjectsCache: [CopyProject] = []
     @Published var executionMode: ProjectExecutionMode = .sequential {
         didSet {
             if oldValue != executionMode, !activeProjectIDs.isEmpty {
@@ -92,7 +95,9 @@ final class AppViewModel: ObservableObject {
         reports = reportLoad.items
         let projectLoad = Self.loadProjects(from: projectURL)
         let storedProjects = projectLoad.items
-        copyProjects = Self.recoverInterruptedProjects(storedProjects)
+        let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
+        copyProjects = recoveredProjects
+        orderedProjectsCache = Self.sortedProjects(recoveredProjects)
         importError = [settingsStore.lastLoadWarning, reportLoad.warning, projectLoad.warning]
             .compactMap { $0 }
             .joined(separator: "\n")
@@ -265,8 +270,10 @@ final class AppViewModel: ObservableObject {
         isImporting || !activeProjectIDs.isEmpty || importTask != nil || !projectTasks.isEmpty
     }
 
-    var orderedProjects: [CopyProject] {
-        copyProjects.sorted {
+    var orderedProjects: [CopyProject] { orderedProjectsCache }
+
+    private static func sortedProjects(_ projects: [CopyProject]) -> [CopyProject] {
+        projects.sorted {
             if $0.orderIndex == $1.orderIndex {
                 return $0.createdAt < $1.createdAt
             }
@@ -706,11 +713,14 @@ final class AppViewModel: ObservableObject {
             let cleaned = draftProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
             rawName = cleaned.isEmpty ? automaticProjectName(sourceName: summary.sourceVolume.name, date: createdAt) : cleaned
         }
-        let taskFolderName = FileNameSanitizer.safeComponent(rawName, fallback: automaticProjectName(sourceName: summary.sourceVolume.name, date: createdAt))
+        let projectID = UUID()
+        let shortID = String(projectID.uuidString.prefix(8).lowercased())
+        let taskFolderName = FileNameSanitizer.safeComponent(rawName, fallback: automaticProjectName(sourceName: summary.sourceVolume.name, date: createdAt)) + "_" + shortID
         let autoStartDeadline = autoStartQueuedProjects
             ? createdAt.addingTimeInterval(Self.projectAutoStartDelay)
             : nil
         let project = CopyProject(
+            id: projectID,
             name: rawName,
             taskFolderName: taskFolderName,
             createdAt: createdAt,
@@ -915,7 +925,8 @@ final class AppViewModel: ObservableObject {
         updateProject(project.id) { item in
             item.name = cleaned
             if item.status == .queued {
-                item.taskFolderName = FileNameSanitizer.safeComponent(cleaned)
+                let shortID = String(item.id.uuidString.prefix(8).lowercased())
+                item.taskFolderName = FileNameSanitizer.safeComponent(cleaned) + "_" + shortID
             }
         }
     }

@@ -1702,19 +1702,17 @@ struct TransferService {
                 message: "大小校验通过：源文件与\(stage.destinationLabel)文件大小一致。\(mode.reportWarning)"
             )
         case .sha256:
-            // 优先使用拷贝阶段内联计算的源哈希(同一批源字节,免去第二次全量读源);
-            // 若该文件没有内联哈希(例如拷贝途中切换过校验模式),回退为重读源文件。
-            let sourceHash: String
-            if let precomputedSourceHash {
-                sourceHash = precomputedSourceHash
-            } else {
-                sourceHash = try await checksum(
-                    for: sourceURL,
-                    interruptionToken: interruptionToken,
-                    state: &state,
-                    progress: progress
-                )
-            }
+            // Always re-read the source independently of the copy-phase inline hash.
+            // Reusing the inline hash would pass silently if the card returned corrupt
+            // bytes during copy (both the written file and the hash reflect the same
+            // corrupt data).  Two independent reads are required to catch transient
+            // read-path errors — the standard expectation in DIT workflows.
+            let sourceHash = try await checksum(
+                for: sourceURL,
+                interruptionToken: interruptionToken,
+                state: &state,
+                progress: progress
+            )
             let targetHash = try await checksum(
                 for: targetURL,
                 interruptionToken: interruptionToken,
