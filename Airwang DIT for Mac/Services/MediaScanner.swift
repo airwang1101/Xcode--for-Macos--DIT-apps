@@ -56,7 +56,7 @@ struct MediaScanner {
 
             items.append(
                 MediaItem(
-                    id: relativePath,
+                    id: url.path,
                     fileURL: url,
                     relativePath: relativePath,
                     displayName: values.name ?? url.lastPathComponent,
