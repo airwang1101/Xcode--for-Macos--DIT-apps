@@ -380,7 +380,7 @@ struct ContentView: View {
     }
 
     private var dashboardProjectList: some View {
-        let orderedProjects = viewModel.orderedProjects
+        let orderedProjects = viewModel.activeQueueProjects
 
         return ScrollView {
             LazyVStack(spacing: 14) {
@@ -666,7 +666,7 @@ struct ContentView: View {
     }
 
     private var projectQueueCard: some View {
-        let orderedProjects = viewModel.orderedProjects
+        let orderedProjects = viewModel.activeQueueProjects
         let firstProjectID = orderedProjects.first?.id
         let lastProjectID = orderedProjects.last?.id
 

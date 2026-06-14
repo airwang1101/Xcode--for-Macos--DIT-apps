@@ -272,6 +272,14 @@ final class AppViewModel: ObservableObject {
 
     var orderedProjects: [CopyProject] { orderedProjectsCache }
 
+    /// 队列与仪表盘只展示"未完成"的项目；已完成项目只保留在任务日志中。
+    /// 数据仍保留在 copyProjects 内(不删除),报告(import-reports.json)已独立持久化,
+    /// 因此完成项的记录通过任务日志卡片继续可查、可打开报告。
+    /// 失败/阻塞/取消的项目仍保留在队列里,以便重试或删除。
+    var activeQueueProjects: [CopyProject] {
+        orderedProjects.filter { $0.status != .completed }
+    }
+
     private static func sortedProjects(_ projects: [CopyProject]) -> [CopyProject] {
         projects.sorted {
             if $0.orderIndex == $1.orderIndex {
@@ -907,15 +915,23 @@ final class AppViewModel: ObservableObject {
 
     func moveProjectUp(_ project: CopyProject) {
         var ordered = orderedProjects
-        guard let index = ordered.firstIndex(where: { $0.id == project.id }), index > 0 else { return }
-        ordered.swapAt(index, index - 1)
+        guard let index = ordered.firstIndex(where: { $0.id == project.id }) else { return }
+        // 已完成项目在队列里被隐藏,但仍存在于 orderedProjects 中。
+        // 与上一个"可见"(未完成)邻居交换,保证 ↑ 始终相对队列里看得见的相邻项移动,
+        // 不会和被隐藏的完成项做无效空交换。
+        guard let targetIndex = ordered[..<index].lastIndex(where: { $0.status != .completed }) else { return }
+        ordered.swapAt(index, targetIndex)
         applyProjectOrder(ordered)
     }
 
     func moveProjectDown(_ project: CopyProject) {
         var ordered = orderedProjects
-        guard let index = ordered.firstIndex(where: { $0.id == project.id }), index < ordered.count - 1 else { return }
-        ordered.swapAt(index, index + 1)
+        guard let index = ordered.firstIndex(where: { $0.id == project.id }) else { return }
+        // 与下一个"可见"(未完成)邻居交换,跨过被隐藏的已完成项目。
+        let after = ordered.index(after: index)
+        guard after < ordered.endIndex,
+              let targetIndex = ordered[after...].firstIndex(where: { $0.status != .completed }) else { return }
+        ordered.swapAt(index, targetIndex)
         applyProjectOrder(ordered)
     }
 
