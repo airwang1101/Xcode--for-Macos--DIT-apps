@@ -7,6 +7,8 @@ struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isWindowResizing = false
     @State private var resizeSettlingTask: Task<Void, Never>?
+    @State private var hoveredActivityDay: CopyActivityDay?
+    @State private var selectedActivityMode: StatisticsActivityMode = .daily
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -193,6 +195,8 @@ struct ContentView: View {
                     dashboardWorkspace(availableWidth: availableWidth)
                 case .backup:
                     backupWorkspace
+                case .statistics:
+                    statisticsWorkspace(availableWidth: availableWidth)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -438,9 +442,503 @@ struct ContentView: View {
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
 
+    @ViewBuilder
+    private func statisticsWorkspace(availableWidth: CGFloat) -> some View {
+        let summary = viewModel.copyStatistics
+        let stackedInsights = availableWidth < 900
+        let insightsWidth = min(500, max(360, availableWidth * 0.46))
+
+        ScrollView {
+            VStack(spacing: 16) {
+                statisticsProfileCard(summary, availableWidth: availableWidth)
+                activityHeatmapCard(summary, availableWidth: availableWidth)
+
+                if stackedInsights {
+                    VStack(spacing: 16) {
+                        activityInsightsCard(summary)
+                        commonStatisticsCard(summary)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        activityInsightsCard(summary)
+                            .frame(width: insightsWidth, alignment: .top)
+                            .frame(minHeight: 304, alignment: .top)
+                        commonStatisticsCard(summary)
+                            .frame(maxWidth: .infinity, minHeight: 304, alignment: .top)
+                    }
+                }
+
+                statisticsRecentReportsCard
+                    .frame(minHeight: 260, maxHeight: 360)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 4)
+        }
+        .transition(responsiveLayoutTransition)
+        .animation(responsiveLayoutAnimation, value: stackedInsights)
+    }
+
+    private func statisticsProfileCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
+        let compact = availableWidth < 680
+        let statColumns = Array(repeating: GridItem(.flexible(minimum: compact ? 116 : 138), spacing: 0), count: compact ? 2 : 5)
+
+        return VStack(spacing: 0) {
+            LazyVGrid(columns: statColumns, spacing: 0) {
+                profileStatBlock(value: ByteDisplayFormatter.string(fromByteCount: summary.totalBytes), label: viewModel.localized("累计拷贝量"), compact: compact)
+                profileStatBlock(value: ByteDisplayFormatter.string(fromByteCount: summary.peakDayBytes), label: viewModel.localized("峰值拷贝量"), compact: compact)
+                profileStatBlock(value: stopwatchText(summary.longestReportDuration), label: viewModel.localized("最长任务"), compact: compact)
+                profileStatBlock(value: "\(summary.currentStreakDays) 天", label: viewModel.localized("当前连续天数"), compact: compact)
+                profileStatBlock(value: "\(summary.longestStreakDays) 天", label: viewModel.localized("最长连续天数"), compact: compact)
+            }
+        }
+        .padding(.horizontal, compact ? 14 : 20)
+        .padding(.vertical, compact ? 12 : 16)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+        .animation(responsiveLayoutAnimation, value: compact)
+    }
+
+    private func profileStatBlock(value: String, label: String, compact: Bool) -> some View {
+        VStack(spacing: compact ? 3 : 5) {
+            Text(value)
+                .font(.system(size: compact ? 15 : 16, weight: .semibold, design: .serif).monospacedDigit())
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.70)
+            Text(label)
+                .font(.system(size: compact ? 10 : 11, weight: .semibold, design: .serif))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity, minHeight: compact ? 48 : 54)
+    }
+
+    private func activityInsightsCard(_ summary: CopyStatisticsSummary) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(viewModel.localized("活动洞察"))
+                .sectionTitle()
+
+            VStack(spacing: 10) {
+                insightRow(viewModel.localized("备份覆盖率"), value: percentText(numerator: summary.backupReportCount, denominator: summary.totalReports))
+                insightRow(viewModel.localized("成功率"), value: percentText(numerator: summary.successfulReports, denominator: summary.totalReports))
+                insightRow(viewModel.localized("活跃天数"), value: "\(summary.activeDayCount)")
+                insightRow(viewModel.localized("文件总数"), value: "\(summary.totalFiles)")
+                insightRow(viewModel.localized("报告总数"), value: "\(summary.totalReports)")
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func commonStatisticsCard(_ summary: CopyStatisticsSummary) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(viewModel.localized("最常用的校验"))
+                .sectionTitle()
+
+            VStack(spacing: 10) {
+                if summary.verificationModeCounts.isEmpty {
+                    emptyState(title: viewModel.localized("暂无统计数据"), detail: viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。"))
+                }
+
+                ForEach(summary.verificationModeCounts) { item in
+                    countListRow(title: item.title, count: item.count, systemImage: "checkmark.seal")
+                }
+            }
+
+            Divider().opacity(0.22)
+
+            Text(viewModel.localized("常用源设备"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+
+            VStack(spacing: 10) {
+                ForEach(summary.sourceCounts) { item in
+                    countListRow(title: item.title, count: item.count, systemImage: "externaldrive")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func insightRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+            Spacer()
+            Text(value)
+                .font(.subheadline.monospacedDigit().weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .frame(width: 96, alignment: .trailing)
+        }
+        .frame(height: 24)
+    }
+
+    private func countListRow(title: String, count: Int, systemImage: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(accentColor)
+                .frame(width: 24, height: 24)
+                .background(accentColor.opacity(0.10), in: Circle())
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+            Spacer()
+            Text("\(count) \(viewModel.localized("次任务"))")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+                .frame(width: 86, alignment: .trailing)
+        }
+        .frame(height: 28)
+    }
+
+    private func percentText(numerator: Int, denominator: Int) -> String {
+        guard denominator > 0 else { return "0%" }
+        return "\(Int((Double(numerator) / Double(denominator) * 100).rounded()))%"
+    }
+
+    private func statisticsOverviewStrip(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
+        let compact = availableWidth < 720
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: compact ? 2 : 4)
+
+        return LazyVGrid(columns: columns, spacing: 12) {
+            statisticMetricCard(
+                title: viewModel.localized("写入总量"),
+                value: ByteDisplayFormatter.string(fromByteCount: summary.totalBytes),
+                detail: equivalentStorageText(summary.totalBytes),
+                systemImage: "externaldrive.fill.badge.checkmark",
+                tint: accentColor
+            )
+
+            statisticMetricCard(
+                title: viewModel.localized("近 7 天"),
+                value: ByteDisplayFormatter.string(fromByteCount: summary.recent7Bytes),
+                detail: recent7Detail(summary),
+                systemImage: "calendar.badge.clock",
+                tint: Color(red: 0.20, green: 0.62, blue: 0.45)
+            )
+
+            statisticMetricCard(
+                title: viewModel.localized("报告数"),
+                value: "\(summary.totalReports)",
+                detail: "\(summary.successfulReports) \(viewModel.localized("成功")) · \(summary.totalFiles) \(viewModel.selectedLanguage == .english ? "files" : "个文件")",
+                systemImage: "doc.text.magnifyingglass",
+                tint: secondaryAccentColor
+            )
+
+            statisticMetricCard(
+                title: viewModel.localized("进行中"),
+                value: "\(summary.activeProjectCount)",
+                detail: ByteDisplayFormatter.string(fromByteCount: summary.activeBytes),
+                systemImage: "bolt.horizontal.circle.fill",
+                tint: Color(red: 0.28, green: 0.58, blue: 1.00)
+            )
+        }
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+        .animation(responsiveLayoutAnimation, value: compact)
+    }
+
+    private func statisticMetricCard(
+        title: String,
+        value: String,
+        detail: String,
+        systemImage: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tint)
+                Spacer()
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            }
+
+            Text(value)
+                .font(.system(size: 25, weight: .semibold, design: .serif))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            Text(detail)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+        }
+        .frame(maxWidth: .infinity, minHeight: 116, alignment: .topLeading)
+        .padding(16)
+        .background(glassSurface(cornerRadius: 18, tint: tint, elevation: .tile))
+    }
+
+    private func activityHeatmapCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
+        let displayDays = heatmapDays(summary.days, mode: selectedActivityMode)
+        let displayPeakDay = displayDays.max { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }
+        let peakDay = displayPeakDay?.hasActivity == true ? displayPeakDay : nil
+        let heatmapWeeks = heatmapCalendarWeeks(displayDays)
+        let heatmapWidth = heatmapGridAvailableWidth(from: availableWidth)
+        let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmapWeeks.count)
+        let cellGap = heatmapCellGap(availableWidth: heatmapWidth)
+
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.localized("拷贝活动"))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(primaryTextColor)
+                    Text(viewModel.localized("颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 10) {
+                    activityModePicker
+                    heatmapFocusSummary(fallbackDay: peakDay)
+                }
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                weekdayRail(cellSize: cellSize, cellGap: cellGap)
+                heatmapGrid(days: displayDays, weeks: heatmapWeeks, availableWidth: heatmapWidth)
+            }
+
+            heatmapLegend(summary)
+
+            if !summary.hasReportActivity {
+                Text(viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(minHeight: 320, alignment: .topLeading)
+        .padding(30)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+        .animation(responsiveLayoutAnimation, value: hoveredActivityDay)
+        .animation(responsiveLayoutAnimation, value: selectedActivityMode)
+    }
+
+    private var activityModePicker: some View {
+        Picker(viewModel.localized("拷贝活动"), selection: $selectedActivityMode) {
+            ForEach(StatisticsActivityMode.allCases) { mode in
+                Text(viewModel.localized(mode.title)).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 186)
+        .onChange(of: selectedActivityMode) { _, _ in
+            hoveredActivityDay = nil
+        }
+    }
+
+    private func heatmapFocusSummary(fallbackDay: CopyActivityDay?) -> some View {
+        let focusedDay = hoveredActivityDay ?? fallbackDay
+        let label = hoveredActivityDay == nil ? heatmapFallbackLabel : heatmapFocusedLabel
+
+        return VStack(alignment: .trailing, spacing: 5) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+
+            if let focusedDay {
+                Text("\(shortDateText(focusedDay.date)) · \(ByteDisplayFormatter.string(fromByteCount: focusedDay.bytes))")
+                    .font(.subheadline.monospacedDigit().weight(.bold))
+                    .foregroundStyle(primaryTextColor)
+                    .lineLimit(1)
+                Text(heatmapDayDetailText(focusedDay))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+            } else {
+                Text(viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(primaryTextColor)
+            }
+        }
+        .frame(minWidth: 168, alignment: .trailing)
+    }
+
+    private var heatmapFallbackLabel: String {
+        switch selectedActivityMode {
+        case .daily:
+            return viewModel.localized("峰值日")
+        case .weekly:
+            return viewModel.selectedLanguage == .english ? "Peak Week" : "峰值周"
+        case .cumulative:
+            return viewModel.localized("累计")
+        }
+    }
+
+    private var heatmapFocusedLabel: String {
+        switch selectedActivityMode {
+        case .daily:
+            return viewModel.selectedLanguage == .english ? "Selected Day" : "选中日期"
+        case .weekly:
+            return viewModel.selectedLanguage == .english ? "Selected Week" : "选中周"
+        case .cumulative:
+            return viewModel.selectedLanguage == .english ? "Cumulative To Date" : "截至当天"
+        }
+    }
+
+    private func heatmapGrid(days: [CopyActivityDay], weeks: [[CopyActivityDay?]], availableWidth: CGFloat) -> some View {
+        let maxBytes = max(days.map(\.bytes).max() ?? 0, 1)
+        let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: weeks.count)
+        let cellGap = heatmapCellGap(availableWidth: availableWidth)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: cellGap) {
+                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: cellGap) {
+                        ForEach(0..<week.count, id: \.self) { dayIndex in
+                            if let day = week[dayIndex] {
+                                heatmapCell(day, maxBytes: maxBytes, size: cellSize)
+                            } else {
+                                heatmapEmptyCell(size: cellSize)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack(alignment: .top, spacing: cellGap) {
+                ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
+                    Text(heatmapMonthLabel(for: week, index: index, weeks: weeks))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.70)
+                        .frame(width: cellSize, alignment: .leading)
+                }
+            }
+            .frame(height: 16, alignment: .leading)
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func weekdayRail(cellSize: CGFloat, cellGap: CGFloat) -> some View {
+        VStack(alignment: .trailing, spacing: cellGap) {
+            ForEach(0..<7, id: \.self) { index in
+                Text(weekdayShortName(index))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(index == 1 || index == 3 || index == 5 ? secondaryTextColor : Color.clear)
+                    .frame(width: 18, height: cellSize, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func heatmapLegend(_ summary: CopyStatisticsSummary) -> some View {
+        HStack(spacing: 8) {
+            Text(viewModel.selectedLanguage == .english ? "Less" : "少")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            ForEach(0..<9, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(heatmapColor(level: level))
+                    .frame(width: 16, height: 16)
+            }
+            Text(viewModel.selectedLanguage == .english ? "More" : "多")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            Spacer()
+            Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+        }
+    }
+
+    private var statisticsRecentReportsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(viewModel.localized("最近报告"))
+                    .sectionTitle()
+                Spacer()
+                Text("\(viewModel.reports.count)")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    if viewModel.reports.isEmpty {
+                        emptyState(
+                            title: viewModel.localized("暂无统计数据"),
+                            detail: viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。")
+                        )
+                    }
+
+                    ForEach(viewModel.reports.prefix(8)) { report in
+                        recentStatisticsReportRow(report)
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func recentStatisticsReportRow(_ report: TransferReport) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(report.sourceName)
+                    .font(.headline)
+                    .foregroundStyle(primaryTextColor)
+                    .lineLimit(1)
+                Spacer()
+                Text(report.success ? viewModel.localized("成功") : viewModel.localized("异常"))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(report.success ? .mint : .red)
+            }
+
+            Text("\(ByteDisplayFormatter.string(fromByteCount: report.totalBytes)) · \(report.selectedFileCount) \(viewModel.selectedLanguage == .english ? "files" : "个文件")")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+
+            Text(shortDateTimeText(report.finishedAt))
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(glassSurface(cornerRadius: 18, tint: report.success ? Color(red: 0.20, green: 0.62, blue: 0.45) : .orange, elevation: .tile))
+    }
+
     private func bottomTabBar(availableWidth: CGFloat, heightCompact: Bool) -> some View {
         let compact = availableWidth < 520 || heightCompact
-        let buttonWidth = compact ? max(82, min(104, (availableWidth - 58) / 3)) : 112
+        let sectionCount = CGFloat(MainSection.allCases.count)
+        let horizontalPadding: CGFloat = compact ? 16 : 20
+        let totalSpacing = max(sectionCount - 1, 0) * (compact ? 7 : 10)
+        let fittedButtonWidth = max(54, (availableWidth - horizontalPadding - totalSpacing) / max(sectionCount, 1))
+        let buttonWidth = compact ? min(96, fittedButtonWidth) : 112
         let dashboardWidth = compact ? buttonWidth : 128
         let buttonHeight: CGFloat = compact ? 48 : 58
         let cornerRadius: CGFloat = compact ? 22 : 30
@@ -964,7 +1462,7 @@ struct ContentView: View {
                     Text(project.name)
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(primaryTextColor)
-                    Text("\(project.sourceName) · \(byteFormatter.string(fromByteCount: project.totalBytes)) · \(project.verificationMode.title)")
+                    Text("\(project.sourceName) · \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes)) · \(project.verificationMode.title)")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(secondaryTextColor)
                 }
@@ -1082,7 +1580,7 @@ struct ContentView: View {
     private func projectStageTrack(_ state: ProjectStageState, tint: Color) -> some View {
         progressTrack(
             title: state.title,
-            detail: "\(state.completedFiles)/\(state.totalFiles) · \(byteFormatter.string(fromByteCount: state.processedBytes))/\(byteFormatter.string(fromByteCount: state.totalBytes)) · \(byteFormatter.string(fromByteCount: Int64(state.speedBytesPerSecond)))/s · 剩余 \(etaText(state.eta)) · \(state.currentFile.isEmpty ? state.detail : state.currentFile)",
+            detail: "\(state.completedFiles)/\(state.totalFiles) · \(ByteDisplayFormatter.string(fromByteCount: state.processedBytes))/\(ByteDisplayFormatter.string(fromByteCount: state.totalBytes)) · \(ByteDisplayFormatter.string(fromByteCount: Int64(state.speedBytesPerSecond)))/s · 剩余 \(etaText(state.eta)) · \(state.currentFile.isEmpty ? state.detail : state.currentFile)",
             value: state.fraction,
             tint: state.isBlocked ? .orange : tint
         )
@@ -1416,9 +1914,267 @@ struct ContentView: View {
 
     private func reportSummaryLine(_ report: TransferReport) -> String {
         if viewModel.selectedLanguage == .english {
-            return "\(report.selectedFileCount) files · \(byteFormatter.string(fromByteCount: report.totalBytes)) · total \(stopwatchText(report.duration))"
+            return "\(report.selectedFileCount) files · \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes)) · total \(stopwatchText(report.duration))"
         }
-        return "\(report.selectedFileCount) 个文件  ·  \(byteFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
+        return "\(report.selectedFileCount) 个文件  ·  \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
+    }
+
+    private func heatmapDays(_ days: [CopyActivityDay], mode: StatisticsActivityMode) -> [CopyActivityDay] {
+        switch mode {
+        case .daily:
+            return days
+        case .weekly:
+            return heatmapCalendarWeeks(days).flatMap { week in
+                let realDays = week.compactMap { $0 }
+                let bytes = realDays.reduce(0) { $0 + $1.bytes }
+                let files = realDays.reduce(0) { $0 + $1.files }
+                let reportCount = realDays.reduce(0) { $0 + $1.reportCount }
+                let successCount = realDays.reduce(0) { $0 + $1.successCount }
+                return realDays.map { day in
+                    CopyActivityDay(
+                        date: day.date,
+                        bytes: bytes,
+                        files: files,
+                        reportCount: reportCount,
+                        successCount: successCount
+                    )
+                }
+            }
+        case .cumulative:
+            var runningBytes: Int64 = 0
+            var runningFiles = 0
+            var runningReports = 0
+            var runningSuccess = 0
+            return days.map { day in
+                runningBytes += day.bytes
+                runningFiles += day.files
+                runningReports += day.reportCount
+                runningSuccess += day.successCount
+                return CopyActivityDay(
+                    date: day.date,
+                    bytes: runningBytes,
+                    files: runningFiles,
+                    reportCount: runningReports,
+                    successCount: runningSuccess
+                )
+            }
+        }
+    }
+
+    private func heatmapCalendarWeeks(_ days: [CopyActivityDay]) -> [[CopyActivityDay?]] {
+        guard let firstDate = days.first?.date else { return [] }
+
+        let calendar = Calendar.current
+        let leadingEmptySlots = max(calendar.component(.weekday, from: firstDate) - 1, 0)
+        var slots = Array<CopyActivityDay?>(repeating: nil, count: leadingEmptySlots)
+        slots.append(contentsOf: days.map { Optional($0) })
+
+        while !slots.isEmpty && slots.count % 7 != 0 {
+            slots.append(nil)
+        }
+
+        return stride(from: 0, to: slots.count, by: 7).map { startIndex in
+            Array(slots[startIndex..<min(startIndex + 7, slots.count)])
+        }
+    }
+
+    private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat) -> some View {
+        let level = heatmapLevel(bytes: day.bytes, maxBytes: maxBytes)
+        let isHovered = hoveredActivityDay?.id == day.id
+        let isToday = day.date == Calendar.current.startOfDay(for: Date())
+
+        return RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(heatmapColor(level: level))
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(
+                        isHovered ? primaryTextColor.opacity(0.72) : (isToday ? primaryTextColor.opacity(0.38) : Color.clear),
+                        lineWidth: isHovered ? 1.4 : 1
+                    )
+            )
+            .frame(width: size, height: size)
+            .scaleEffect(isHovered ? 1.10 : 1)
+            .zIndex(isHovered ? 1 : 0)
+            .contentShape(Rectangle())
+            .help(heatmapDayHelpText(day, mode: selectedActivityMode))
+            .onHover { isInside in
+                if isInside {
+                    hoveredActivityDay = day
+                } else if hoveredActivityDay?.id == day.id {
+                    hoveredActivityDay = nil
+                }
+            }
+    }
+
+    private func heatmapEmptyCell(size: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.clear)
+            .frame(width: size, height: size)
+    }
+
+    private func heatmapLevel(bytes: Int64, maxBytes: Int64) -> Int {
+        guard bytes > 0, maxBytes > 0 else { return 0 }
+        let fraction = Double(bytes) / Double(maxBytes)
+        if fraction < 0.08 { return 1 }
+        if fraction < 0.18 { return 2 }
+        if fraction < 0.30 { return 3 }
+        if fraction < 0.44 { return 4 }
+        if fraction < 0.58 { return 5 }
+        if fraction < 0.72 { return 6 }
+        if fraction < 0.88 { return 7 }
+        return 8
+    }
+
+    private func heatmapColor(level: Int) -> Color {
+        let baseColor = Color(red: 0.23, green: 0.57, blue: 1.00)
+        let nightOpacity: [Double] = [0.18, 0.28, 0.38, 0.48, 0.60, 0.72, 0.84, 0.92, 1.00]
+        let dayOpacity: [Double] = [0.12, 0.20, 0.30, 0.40, 0.52, 0.64, 0.76, 0.86, 0.96]
+        let index = min(max(level, 0), 8)
+
+        switch level {
+        case 0:
+            return secondaryTextColor.opacity(viewModel.selectedTheme == .night ? 0.18 : 0.12)
+        default:
+            return baseColor.opacity(viewModel.selectedTheme == .night ? nightOpacity[index] : dayOpacity[index])
+        }
+    }
+
+    private func heatmapGridAvailableWidth(from availableWidth: CGFloat) -> CGFloat {
+        max(180, availableWidth - 90)
+    }
+
+    private func heatmapCellSize(availableWidth: CGFloat, weekCount: Int) -> CGFloat {
+        let columns = CGFloat(max(weekCount, 1))
+        let gap = heatmapCellGap(availableWidth: availableWidth)
+        let gapWidth = gap * max(columns - 1, 0)
+        let fitted = (availableWidth - gapWidth) / columns
+        let clamped = min(20, max(3.0, fitted))
+        return (clamped * 2).rounded(.down) / 2
+    }
+
+    private func heatmapCellGap(availableWidth: CGFloat) -> CGFloat {
+        if availableWidth < 420 { return 1.5 }
+        if availableWidth < 700 { return 2.5 }
+        return 4
+    }
+
+    private func weekdayShortName(_ index: Int) -> String {
+        if viewModel.selectedLanguage == .english {
+            return ["S", "M", "T", "W", "T", "F", "S"][index]
+        }
+        return ["日", "一", "二", "三", "四", "五", "六"][index]
+    }
+
+    private func heatmapMonthLabel(for week: [CopyActivityDay?], index: Int, weeks: [[CopyActivityDay?]]) -> String {
+        guard let firstDate = week.compactMap({ $0?.date }).first else { return "" }
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: firstDate)
+
+        if index > 0,
+           let previousDate = weeks[index - 1].compactMap({ $0?.date }).first,
+           calendar.component(.month, from: previousDate) == month {
+            return ""
+        }
+
+        if viewModel.selectedLanguage == .english {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
+            formatter.setLocalizedDateFormatFromTemplate("MMM")
+            return formatter.string(from: firstDate)
+        }
+
+        return "\(month)月"
+    }
+
+    private func heatmapDayHelpText(_ day: CopyActivityDay, mode: StatisticsActivityMode) -> String {
+        let amountLabel: String
+        switch mode {
+        case .daily:
+            amountLabel = viewModel.selectedLanguage == .english ? "Copied" : "当天拷贝量"
+        case .weekly:
+            amountLabel = viewModel.selectedLanguage == .english ? "Copied this week" : "本周拷贝量"
+        case .cumulative:
+            amountLabel = viewModel.selectedLanguage == .english ? "Cumulative copied" : "累计拷贝量"
+        }
+
+        if viewModel.selectedLanguage == .english {
+            return [
+                fullDateText(day.date),
+                "\(amountLabel) \(ByteDisplayFormatter.string(fromByteCount: day.bytes))",
+                "\(day.reportCount) reports · \(day.files) files",
+                "\(day.successCount) successful reports"
+            ].joined(separator: "\n")
+        }
+
+        return [
+            fullDateText(day.date),
+            "\(amountLabel) \(ByteDisplayFormatter.string(fromByteCount: day.bytes))",
+            "\(day.reportCount) 份报告 · \(day.files) 个文件",
+            "\(day.successCount) 份成功报告"
+        ].joined(separator: "\n")
+    }
+
+    private func heatmapDayDetailText(_ day: CopyActivityDay) -> String {
+        if viewModel.selectedLanguage == .english {
+            return "\(day.reportCount) reports · \(day.files) files"
+        }
+        return "\(day.reportCount) 份报告 · \(day.files) 个文件"
+    }
+
+    private func recent7Detail(_ summary: CopyStatisticsSummary) -> String {
+        let daysWithActivity = summary.days.suffix(7).filter(\.hasActivity).count
+        if viewModel.selectedLanguage == .english {
+            return "\(daysWithActivity) active days"
+        }
+        return "\(daysWithActivity) 天有写入"
+    }
+
+    private func equivalentStorageText(_ bytes: Int64) -> String {
+        guard bytes > 0 else {
+            return viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据"
+        }
+        let cardBytes = Double(128_000_000_000)
+        let cardCount = Double(bytes) / cardBytes
+        let formattedCount = cardCount >= 10
+            ? String(format: "%.0f", cardCount)
+            : String(format: "%.1f", max(cardCount, 0.1))
+        if viewModel.selectedLanguage == .english {
+            return "About \(formattedCount) x 128GB cards"
+        }
+        return "约 \(formattedCount) 张 128GB 卡"
+    }
+
+    private func shortDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
+        if viewModel.selectedLanguage == .english {
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        } else {
+            formatter.dateFormat = "M月d日"
+        }
+        return formatter.string(from: date)
+    }
+
+    private func fullDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
+        if viewModel.selectedLanguage == .english {
+            formatter.setLocalizedDateFormatFromTemplate("EEEE, MMM d, yyyy")
+        } else {
+            formatter.dateFormat = "yyyy年M月d日 EEEE"
+        }
+        return formatter.string(from: date)
+    }
+
+    private func shortDateTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
+        if viewModel.selectedLanguage == .english {
+            formatter.setLocalizedDateFormatFromTemplate("MMM d, HH:mm")
+        } else {
+            formatter.dateFormat = "M月d日 HH:mm"
+        }
+        return formatter.string(from: date)
     }
 
     private func destinationCard(badge: String, title: String, path: String?, actionTitle: String, action: @escaping () -> Void) -> some View {
@@ -1489,12 +2245,6 @@ struct ContentView: View {
             elevation: elevation,
             reduceEffects: reduceGlassEffects
         )
-    }
-
-    private var byteFormatter: ByteCountFormatter {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter
     }
 
     private func etaText(_ value: TimeInterval?) -> String {
@@ -2030,8 +2780,9 @@ private struct ImportSheet: View {
             }
         }
         .padding(28)
-        .frame(minWidth: 980, idealWidth: 1180, maxWidth: 1280, minHeight: 660, idealHeight: 760, maxHeight: 840)
+        .frame(minWidth: 980, idealWidth: 1180, maxWidth: .infinity, minHeight: 660, idealHeight: 760, maxHeight: .infinity)
         .background(importSheetBackground)
+        .background(ResizableSheetWindowConfigurator(minSize: NSSize(width: 980, height: 660), idealSize: NSSize(width: 1180, height: 760)))
         .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
     }
@@ -3076,9 +3827,7 @@ private struct ImportSheet: View {
     }
 
     private func byteText(_ value: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: value)
+        ByteDisplayFormatter.string(fromByteCount: value)
     }
 
     private var importSheetBackground: some View {
@@ -3176,7 +3925,7 @@ private struct FolderPickerSheet: View {
                 selectionInspector
             }
         }
-        .frame(minWidth: 980, idealWidth: 1160, maxWidth: 1280, minHeight: 640, idealHeight: 740, maxHeight: 820)
+        .frame(minWidth: 980, idealWidth: 1160, maxWidth: .infinity, minHeight: 640, idealHeight: 740, maxHeight: .infinity)
         .background(
             Group {
                 if viewModel.selectedTheme == .night {
@@ -3204,6 +3953,7 @@ private struct FolderPickerSheet: View {
                 }
             }
         )
+        .background(ResizableSheetWindowConfigurator(minSize: NSSize(width: 980, height: 640), idealSize: NSSize(width: 1160, height: 740)))
         .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
     }
@@ -3420,9 +4170,7 @@ private struct FolderPickerSheet: View {
     }
 
     private func byteText(_ value: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: value)
+        ByteDisplayFormatter.string(fromByteCount: value)
     }
 
     private func isCurrent(_ url: URL) -> Bool {
@@ -3486,6 +4234,49 @@ private struct CapacityMeter: View {
         guard let totalCapacity, totalCapacity > 0, let availableCapacity else { return 0 }
         let used = 1 - (Double(availableCapacity) / Double(totalCapacity))
         return CGFloat(min(max(used, 0), 1))
+    }
+}
+
+private struct ResizableSheetWindowConfigurator: NSViewRepresentable {
+    let minSize: NSSize
+    let idealSize: NSSize
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.postsFrameChangedNotifications = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configure(nsView.window, coordinator: context.coordinator)
+        }
+    }
+
+    private func configure(_ window: NSWindow?, coordinator: Coordinator) {
+        guard let window else { return }
+
+        window.styleMask.insert(.resizable)
+        window.minSize = minSize
+        window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+        guard !coordinator.didSetInitialSize else { return }
+        coordinator.didSetInitialSize = true
+
+        let currentSize = window.contentLayoutRect.size
+        let targetSize = NSSize(
+            width: max(currentSize.width, idealSize.width),
+            height: max(currentSize.height, idealSize.height)
+        )
+        window.setContentSize(targetSize)
+    }
+
+    final class Coordinator {
+        var didSetInitialSize = false
     }
 }
 

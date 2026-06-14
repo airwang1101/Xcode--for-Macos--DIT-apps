@@ -187,11 +187,9 @@ final class AppViewModel: ObservableObject {
         guard let summary = selectionSummary else { return [] }
         var warnings: [String] = []
         let required = summary.totalSize
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
 
         if let available = availableCapacity(for: summary.targetURL), available < required {
-            warnings.append("主目标盘空间不足：需要 \(formatter.string(fromByteCount: required))，可用 \(formatter.string(fromByteCount: available))")
+            warnings.append("主目标盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
         }
         if !isWritableDestination(summary.targetURL) {
             warnings.append("主目标盘不可写或位于只读卷，请重新选择。")
@@ -200,7 +198,7 @@ final class AppViewModel: ObservableObject {
         if let backupURL = summary.backupURL,
            let available = availableCapacity(for: backupURL),
            available < required {
-            warnings.append("备份盘空间不足：需要 \(formatter.string(fromByteCount: required))，可用 \(formatter.string(fromByteCount: available))")
+            warnings.append("备份盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
         }
         if let backupURL = summary.backupURL, !isWritableDestination(backupURL) {
             warnings.append("备份盘不可写或位于只读卷，请重新选择。")
@@ -213,7 +211,7 @@ final class AppViewModel: ObservableObject {
            let available = availableCapacity(for: summary.targetURL) {
             let combinedRequired = required * 2
             if available < combinedRequired {
-                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写需要 \(formatter.string(fromByteCount: combinedRequired))，当前可用 \(formatter.string(fromByteCount: available))")
+                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写需要 \(ByteDisplayFormatter.string(fromByteCount: combinedRequired))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
             }
         }
 
@@ -291,6 +289,10 @@ final class AppViewModel: ObservableObject {
 
     var backupProjects: [CopyProject] {
         orderedProjects.filter(\.hasBackup)
+    }
+
+    var copyStatistics: CopyStatisticsSummary {
+        CopyStatisticsSummary.make(reports: reports, projects: orderedProjects)
     }
 
     var projectNamePreview: String {
@@ -1682,9 +1684,7 @@ final class AppViewModel: ObservableObject {
         }
 
         if let available = availableCapacity(for: backupURL), available < project.totalBytes {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            warnings.append("备份盘空间不足：需要 \(formatter.string(fromByteCount: project.totalBytes))，可用 \(formatter.string(fromByteCount: available))。")
+            warnings.append("备份盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))。")
         }
         if !isWritableDestination(backupURL) {
             warnings.append("备份盘不可写或位于只读卷，请重新选择。")

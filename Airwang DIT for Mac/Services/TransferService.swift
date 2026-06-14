@@ -16,9 +16,7 @@ struct TransferService {
         var errorDescription: String? {
             switch self {
             case let .insufficientSpace(destination, available, required):
-                let formatter = ByteCountFormatter()
-                formatter.countStyle = .file
-                return "\(destination) 剩余空间不足：需要 \(formatter.string(fromByteCount: required))，当前可用 \(formatter.string(fromByteCount: available))。"
+                return "\(destination) 剩余空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))。"
             case let .deviceUnavailable(role, path):
                 return "\(role) 已断开或不可访问：\(path)"
             case let .destinationNotWritable(role, path):
@@ -28,9 +26,7 @@ struct TransferService {
             case let .pathOverlap(message):
                 return message
             case let .copySizeMismatch(file, expected, actual):
-                let formatter = ByteCountFormatter()
-                formatter.countStyle = .file
-                return "\(file) 写入大小不一致：应为 \(formatter.string(fromByteCount: expected))，实际 \(formatter.string(fromByteCount: actual))。"
+                return "\(file) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
             }
         }
     }
@@ -1874,12 +1870,8 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        let byteFormatter = ByteCountFormatter()
-        byteFormatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
-        byteFormatter.countStyle = .file
-
         let fileLines = summary.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(byteFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
+            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
         }
 
         let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
@@ -1891,7 +1883,7 @@ struct TransferService {
                 return """
                 \(index + 1). \(record.relativePath)
                    Status: \(record.status)
-                   Size: \(byteFormatter.string(fromByteCount: record.size))
+                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
                    Source SHA-256: \(record.sourceChecksum ?? "-")
                    Primary SHA-256: \(record.targetChecksum ?? "-")
                    Backup SHA-256: \(record.backupChecksum ?? "-")
@@ -1901,7 +1893,7 @@ struct TransferService {
             return """
             \(index + 1). \(record.relativePath)
                状态: \(record.status)
-               大小: \(byteFormatter.string(fromByteCount: record.size))
+               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
                源 SHA-256: \(record.sourceChecksum ?? "-")
                主目标 SHA-256: \(record.targetChecksum ?? "-")
                备份 SHA-256: \(record.backupChecksum ?? "-")
@@ -1934,11 +1926,11 @@ struct TransferService {
             Actual Scan Folder: \(summary.sourceRootURL.path)
             Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
             Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
-            Target Capacity: \(capacityLines(for: destinations, formatter: byteFormatter))
+            Target Capacity: \(capacityLines(for: destinations))
 
             [Media Stats]
             File Count: \(summary.selectedItems.count)
-            Total Size: \(byteFormatter.string(fromByteCount: summary.totalSize))
+            Total Size: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
             Copy Failures: \(copyFailedFiles.count)
             Verification Failures: \(verificationFailedFiles.count)
             Skipped Verification: \(skippedFiles.count)
@@ -1990,11 +1982,11 @@ struct TransferService {
         实际扫描目录: \(summary.sourceRootURL.path)
         主目标地址: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
         备份地址: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "未启用")
-        目标容量: \(capacityLines(for: destinations, formatter: byteFormatter))
+        目标容量: \(capacityLines(for: destinations))
 
         [素材统计]
         文件数量: \(summary.selectedItems.count)
-        总容量: \(byteFormatter.string(fromByteCount: summary.totalSize))
+        总容量: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
         拷贝失败: \(copyFailedFiles.count)
         校验失败: \(verificationFailedFiles.count)
         跳过校验: \(skippedFiles.count)
@@ -2057,12 +2049,8 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        let byteFormatter = ByteCountFormatter()
-        byteFormatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
-        byteFormatter.countStyle = .file
-
         let fileLines = project.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(byteFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
+            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
         }
         let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
         let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
@@ -2073,7 +2061,7 @@ struct TransferService {
                 return """
                 \(index + 1). \(record.relativePath)
                    Status: \(record.status)
-                   Size: \(byteFormatter.string(fromByteCount: record.size))
+                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
                    Source Checksum: \(record.sourceChecksum ?? "-")
                    Primary Checksum: \(record.targetChecksum ?? "-")
                    Backup Checksum: \(record.backupChecksum ?? "-")
@@ -2083,7 +2071,7 @@ struct TransferService {
             return """
             \(index + 1). \(record.relativePath)
                状态: \(record.status)
-               大小: \(byteFormatter.string(fromByteCount: record.size))
+               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
                源校验值: \(record.sourceChecksum ?? "-")
                主目标校验值: \(record.targetChecksum ?? "-")
                备份校验值: \(record.backupChecksum ?? "-")
@@ -2129,11 +2117,11 @@ struct TransferService {
             Primary Target Path: \(project.primaryImportURL.path)
             Backup Path: \(project.backupImportURL?.path ?? "Disabled")
             Stage Write Path: \(destinationFolderURL.path)
-            Target Capacity: \(capacityLines(for: [destination], formatter: byteFormatter))
+            Target Capacity: \(capacityLines(for: [destination]))
 
             [Media Stats]
             File Count: \(project.selectedItems.count)
-            Total Size: \(byteFormatter.string(fromByteCount: project.totalBytes))
+            Total Size: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
             Copy Failures: \(copyFailedFiles.count)
             Verification Failures: \(verificationFailedFiles.count)
             Skipped Verification: \(skippedFiles.count)
@@ -2190,11 +2178,11 @@ struct TransferService {
         主目标地址: \(project.primaryImportURL.path)
         备份地址: \(project.backupImportURL?.path ?? "未启用")
         本阶段写入地址: \(destinationFolderURL.path)
-        目标容量: \(capacityLines(for: [destination], formatter: byteFormatter))
+        目标容量: \(capacityLines(for: [destination]))
 
         [素材统计]
         文件数量: \(project.selectedItems.count)
-        总容量: \(byteFormatter.string(fromByteCount: project.totalBytes))
+        总容量: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
         拷贝失败: \(copyFailedFiles.count)
         校验失败: \(verificationFailedFiles.count)
         跳过校验: \(skippedFiles.count)
@@ -2346,11 +2334,11 @@ struct TransferService {
         return items.enumerated().map { index, item in "\(index + 1). \(item)" }.joined(separator: "\n")
     }
 
-    private func capacityLines(for destinations: [Destination], formatter: ByteCountFormatter) -> String {
+    private func capacityLines(for destinations: [Destination]) -> String {
         destinations.map { destination in
             let capacity = DiskCapacityResolver.capacity(for: destination.rootURL)
-            let free = capacity.availableCapacity.map { formatter.string(fromByteCount: $0) } ?? "-"
-            let total = capacity.totalCapacity.map { formatter.string(fromByteCount: $0) } ?? "-"
+            let free = capacity.availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
+            let total = capacity.totalCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
             return "\(destination.label) 可用 \(free) / 总计 \(total)"
         }
         .joined(separator: " | ")

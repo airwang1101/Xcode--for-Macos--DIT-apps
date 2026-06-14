@@ -61,6 +61,7 @@ enum MainSection: String, CaseIterable, Identifiable {
     case copy
     case dashboard
     case backup
+    case statistics
 
     var id: String { rawValue }
 
@@ -69,6 +70,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "拷贝"
         case .dashboard: "仪表盘"
         case .backup: "备份"
+        case .statistics: "统计"
         }
     }
 
@@ -77,6 +79,23 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "square.and.arrow.down.on.square"
         case .dashboard: "gauge.with.dots.needle.67percent"
         case .backup: "externaldrive.badge.timemachine"
+        case .statistics: "chart.xyaxis.line"
+        }
+    }
+}
+
+enum StatisticsActivityMode: String, CaseIterable, Identifiable {
+    case daily
+    case weekly
+    case cumulative
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .daily: "每日"
+        case .weekly: "每周"
+        case .cumulative: "累计"
         }
     }
 }
@@ -142,6 +161,7 @@ enum AppLocalization {
         "拷贝": "Copy",
         "仪表盘": "Dashboard",
         "备份": "Backup",
+        "统计": "Stats",
         "多项目拷贝队列、主盘校验、串行备份与可追溯报告": "Multi-project copy queue, primary verification, serial backup, and traceable reports",
         "选择主目标盘": "Choose Primary Target",
         "刷新设备": "Refresh Devices",
@@ -270,8 +290,67 @@ enum AppLocalization {
         "数据正在保存中，请稍后再试": "Saving data, please try again shortly",
         "当前没有排队中的项目，请先创建拷贝任务": "No queued projects. Create a copy task first",
         "当前无法执行队列": "Queue cannot run right now",
-        "开始执行排队中的拷贝项目": "Start running queued copy projects"
+        "开始执行排队中的拷贝项目": "Start running queued copy projects",
+        "写入总量": "Written",
+        "近 7 天": "Last 7 Days",
+        "报告数": "Reports",
+        "最近 16 周写入热力图": "Last 16 Weeks Activity",
+        "颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。": "Darker cells mean more data written that day. Stats come from local task reports and include primary and backup stages.",
+        "暂无统计数据": "No Stats Yet",
+        "完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。": "After a copy finishes, daily activity, recent data volume, and report counts appear here.",
+        "最近报告": "Recent Reports",
+        "峰值日": "Peak Day",
+        "等效容量": "Equivalent",
+        "活跃项目": "Active Projects",
+        "个人资料": "Profile",
+        "分享": "Share",
+        "私有": "Private",
+        "编辑": "Edit",
+        "累计拷贝量": "Total Copied",
+        "峰值拷贝量": "Peak Copied",
+        "最长任务": "Longest Task",
+        "当前连续天数": "Current Streak",
+        "最长连续天数": "Longest Streak",
+        "拷贝活动": "Copy Activity",
+        "每日": "Daily",
+        "每周": "Weekly",
+        "累计": "Cumulative",
+        "活动洞察": "Activity Insights",
+        "备份覆盖率": "Backup Coverage",
+        "成功率": "Success Rate",
+        "活跃天数": "Active Days",
+        "文件总数": "Files Copied",
+        "报告总数": "Reports",
+        "最常用的校验": "Most Used Verification",
+        "常用源设备": "Common Sources",
+        "次任务": "runs"
     ]
+}
+
+enum ByteDisplayFormatter {
+    private static let bytesPerTerabyte = 1_000_000_000_000.0
+
+    static func string(fromByteCount byteCount: Int64) -> String {
+        if abs(Double(byteCount)) >= bytesPerTerabyte {
+            return terabyteString(fromByteCount: byteCount)
+        }
+
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: byteCount)
+    }
+
+    private static func terabyteString(fromByteCount byteCount: Int64) -> String {
+        let terabytes = Double(byteCount) / bytesPerTerabyte
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = abs(terabytes) < 10 ? 2 : 1
+        let value = formatter.string(from: NSNumber(value: terabytes)) ?? String(format: "%.1f", terabytes)
+        return "\(value) TB"
+    }
 }
 
 enum ScanFilter: String, CaseIterable, Identifiable {
@@ -454,20 +533,13 @@ struct StorageCapacitySnapshot: Equatable, Hashable {
 
     var capacityLine: String {
         guard isReadable else { return "容量暂不可读" }
-        let free = availableCapacity.map { Self.byteFormatter.string(fromByteCount: $0) } ?? "-"
-        let total = totalCapacity.map { Self.byteFormatter.string(fromByteCount: $0) } ?? "-"
+        let free = availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
+        let total = totalCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
         return "可用 \(free) / 总计 \(total)"
     }
 
     var shortAvailableText: String {
-        availableCapacity.map { Self.byteFormatter.string(fromByteCount: $0) } ?? "未知"
-    }
-
-    private static var byteFormatter: ByteCountFormatter {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useTB]
-        formatter.countStyle = .file
-        return formatter
+        availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "未知"
     }
 }
 
@@ -1489,4 +1561,207 @@ struct TransferReport: Identifiable, Codable {
         guard reportName == localURL.lastPathComponent else { return nil }
         return localURL.path
     }
+}
+
+struct CopyActivityDay: Identifiable, Equatable {
+    let date: Date
+    let bytes: Int64
+    let files: Int
+    let reportCount: Int
+    let successCount: Int
+
+    var id: Date { date }
+
+    var hasActivity: Bool {
+        bytes > 0 || reportCount > 0
+    }
+}
+
+struct CopyStatisticsCountItem: Identifiable, Equatable {
+    let title: String
+    let count: Int
+
+    var id: String { title }
+}
+
+struct CopyStatisticsSummary: Equatable {
+    let days: [CopyActivityDay]
+    let totalBytes: Int64
+    let recent7Bytes: Int64
+    let totalFiles: Int
+    let totalReports: Int
+    let successfulReports: Int
+    let activeBytes: Int64
+    let activeProjectCount: Int
+    let peakDayBytes: Int64
+    let peakDay: CopyActivityDay?
+    let longestReportDuration: TimeInterval
+    let currentStreakDays: Int
+    let longestStreakDays: Int
+    let activeDayCount: Int
+    let backupReportCount: Int
+    let verificationModeCounts: [CopyStatisticsCountItem]
+    let sourceCounts: [CopyStatisticsCountItem]
+
+    var hasReportActivity: Bool {
+        totalReports > 0 || totalBytes > 0
+    }
+
+    static func make(
+        reports: [TransferReport],
+        projects: [CopyProject],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        dayCount: Int = 365
+    ) -> CopyStatisticsSummary {
+        let normalizedDayCount = max(dayCount, 7)
+        let today = calendar.startOfDay(for: now)
+        let firstDay = calendar.date(byAdding: .day, value: -(normalizedDayCount - 1), to: today) ?? today
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        var visibleBuckets: [Date: StatisticsDayAccumulator] = [:]
+        var allTimeBuckets: [Date: StatisticsDayAccumulator] = [:]
+        let reportsUpToToday = reports.filter { $0.finishedAt < endDay }
+
+        for report in reportsUpToToday {
+            let day = calendar.startOfDay(for: report.finishedAt)
+            accumulate(report, on: day, into: &allTimeBuckets)
+
+            if day >= firstDay && day < endDay {
+                accumulate(report, on: day, into: &visibleBuckets)
+            }
+        }
+
+        let days = (0..<normalizedDayCount).compactMap { offset -> CopyActivityDay? in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
+                return nil
+            }
+            let bucket = visibleBuckets[date] ?? StatisticsDayAccumulator()
+            return CopyActivityDay(
+                date: date,
+                bytes: bucket.bytes,
+                files: bucket.files,
+                reportCount: bucket.reportCount,
+                successCount: bucket.successCount
+            )
+        }
+
+        let allTimeDays = allTimeBuckets.map { date, bucket in
+            CopyActivityDay(
+                date: date,
+                bytes: bucket.bytes,
+                files: bucket.files,
+                reportCount: bucket.reportCount,
+                successCount: bucket.successCount
+            )
+        }
+        let recent7Start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+        let peakDay = allTimeDays.max { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }
+        let activeProjects = projects.filter { $0.status == .running || $0.status == .cancelling }
+        let activeDates = Set(allTimeDays.filter(\.hasActivity).map(\.date))
+
+        return CopyStatisticsSummary(
+            days: days,
+            totalBytes: allTimeDays.reduce(0) { $0 + $1.bytes },
+            recent7Bytes: days.filter { $0.date >= recent7Start }.reduce(0) { $0 + $1.bytes },
+            totalFiles: allTimeDays.reduce(0) { $0 + $1.files },
+            totalReports: allTimeDays.reduce(0) { $0 + $1.reportCount },
+            successfulReports: allTimeDays.reduce(0) { $0 + $1.successCount },
+            activeBytes: activeProjects.reduce(0) { $0 + activeProcessedBytes(for: $1) },
+            activeProjectCount: activeProjects.count,
+            peakDayBytes: peakDay?.bytes ?? 0,
+            peakDay: peakDay?.hasActivity == true ? peakDay : nil,
+            longestReportDuration: reportsUpToToday.map(\.duration).max() ?? 0,
+            currentStreakDays: currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: longestStreakDays(activeDates: activeDates, calendar: calendar),
+            activeDayCount: activeDates.count,
+            backupReportCount: reportsUpToToday.filter { $0.backupPath != nil }.count,
+            verificationModeCounts: topCounts(reportsUpToToday.map(\.verificationMode)),
+            sourceCounts: topCounts(reportsUpToToday.map(\.sourceName))
+        )
+    }
+
+    private static func accumulate(_ report: TransferReport, on day: Date, into buckets: inout [Date: StatisticsDayAccumulator]) {
+        var bucket = buckets[day] ?? StatisticsDayAccumulator()
+        bucket.bytes += max(report.totalBytes, 0)
+        bucket.files += max(report.selectedFileCount, 0)
+        bucket.reportCount += 1
+        if report.success {
+            bucket.successCount += 1
+        }
+        buckets[day] = bucket
+    }
+
+    private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
+        [
+            project.primaryCopyState,
+            project.primaryVerifyState,
+            project.backupCopyState,
+            project.backupVerifyState
+        ]
+        .filter(\.isActive)
+        .reduce(0) { partial, state in
+            partial + max(state.processedBytes, 0)
+        }
+    }
+
+    private static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
+        var streak = 0
+        var cursor = today
+        while activeDates.contains(cursor) {
+            streak += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+                break
+            }
+            cursor = previousDay
+        }
+        return streak
+    }
+
+    private static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
+        let sortedDates = activeDates.sorted()
+        var longest = 0
+        var current = 0
+        var previousDate: Date?
+
+        for date in sortedDates {
+            if let previousDate,
+               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
+               expectedDate == date {
+                current += 1
+            } else {
+                current = 1
+            }
+            longest = max(longest, current)
+            previousDate = date
+        }
+
+        return longest
+    }
+
+    private static func topCounts(_ values: [String], limit: Int = 5) -> [CopyStatisticsCountItem] {
+        Dictionary(grouping: values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, by: { $0 })
+            .map { key, values in
+                CopyStatisticsCountItem(title: key, count: values.count)
+            }
+            .sorted {
+                if $0.count == $1.count {
+                    return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                }
+                return $0.count > $1.count
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+private struct StatisticsDayAccumulator {
+    var bytes: Int64 = 0
+    var files: Int = 0
+    var reportCount: Int = 0
+    var successCount: Int = 0
 }

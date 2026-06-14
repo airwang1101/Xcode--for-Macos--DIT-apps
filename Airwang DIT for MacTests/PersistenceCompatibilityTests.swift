@@ -72,6 +72,44 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertFalse(project.isAutoStartReady(at: Date(timeIntervalSince1970: 301)))
     }
 
+    func testCopyStatisticsKeepsCumulativeTotalsOutsideHeatmapWindow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_767_916_800)
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let oldDay = calendar.date(byAdding: .day, value: -8, to: today)!
+        let reports = [
+            makeReport(finishedAt: yesterday, totalBytes: 100, selectedFileCount: 3, success: true),
+            makeReport(finishedAt: today, totalBytes: 200, selectedFileCount: 2, success: false),
+            makeReport(finishedAt: oldDay, totalBytes: 900, selectedFileCount: 9, success: true)
+        ]
+
+        let summary = CopyStatisticsSummary.make(
+            reports: reports,
+            projects: [],
+            calendar: calendar,
+            now: now,
+            dayCount: 7
+        )
+
+        XCTAssertEqual(summary.days.count, 7)
+        XCTAssertEqual(summary.totalBytes, 1200)
+        XCTAssertEqual(summary.recent7Bytes, 300)
+        XCTAssertEqual(summary.totalFiles, 14)
+        XCTAssertEqual(summary.totalReports, 3)
+        XCTAssertEqual(summary.successfulReports, 2)
+        XCTAssertEqual(summary.peakDayBytes, 900)
+        XCTAssertEqual(summary.peakDay?.date, oldDay)
+        XCTAssertFalse(summary.days.contains { $0.date == oldDay && $0.hasActivity })
+    }
+
+    func testByteDisplayFormatterSwitchesToTerabytesAtThousandGigabytes() throws {
+        XCTAssertTrue(ByteDisplayFormatter.string(fromByteCount: 999_999_999_999).contains("GB"))
+        XCTAssertEqual(ByteDisplayFormatter.string(fromByteCount: 1_000_000_000_000), "1 TB")
+        XCTAssertEqual(ByteDisplayFormatter.string(fromByteCount: 2_500_000_000_000), "2.5 TB")
+    }
+
     func testStoreFileDecodesLegacyProjectArray() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("AirwangStore-\(UUID().uuidString)", isDirectory: true)
@@ -125,6 +163,41 @@ final class PersistenceCompatibilityTests: XCTestCase {
             orderIndex: 0,
             autoStartEnabled: autoStartEnabled,
             autoStartDeadline: autoStartDeadline
+        )
+    }
+
+    private func makeReport(
+        finishedAt: Date,
+        totalBytes: Int64,
+        selectedFileCount: Int,
+        success: Bool
+    ) -> TransferReport {
+        TransferReport(
+            id: UUID(),
+            startedAt: finishedAt.addingTimeInterval(-60),
+            finishedAt: finishedAt,
+            sourceName: "Card",
+            sourcePath: "/Volumes/Card",
+            sourceRootPath: "/Volumes/Card",
+            targetPath: "/Volumes/Work/Test",
+            backupPath: nil,
+            selectedFileCount: selectedFileCount,
+            totalBytes: totalBytes,
+            verificationMode: VerificationMode.sha256.title,
+            namingRule: "Test",
+            success: success,
+            cancelled: false,
+            failedFiles: [],
+            copyFailedFiles: [],
+            verificationFailedFiles: [],
+            skippedFiles: [],
+            verificationSummary: "",
+            interruptionReason: nil,
+            duration: 60,
+            reportDocumentPath: nil,
+            localReportDocumentPath: nil,
+            importedItems: [],
+            fileRecords: []
         )
     }
 }
