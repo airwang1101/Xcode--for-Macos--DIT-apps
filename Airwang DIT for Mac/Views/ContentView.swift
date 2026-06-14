@@ -3,6 +3,7 @@ import QuickLookThumbnailing
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isWindowResizing = false
     @State private var resizeSettlingTask: Task<Void, Never>?
@@ -146,57 +147,83 @@ struct ContentView: View {
     private var mainDashboard: some View {
         GeometryReader { proxy in
             let compact = proxy.size.width < 1180
+            let heightCompact = proxy.size.height < 760
             let contentPadding: CGFloat = compact ? 16 : 26
             let contentSpacing: CGFloat = compact ? 14 : 18
             let availableWidth = max(0, proxy.size.width - contentPadding * 2)
-            let bottomBarReserve: CGFloat = compact ? 106 : 116
+            let bottomInset = max(proxy.safeAreaInsets.bottom, heightCompact ? 8 : (compact ? 10 : 16))
+            let bottomReserve = bottomTabBarHeight(availableWidth: availableWidth, heightCompact: heightCompact)
+                + bottomInset
+                + (heightCompact ? 12 : contentSpacing)
 
-            ZStack(alignment: .bottom) {
-                VStack(spacing: contentSpacing) {
-                    workspaceHeader(availableWidth: availableWidth)
-
-                    Group {
-                        switch viewModel.selectedSection {
-                        case .copy:
-                            copyWorkspace(availableWidth: availableWidth)
-                        case .dashboard:
-                            dashboardWorkspace(availableWidth: availableWidth)
-                        case .backup:
-                            backupWorkspace
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            Color.clear
+                .overlay(alignment: .top) {
+                    dashboardContent(availableWidth: availableWidth, contentSpacing: contentSpacing)
+                        .padding(.horizontal, contentPadding)
+                        .padding(.top, contentPadding)
+                        .padding(.bottom, bottomReserve)
+                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                        .animation(responsiveLayoutAnimation, value: compact)
+                        .animation(responsiveLayoutAnimation, value: heightCompact)
                 }
-                .padding(.horizontal, contentPadding)
-                .padding(.top, contentPadding)
-                .padding(.bottom, bottomBarReserve)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                bottomTabBar(availableWidth: availableWidth)
-                    .padding(.horizontal, contentPadding)
-                    .padding(.bottom, max(proxy.safeAreaInsets.bottom, compact ? 10 : 16))
-            }
-            .onChange(of: proxy.size) { _, _ in
-                markWindowResizing()
-            }
+                .overlay(alignment: .bottom) {
+                    bottomTabBar(availableWidth: availableWidth, heightCompact: heightCompact)
+                        .padding(.horizontal, contentPadding)
+                        .padding(.bottom, bottomInset)
+                        .zIndex(2)
+                        .animation(responsiveLayoutAnimation, value: compact)
+                        .animation(responsiveLayoutAnimation, value: heightCompact)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                .onChange(of: proxy.size) { _, _ in
+                    markWindowResizing()
+                }
         }
     }
 
-    @ViewBuilder
-    private func workspaceHeader(availableWidth: CGFloat) -> some View {
-        if availableWidth < 1050 {
-            VStack(alignment: .leading, spacing: 14) {
-                headerTitle
-                headerControls(stacked: availableWidth < 720)
+    private func dashboardContent(availableWidth: CGFloat, contentSpacing: CGFloat) -> some View {
+        VStack(spacing: contentSpacing) {
+            workspaceHeader(availableWidth: availableWidth)
+
+            Group {
+                switch viewModel.selectedSection {
+                case .copy:
+                    copyWorkspace(availableWidth: availableWidth)
+                case .dashboard:
+                    dashboardWorkspace(availableWidth: availableWidth)
+                case .backup:
+                    backupWorkspace
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            HStack(alignment: .top, spacing: 12) {
-                headerTitle
-                Spacer(minLength: 16)
-                headerControls(stacked: false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .transition(responsiveLayoutTransition)
+            .animation(responsiveLayoutAnimation, value: viewModel.selectedSection)
+        }
+    }
+
+    private func workspaceHeader(availableWidth: CGFloat) -> some View {
+        let tightHeader = availableWidth < 620
+
+        return Group {
+            if tightHeader {
+                VStack(alignment: .leading, spacing: 14) {
+                    headerTitle
+                    headerControls
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    headerTitle
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                    headerControls
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
             }
         }
+        .transition(responsiveLayoutTransition)
+        .animation(responsiveLayoutAnimation, value: tightHeader)
     }
 
     private var headerTitle: some View {
@@ -212,69 +239,78 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private func headerControls(stacked: Bool) -> some View {
-        if stacked {
-            VStack(alignment: .leading, spacing: 8) {
-                themePicker
-                languagePicker
-                targetPickerButton
-                refreshVolumesButton
+    private var headerControls: some View {
+        HStack(spacing: 8) {
+            headerIconButton(
+                systemImage: "globe",
+                helpText: viewModel.selectedLanguage == .chinese ? "Switch to English" : "切换到中文"
+            ) {
+                withResponsiveAnimation {
+                    viewModel.setLanguage(viewModel.selectedLanguage == .chinese ? .english : .chinese)
+                }
             }
-        } else {
-            HStack(spacing: 10) {
-                themePicker
-                languagePicker
-                targetPickerButton
-                refreshVolumesButton
-            }
-        }
-    }
 
-    private var themePicker: some View {
-        Picker(viewModel.localized("主题"), selection: Binding(
-            get: { viewModel.selectedTheme },
-            set: { viewModel.setTheme($0) }
-        )) {
-            ForEach(AppTheme.allCases) { theme in
-                Text(viewModel.localizedThemeTitle(theme)).tag(theme)
+            headerIconButton(
+                systemImage: "externaldrive.fill",
+                helpText: viewModel.localized("选择主目标盘")
+            ) {
+                viewModel.openFolderPicker(for: .target)
             }
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 170)
-    }
 
-    private var languagePicker: some View {
-        Picker(viewModel.localized("语言"), selection: Binding(
-            get: { viewModel.selectedLanguage },
-            set: { viewModel.setLanguage($0) }
-        )) {
-            ForEach(AppLanguage.allCases) { language in
-                Text(language.shortTitle).tag(language)
+            headerIconButton(
+                systemImage: "arrow.clockwise",
+                helpText: viewModel.localized("刷新设备")
+            ) {
+                viewModel.refreshVolumes()
+            }
+
+            headerIconButton(
+                systemImage: viewModel.selectedTheme == .night ? "sun.max.fill" : "moon.fill",
+                helpText: viewModel.selectedTheme == .night ? viewModel.localized("白天") : viewModel.localized("夜晚"),
+                isActive: viewModel.selectedTheme == .night
+            ) {
+                withResponsiveAnimation {
+                    viewModel.setTheme(viewModel.selectedTheme == .night ? .day : .night)
+                }
             }
         }
-        .pickerStyle(.segmented)
-        .frame(width: 116)
+        .frame(width: 200, alignment: .trailing)
     }
 
-    private var targetPickerButton: some View {
-        Button {
-            viewModel.openFolderPicker(for: .target)
-        } label: {
-            Label(viewModel.localized("选择主目标盘"), systemImage: "externaldrive.fill")
+    private func headerIconButton(
+        systemImage: String,
+        helpText: String,
+        isActive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isActive ? Color.white : primaryTextColor)
+                .frame(width: 44, height: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(isActive ? accentColor : Color.white.opacity(viewModel.selectedTheme == .night ? 0.10 : 0.30))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(viewModel.selectedTheme == .night ? 0.16 : 0.58), lineWidth: 0.8)
+                )
+                .airwangSoftShadow(
+                    theme: viewModel.selectedTheme,
+                    tint: isActive ? accentColor : .clear,
+                    tintStrength: isActive ? 0.8 : 0,
+                    elevation: isActive ? .selected : .tile,
+                    enabled: !reduceVisualEffects
+                )
+                .scaleEffect(isActive ? 1.03 : 1)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(accentColor)
-    }
-
-    private var refreshVolumesButton: some View {
-        Button {
-            viewModel.refreshVolumes()
-        } label: {
-            Label(viewModel.localized("刷新设备"), systemImage: "arrow.clockwise")
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(accentColor)
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(Text(helpText))
+        .animation(responsiveLayoutAnimation, value: isActive)
+        .animation(responsiveLayoutAnimation, value: systemImage)
     }
 
     @ViewBuilder
@@ -288,6 +324,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxHeight: .infinity)
+            .transition(responsiveLayoutTransition)
         } else {
             let queueWidth = min(520, max(420, availableWidth * 0.36))
             let presetWidth = max(0, availableWidth - queueWidth - 18)
@@ -305,6 +342,7 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(responsiveLayoutTransition)
         }
     }
 
@@ -319,6 +357,7 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             }
             .frame(maxHeight: .infinity)
+            .transition(responsiveLayoutTransition)
         } else {
             let logWidth = min(420, max(360, availableWidth * 0.30))
             let listWidth = max(0, availableWidth - logWidth - 18)
@@ -336,6 +375,7 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             }
             .frame(maxHeight: .infinity)
+            .transition(responsiveLayoutTransition)
         }
     }
 
@@ -398,17 +438,20 @@ struct ContentView: View {
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
     }
 
-    private func bottomTabBar(availableWidth: CGFloat) -> some View {
-        let compact = availableWidth < 520
+    private func bottomTabBar(availableWidth: CGFloat, heightCompact: Bool) -> some View {
+        let compact = availableWidth < 520 || heightCompact
         let buttonWidth = compact ? max(82, min(104, (availableWidth - 58) / 3)) : 112
         let dashboardWidth = compact ? buttonWidth : 128
-        let buttonHeight: CGFloat = compact ? 52 : 58
+        let buttonHeight: CGFloat = compact ? 48 : 58
         let cornerRadius: CGFloat = compact ? 22 : 30
+        let verticalPadding: CGFloat = compact ? 7 : 10
 
         return HStack(spacing: compact ? 7 : 10) {
             ForEach(MainSection.allCases) { section in
                 Button {
-                    viewModel.selectedSection = section
+                    withResponsiveAnimation {
+                        viewModel.selectedSection = section
+                    }
                 } label: {
                     VStack(spacing: compact ? 4 : 5) {
                         Image(systemName: section.systemImage)
@@ -424,6 +467,7 @@ struct ContentView: View {
                         RoundedRectangle(cornerRadius: compact ? 18 : 22, style: .continuous)
                             .fill(viewModel.selectedSection == section ? accentColor : Color.white.opacity(viewModel.selectedTheme == .night ? 0.09 : 0.34))
                     )
+                    .scaleEffect(viewModel.selectedSection == section ? 1.015 : 1)
                     .airwangSoftShadow(
                         theme: viewModel.selectedTheme,
                         tint: viewModel.selectedSection == section ? accentColor : .clear,
@@ -435,10 +479,21 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(compact ? 8 : 10)
+        .padding(.horizontal, compact ? 8 : 10)
+        .padding(.vertical, verticalPadding)
         .background(glassSurface(cornerRadius: cornerRadius))
         .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .floating, enabled: !reduceVisualEffects)
+        .frame(height: buttonHeight + verticalPadding * 2)
         .frame(maxWidth: .infinity)
+        .animation(responsiveLayoutAnimation, value: compact)
+        .animation(responsiveLayoutAnimation, value: viewModel.selectedSection)
+    }
+
+    private func bottomTabBarHeight(availableWidth: CGFloat, heightCompact: Bool) -> CGFloat {
+        let compact = availableWidth < 520 || heightCompact
+        let buttonHeight: CGFloat = compact ? 48 : 58
+        let verticalPadding: CGFloat = compact ? 7 : 10
+        return buttonHeight + verticalPadding * 2
     }
 
     private func copyPresetCard(availableWidth: CGFloat) -> some View {
@@ -451,13 +506,13 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 18) {
             if useCompactHeader {
                 VStack(alignment: .leading, spacing: 10) {
-                Text(viewModel.localized("拷贝项目创建"))
+                    Text(viewModel.localized("拷贝项目创建"))
                         .sectionTitle()
                     executionModePicker(width: pickerWidth)
                 }
             } else {
                 HStack {
-                Text(viewModel.localized("拷贝项目创建"))
+                    Text(viewModel.localized("拷贝项目创建"))
                         .sectionTitle()
                     Spacer()
                     executionModePicker(width: pickerWidth)
@@ -482,9 +537,9 @@ struct ContentView: View {
 
             if useStackedStats {
                 VStack(spacing: 10) {
-                compactInfo(label: viewModel.localized("默认校验"), value: viewModel.selectedVerificationMode.shortTitle)
-                compactInfo(label: viewModel.localized("项目数"), value: "\(viewModel.copyProjects.count)")
-                compactInfo(label: viewModel.localized("运行中"), value: "\(viewModel.activeProjectIDs.count)")
+                    compactInfo(label: viewModel.localized("默认校验"), value: viewModel.selectedVerificationMode.shortTitle)
+                    compactInfo(label: viewModel.localized("项目数"), value: "\(viewModel.copyProjects.count)")
+                    compactInfo(label: viewModel.localized("运行中"), value: "\(viewModel.activeProjectIDs.count)")
                 }
             } else {
                 HStack(spacing: 12) {
@@ -506,6 +561,9 @@ struct ContentView: View {
         }
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
+        .animation(responsiveLayoutAnimation, value: useCompactHeader)
+        .animation(responsiveLayoutAnimation, value: useStackedTargets)
+        .animation(responsiveLayoutAnimation, value: useStackedStats)
     }
 
     private func executionModePicker(width: CGFloat) -> some View {
@@ -603,6 +661,8 @@ struct ContentView: View {
         }
         .padding(18)
         .background(glassSurface(cornerRadius: 22, elevation: .card))
+        .transition(responsiveLayoutTransition)
+        .animation(responsiveLayoutAnimation, value: useStackedLayout)
     }
 
     private var projectQueueCard: some View {
@@ -1554,10 +1614,10 @@ struct ContentView: View {
             if viewModel.selectedTheme == .night {
                 LinearGradient(
                     colors: [
-                        Color(red: 0.025, green: 0.028, blue: 0.042),
-                        Color(red: 0.070, green: 0.036, blue: 0.070),
-                        Color(red: 0.110, green: 0.052, blue: 0.080),
-                        Color(red: 0.035, green: 0.045, blue: 0.068)
+                        Color(red: 0.014, green: 0.015, blue: 0.020),
+                        Color(red: 0.032, green: 0.023, blue: 0.032),
+                        Color(red: 0.052, green: 0.027, blue: 0.044),
+                        Color(red: 0.020, green: 0.026, blue: 0.036)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -1583,45 +1643,69 @@ struct ContentView: View {
                 Color.clear
             } else {
                 ZStack {
-                    // 三个大半径模糊圆是静态内容,drawingGroup 让 Metal 离屏栅格化一次,
-                    // 而不是每帧实时计算 120-150pt 的高斯模糊。
                     ZStack {
                         Circle()
-                            .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.34 : 0.12))
+                            .fill(accentColor.opacity(viewModel.selectedTheme == .night ? 0.18 : 0.12))
                             .frame(width: 620, height: 620)
                             .blur(radius: 120)
                             .offset(x: -390, y: -210)
 
                         Circle()
-                            .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.25 : 0.10))
+                            .fill(secondaryAccentColor.opacity(viewModel.selectedTheme == .night ? 0.11 : 0.10))
                             .frame(width: 740, height: 740)
                             .blur(radius: 145)
                             .offset(x: 430, y: -250)
 
                         Circle()
-                            .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.16 : 0.08))
+                            .fill(Color(red: 0.30, green: 0.56, blue: 1.00).opacity(viewModel.selectedTheme == .night ? 0.07 : 0.08))
                             .frame(width: 560, height: 560)
                             .blur(radius: 150)
                             .offset(x: 230, y: 500)
                     }
-                    .drawingGroup()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // material 依赖实时背景采样,不能进 drawingGroup,单独保留。
-                    RoundedRectangle(cornerRadius: 60, style: .continuous)
-                        .fill(.ultraThinMaterial.opacity(viewModel.selectedTheme == .night ? 0.42 : 0.50))
-                        .frame(height: 340)
-                        .blur(radius: 34)
-                        .offset(y: -170)
-                        .opacity(0.88)
+                    if viewModel.selectedTheme == .night {
+                        RoundedRectangle(cornerRadius: 80, style: .continuous)
+                            .fill(accentColor.opacity(0.035))
+                            .frame(height: 280)
+                            .blur(radius: 78)
+                            .offset(y: -180)
+                            .opacity(0.55)
+                    } else {
+                        // material 依赖实时背景采样,不能进 drawingGroup,单独保留。
+                        RoundedRectangle(cornerRadius: 60, style: .continuous)
+                            .fill(.ultraThinMaterial.opacity(0.50))
+                            .frame(height: 340)
+                            .blur(radius: 34)
+                            .offset(y: -170)
+                            .opacity(0.88)
+                    }
                 }
             }
         }
         .allowsHitTesting(false)
     }
 
+    private var responsiveLayoutAnimation: Animation {
+        .spring(response: 0.38, dampingFraction: 0.82, blendDuration: 0.12)
+    }
+
+    private var responsiveLayoutTransition: AnyTransition {
+        .opacity.combined(with: .scale(scale: 0.985, anchor: .top))
+    }
+
+    private func withResponsiveAnimation(_ action: () -> Void) {
+        if accessibilityReduceMotion {
+            action()
+        } else {
+            withAnimation(responsiveLayoutAnimation) {
+                action()
+            }
+        }
+    }
+
     // 只在窗口缩放时降级视觉效果。此前滚动也会触发降级(isScrolling),
-    // 导致滚动开始/结束时所有玻璃面板在两棵不同视图树之间整体切换,
-    // 这正是滚动顿挫感的来源 —— 降级开关比它要省的渲染更贵。
+    // 导致滚动开始/结束时所有玻璃面板在两棵不同视图树之间整体切换。
     private var reduceVisualEffects: Bool {
         isWindowResizing
     }
@@ -1631,19 +1715,23 @@ struct ContentView: View {
     }
 
     private var reduceMotionEffects: Bool {
-        isWindowResizing
+        accessibilityReduceMotion
     }
 
     private func markWindowResizing() {
         if !isWindowResizing {
-            isWindowResizing = true
+            withResponsiveAnimation {
+                isWindowResizing = true
+            }
         }
 
         resizeSettlingTask?.cancel()
         resizeSettlingTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 180_000_000)
             guard !Task.isCancelled else { return }
-            isWindowResizing = false
+            withResponsiveAnimation {
+                isWindowResizing = false
+            }
         }
     }
 
@@ -1746,36 +1834,39 @@ private struct AirwangGlassSurface: View {
         if reduceEffects {
             ZStack {
                 shape
-                    .fill(theme == .night ? Color(red: 0.16, green: 0.12, blue: 0.15).opacity(0.56) : Color.white.opacity(0.64))
+                    .fill(theme == .night ? Color(red: 0.10, green: 0.08, blue: 0.09).opacity(0.82) : Color.white.opacity(0.64))
                 shape
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(theme == .night ? 0.10 : 0.36),
-                                tint.opacity(theme == .night ? 0.055 * tintStrength : 0.035 * tintStrength),
-                                Color.black.opacity(theme == .night ? 0.10 : 0.018)
+                                Color.white.opacity(theme == .night ? 0.07 : 0.36),
+                                tint.opacity(theme == .night ? 0.035 * tintStrength : 0.035 * tintStrength),
+                                Color.black.opacity(theme == .night ? 0.08 : 0.018)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
                 shape
-                    .strokeBorder(Color.white.opacity(theme == .night ? 0.24 : 0.66), lineWidth: theme == .night ? 0.9 : 0.75)
+                    .strokeBorder(Color.white.opacity(theme == .night ? 0.18 : 0.66), lineWidth: theme == .night ? 0.9 : 0.75)
                 shape
-                    .strokeBorder(Color.black.opacity(theme == .night ? 0.12 : 0.025), lineWidth: 0.6)
+                    .strokeBorder(Color.black.opacity(theme == .night ? 0.22 : 0.025), lineWidth: 0.6)
             }
         } else {
             ZStack {
                 shape
-                    .fill(.ultraThinMaterial.opacity(theme == .night ? 0.44 : 0.78))
+                    .fill(theme == .night ? Color(red: 0.095, green: 0.075, blue: 0.086).opacity(0.70) : Color.white.opacity(0.18))
+
+                shape
+                    .fill(.ultraThinMaterial.opacity(theme == .night ? 0.26 : 0.78))
 
                 shape
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(theme == .night ? 0.13 : 0.34),
-                                tint.opacity(theme == .night ? 0.05 * tintStrength : 0.07 * tintStrength),
-                                Color.black.opacity(theme == .night ? 0.20 : 0.045)
+                                Color.white.opacity(theme == .night ? 0.08 : 0.34),
+                                tint.opacity(theme == .night ? 0.032 * tintStrength : 0.07 * tintStrength),
+                                Color.black.opacity(theme == .night ? 0.14 : 0.045)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -1787,9 +1878,9 @@ private struct AirwangGlassSurface: View {
                     .strokeBorder(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(theme == .night ? 0.34 : 0.86),
-                                Color.white.opacity(theme == .night ? 0.10 : 0.22),
-                                tint.opacity(theme == .night ? 0.14 * tintStrength : 0.12 * tintStrength)
+                                Color.white.opacity(theme == .night ? 0.22 : 0.86),
+                                Color.white.opacity(theme == .night ? 0.07 : 0.22),
+                                tint.opacity(theme == .night ? 0.10 * tintStrength : 0.12 * tintStrength)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -1798,12 +1889,12 @@ private struct AirwangGlassSurface: View {
                     )
 
                 shape
-                    .strokeBorder(Color.black.opacity(theme == .night ? 0.25 : 0.055), lineWidth: 0.7)
+                    .strokeBorder(Color.black.opacity(theme == .night ? 0.34 : 0.055), lineWidth: 0.7)
                     .blendMode(.multiply)
 
                 shape
                     .inset(by: 1.2)
-                    .strokeBorder(Color.white.opacity(theme == .night ? 0.08 : 0.42), lineWidth: 0.6)
+                    .strokeBorder(Color.white.opacity(theme == .night ? 0.05 : 0.42), lineWidth: 0.6)
             }
             // 注意:这里不再叠加 macOS 26 的 glassEffect —— 上面的 material + 渐变
             // 已经是完整的玻璃质感,双重玻璃 = 每帧两次背景采样,只贵不亮。
