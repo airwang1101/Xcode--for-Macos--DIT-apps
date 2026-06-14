@@ -217,6 +217,7 @@ struct TransferService {
             try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
             try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
             try preflightSpace(destinations: [destination], requiredBytes: totalBytes)
+            sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
             preflightFailureMessage = error.localizedDescription
             failedFiles = sources.map(\.relativePath)
@@ -1521,9 +1522,13 @@ struct TransferService {
             try? destinationHandle?.close()
             destinationClosed = true
 
+            // Verify the temp file holds exactly the bytes we read from the source.
+            // We compare against bytesCopiedForFile (actual read count) rather than the
+            // stale scan-time expectedSize, so files that changed between scan and copy
+            // don't produce false failures when the copy itself is byte-complete.
             let actualSize = fileSize(at: temporaryURL) ?? -1
-            guard actualSize == expectedSize else {
-                throw TransferError.copySizeMismatch(file: relativePath, expected: expectedSize, actual: actualSize)
+            guard actualSize == bytesCopiedForFile else {
+                throw TransferError.copySizeMismatch(file: relativePath, expected: bytesCopiedForFile, actual: actualSize)
             }
 
             try installCopiedFile(from: temporaryURL, to: destinationURL, under: destination.rootURL)
@@ -1562,6 +1567,20 @@ struct TransferService {
         } else {
             try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+
+    private func sweepStaleTempFiles(in folder: URL) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsSubdirectoryDescendants]
+        ) else { return }
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if name.hasPrefix(".airwang-") && (name.hasSuffix(".part") || name.hasSuffix(".tmp")) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
@@ -1641,17 +1660,12 @@ struct TransferService {
 
         let sourceSize = fileSize(at: sourceURL)
         let targetSize = fileSize(at: targetURL)
-        guard sourceSize == item.size else {
-            throw TransferError.copySizeMismatch(
-                file: "源文件 \(item.relativePath)",
-                expected: item.size,
-                actual: sourceSize ?? -1
-            )
-        }
-        guard targetSize == item.size else {
+        // Compare source and target against each other rather than against the stale
+        // scan-time item.size.  item.size is advisory; the live source is the authority.
+        guard let sourceSize, let targetSize, sourceSize == targetSize else {
             throw TransferError.copySizeMismatch(
                 file: item.relativePath,
-                expected: item.size,
+                expected: sourceSize ?? -1,
                 actual: targetSize ?? -1
             )
         }

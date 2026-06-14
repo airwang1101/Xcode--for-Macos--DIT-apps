@@ -63,6 +63,7 @@ final class AppViewModel: ObservableObject {
     private var importTask: Task<Void, Never>?
     private var projectTasks: [UUID: Task<Void, Never>] = [:]
     private var projectTokens: [UUID: ImportInterruptionToken] = [:]
+    private var pendingDeleteProjectIDs: Set<UUID> = []
     private var autoStartTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var folderChildrenTask: Task<Void, Never>?
@@ -816,7 +817,8 @@ final class AppViewModel: ObservableObject {
             if project.status != .cancelling {
                 cancelProject(project)
             }
-            importError = "项目“\(project.name)”正在执行，已先进入取消收尾。为避免报告丢失，等它完成收尾后再删除。"
+            pendingDeleteProjectIDs.insert(project.id)
+            importError = “项目”\(project.name)”正在执行，已先进入取消收尾，收尾完成后将自动删除。”
             saveProjects()
             updateGlobalImportFlag()
             return
@@ -1100,7 +1102,8 @@ final class AppViewModel: ObservableObject {
     }
 
     private func scheduleQueuedProjects(automaticOnlyAt now: Date? = nil) {
-        guard !hasUnsavedChanges else {
+        // Only block on unsaved *project* state; a stale report file must not freeze the queue.
+        guard !projectsNeedSave else {
             updateGlobalImportFlag()
             return
         }
@@ -1224,9 +1227,12 @@ final class AppViewModel: ObservableObject {
             }
             finishBackupStage(projectID: projectID, result: backupResult)
         } catch is CancellationError {
+            // Use the token's stop reason when available (e.g. device disconnect),
+            // otherwise fall back to the generic user-cancel message.
+            let cancelReason = projectTokens[projectID]?.reason ?? "用户取消了导入任务"
             updateProject(projectID) { item in
                 item.status = .cancelled
-                item.errorMessage = "用户取消了导入任务"
+                item.errorMessage = cancelReason
             }
         } catch {
             updateProject(projectID) { item in
@@ -1292,6 +1298,11 @@ final class AppViewModel: ObservableObject {
         projectTasks[projectID] = nil
         projectTokens[projectID] = nil
         activeProjectIDs.remove(projectID)
+        if pendingDeleteProjectIDs.contains(projectID) {
+            pendingDeleteProjectIDs.remove(projectID)
+            copyProjects.removeAll { $0.id == projectID }
+            normalizeProjectOrder()
+        }
         updateGlobalImportFlag()
         saveProjects()
         continueQueueAfterStateChange()
@@ -1310,7 +1321,7 @@ final class AppViewModel: ObservableObject {
         autoStartTask?.cancel()
         autoStartTask = nil
 
-        guard !hasUnsavedChanges else { return }
+        guard !projectsNeedSave else { return }
 
         let now = Date()
         let candidates = orderedProjects
@@ -1329,7 +1340,10 @@ final class AppViewModel: ObservableObject {
             let nanoseconds = UInt64(delay * 1_000_000_000)
             try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled else { return }
-            self?.continueQueueAfterStateChange()
+            // Always pass the current time so the auto-start deadline filter is enforced,
+            // even when a manual queue run is also active.
+            self?.scheduleQueuedProjects(automaticOnlyAt: Date())
+            self?.scheduleNextAutoStartCheck()
         }
     }
 

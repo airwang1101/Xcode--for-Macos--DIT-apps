@@ -94,17 +94,44 @@ enum JSONPersistence {
         do {
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
-            if let wrapped = try? decoder.decode(Wrapper.self, from: data) {
+
+            // Try the current wrapped format first; capture the error for diagnostics.
+            var wrappedDecodeError: Swift.Error?
+            do {
+                let wrapped = try decoder.decode(Wrapper.self, from: data)
                 return PersistentLoadResult(value: wrappedValue(wrapped), warning: nil)
+            } catch {
+                wrappedDecodeError = error
             }
-            let legacy = try decoder.decode([Element].self, from: data)
-            return PersistentLoadResult(value: legacy, warning: nil)
+
+            // Fall back to the legacy bare-array format.
+            do {
+                let legacy = try decoder.decode([Element].self, from: data)
+                return PersistentLoadResult(value: legacy, warning: nil)
+            } catch {
+                // Both formats failed. Check if the bytes are valid JSON at all:
+                // JSONSerialization succeeds → valid JSON but unrecognised schema (e.g. future
+                // version) → preserve the file so data is not lost on downgrade.
+                // JSONSerialization fails → syntactically corrupt bytes → safe to back up.
+                let isSyntacticallyValid = (try? JSONSerialization.jsonObject(with: data)) != nil
+                if isSyntacticallyValid {
+                    let diagnostic = wrappedDecodeError?.localizedDescription ?? error.localizedDescription
+                    return PersistentLoadResult(
+                        value: emptyValue,
+                        warning: "\(dataName) 格式无法识别（可能来自更新版本）：\(diagnostic)。文件已保留，未自动清除。"
+                    )
+                }
+                let backupURL = backupCorruptFile(at: url)
+                let backupMessage = backupURL.map { "已备份到：\($0.path)" } ?? "备份损坏文件失败"
+                return PersistentLoadResult(
+                    value: emptyValue,
+                    warning: "\(dataName) JSON 语法损坏，无法解析：\(error.localizedDescription)。\(backupMessage)。"
+                )
+            }
         } catch {
-            let backupURL = backupCorruptFile(at: url)
-            let backupMessage = backupURL.map { "已备份到：\($0.path)" } ?? "备份损坏文件失败"
             return PersistentLoadResult(
                 value: emptyValue,
-                warning: "\(dataName) JSON 无法读取：\(error.localizedDescription)。\(backupMessage)。"
+                warning: "\(dataName) 文件读取失败：\(error.localizedDescription)。"
             )
         }
     }
@@ -124,13 +151,14 @@ enum JSONPersistence {
 
     private static func backupExistingFile(at url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let backupURL = url.deletingLastPathComponent()
+        let dir = url.deletingLastPathComponent()
+        let backupURL = dir
             .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".bak")
             .appendingPathExtension(url.pathExtension)
-        if FileManager.default.fileExists(atPath: backupURL.path) {
-            try FileManager.default.removeItem(at: backupURL)
-        }
-        try FileManager.default.copyItem(at: url, to: backupURL)
+        // Write to a temp file then rename so the .bak is never left in a truncated state.
+        let tempURL = dir.appendingPathComponent(".airwang-bak-\(UUID().uuidString).tmp")
+        try FileManager.default.copyItem(at: url, to: tempURL)
+        _ = try FileManager.default.replaceItemAt(backupURL, withItemAt: tempURL, backupItemName: nil, options: [])
     }
 
     private static func backupCorruptFile(at url: URL) -> URL? {

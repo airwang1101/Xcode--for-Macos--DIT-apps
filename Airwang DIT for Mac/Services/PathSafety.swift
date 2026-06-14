@@ -78,16 +78,20 @@ enum PathSafety {
     static func relativePath(for fileURL: URL, under baseURL: URL) throws -> String {
         let basePath = normalizedPath(baseURL)
         let filePath = normalizedPath(fileURL)
+        let canonicalBase = canonicalComparisonPath(basePath)
+        let canonicalFile = canonicalComparisonPath(filePath)
 
         if basePath == "/" {
-            let raw = String(filePath.dropFirst())
+            let raw = String(canonicalFile.dropFirst())
             return try validatedRelativePath(raw)
         }
-        guard canonicalComparisonPath(filePath).hasPrefix(canonicalComparisonPath(basePath + "/")) else {
+        let prefix = canonicalBase + "/"
+        guard canonicalFile.hasPrefix(prefix) else {
             throw Error.pathEscapesBase(relativePath: fileURL.path, basePath: basePath)
         }
-        let startIndex = filePath.index(filePath.startIndex, offsetBy: basePath.count + 1)
-        return try validatedRelativePath(String(filePath[startIndex...]))
+        // Slice from the canonical string so multibyte/combining characters don't misalign the offset.
+        let raw = String(canonicalFile[canonicalFile.index(canonicalFile.startIndex, offsetBy: prefix.count)...])
+        return try validatedRelativePath(raw)
     }
 
     static func isContained(_ candidateURL: URL, in baseURL: URL) -> Bool {
@@ -162,8 +166,9 @@ enum PathSafety {
     /// 私有副本且都不做 NFC 规范化,与 `isContained` 的判断存在 NFD/NFC 分叉
     /// 风险(TEST_REPORT #113);现在统一走 canonical comparison。
     static func pathsOverlap(_ lhs: URL, _ rhs: URL) -> Bool {
-        let lhsPath = canonicalComparisonPath(normalizedPath(lhs))
-        let rhsPath = canonicalComparisonPath(normalizedPath(rhs))
+        // Resolve symlinks before comparing so /Volumes/B -> /Volumes/A is detected as overlap.
+        let lhsPath = canonicalComparisonPath(resolvedNormalizedPath(lhs))
+        let rhsPath = canonicalComparisonPath(resolvedNormalizedPath(rhs))
         if lhsPath == rhsPath {
             return true
         }
@@ -197,6 +202,11 @@ enum PathSafety {
             normalized.removeLast()
         }
         return normalized
+    }
+
+    /// Like `normalizedPath` but also resolves symlinks (used for overlap/containment checks).
+    private static func resolvedNormalizedPath(_ url: URL) -> String {
+        normalizedPath(url.standardizedFileURL.resolvingSymlinksInPath().path)
     }
 
     private static func normalizedBaseURL(_ url: URL) -> URL {
