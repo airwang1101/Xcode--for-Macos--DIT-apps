@@ -164,14 +164,13 @@ struct TransferService {
         }
 
         let destination = Destination(rootURL: destinationRootURL, label: stage.destinationLabel)
-        // SHA-256 模式下源哈希在拷贝读取时内联计算,校验阶段只需重读目标一遍,
-        // 因此预估工作量按"全部源已预哈希"计。
-        let plannedInlineHashing = project.verificationMode == .sha256
+        // SHA-256 校验阶段独立重读源与目标各一遍(不复用拷贝时的内联哈希),
+        // 因此工作量按两遍(源+目标)预估,prehashedPaths 留空。
         let verificationTotalWorkBytes = verificationWorkBytes(
             for: sources,
             mode: project.verificationMode,
             destinationCount: 1,
-            prehashedPaths: plannedInlineHashing ? Set(sources.map(\.relativePath)) : []
+            prehashedPaths: []
         )
         let reportDocumentURL = destinationFolderURL
             .appendingPathComponent("Airwang_\(stage.reportKind)_Report_\(project.taskFolderName).txt")
@@ -208,7 +207,6 @@ struct TransferService {
         var fatalStopReason: String?
         var preflightFailureMessage: String?
         var stageVerificationMode = project.verificationMode
-        var inlineSourceHashes: [String: String] = [:]
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
@@ -254,9 +252,9 @@ struct TransferService {
                     try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
                     let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                     let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
-                    // 校验模式可能在拷贝途中被用户改为"跳过",逐文件取当前生效模式。
-                    let wantsInlineHash = (interruptionToken?.verificationModeOverride ?? project.verificationMode) == .sha256
-                    if let inlineHash = try await copySourceFile(
+                    // SHA-256 校验阶段会独立重读源文件,拷贝时不再内联计算源哈希
+                    // (内联哈希无法捕获读卡路径上的瞬时损坏,见校验阶段说明)。
+                    _ = try await copySourceFile(
                         sourceURL: sourceFileURL,
                         relativePath: item.relativePath,
                         expectedSize: item.size,
@@ -264,13 +262,11 @@ struct TransferService {
                         destination: destination,
                         sourceRoot: sourceBaseURL,
                         sourceRole: sourceLabel,
-                        computeSourceHash: wantsInlineHash,
+                        computeSourceHash: false,
                         interruptionToken: interruptionToken,
                         state: &state,
                         progress: progress
-                    ) {
-                        inlineSourceHashes[item.relativePath] = inlineHash
-                    }
+                    )
 
                     copiedItemPaths.insert(item.relativePath)
                     state.copiedFiles += 1
@@ -354,7 +350,7 @@ struct TransferService {
                 state.currentFile = "正在校验 \(stage.destinationLabel)"
                 state.currentSpeedBytesPerSecond = 0
                 state.verificationStartedAt = Date()
-                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
+                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
                 state.verificationProcessedBytes = 0
                 state.currentVerificationSpeedBytesPerSecond = 0
                 await progress(state)
@@ -364,14 +360,14 @@ struct TransferService {
                     if effectiveVerificationMode != stageVerificationMode {
                         stageVerificationMode = effectiveVerificationMode
                         let remainingWorkBytes = sources.dropFirst(index).reduce(Int64(0)) {
-                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
+                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
                         }
                         state.verificationTotalBytes = max(state.verificationProcessedBytes + remainingWorkBytes, state.verificationProcessedBytes)
                         state.verificationStatus = stageVerificationMode == .skipped ? "用户已跳过校验" : "校验中"
                         await progress(state)
                     }
 
-                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: Set(inlineSourceHashes.keys))
+                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
                     let itemStartBytes = state.verificationProcessedBytes
 
                     if copyFailedFiles.contains(item.relativePath) {
@@ -403,7 +399,6 @@ struct TransferService {
                             stage: stage,
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
-                            precomputedSourceHash: inlineSourceHashes[item.relativePath],
                             interruptionToken: interruptionToken,
                             state: &state,
                             progress: progress
@@ -1650,7 +1645,6 @@ struct TransferService {
         stage: ProjectTransferStage,
         itemStartBytes: Int64,
         itemWorkBytes: Int64,
-        precomputedSourceHash: String? = nil,
         interruptionToken: ImportInterruptionToken?,
         state: inout TransferState,
         progress: @escaping @Sendable (TransferState) async -> Void

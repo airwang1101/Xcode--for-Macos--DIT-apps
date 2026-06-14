@@ -828,7 +828,7 @@ final class AppViewModel: ObservableObject {
                 cancelProject(project)
             }
             pendingDeleteProjectIDs.insert(project.id)
-            importError = “项目”\(project.name)”正在执行，已先进入取消收尾，收尾完成后将自动删除。”
+            importError = "项目“\(project.name)”正在执行，已先进入取消收尾，收尾完成后将自动删除。"
             saveProjects()
             updateGlobalImportFlag()
             return

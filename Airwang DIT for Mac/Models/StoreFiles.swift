@@ -151,14 +151,13 @@ enum JSONPersistence {
 
     private static func backupExistingFile(at url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let dir = url.deletingLastPathComponent()
-        let backupURL = dir
+        let backupURL = url.deletingLastPathComponent()
             .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".bak")
             .appendingPathExtension(url.pathExtension)
-        // Write to a temp file then rename so the .bak is never left in a truncated state.
-        let tempURL = dir.appendingPathComponent(".airwang-bak-\(UUID().uuidString).tmp")
-        try FileManager.default.copyItem(at: url, to: tempURL)
-        _ = try FileManager.default.replaceItemAt(backupURL, withItemAt: tempURL, backupItemName: nil, options: [])
+        // Atomic write (temp + rename) so the .bak is never left truncated on crash,
+        // and it transparently overwrites an existing .bak or creates a new one.
+        let existing = try Data(contentsOf: url)
+        try existing.write(to: backupURL, options: .atomic)
     }
 
     private static func backupCorruptFile(at url: URL) -> URL? {
