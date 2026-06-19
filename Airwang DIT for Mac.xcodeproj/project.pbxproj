@@ -22,6 +22,7 @@
 		A20000000000000000000003 /* PathSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* PathSafetyTests.swift */; };
 		A20000000000000000000004 /* MediaScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* MediaScannerTests.swift */; };
 		A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* PersistenceCompatibilityTests.swift */; };
+		A20000000000000000000006 /* TransferServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* TransferServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,6 +53,7 @@
 		A20000000000000000000013 /* PathSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafetyTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000014 /* MediaScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaScannerTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000015 /* PersistenceCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceCompatibilityTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000016 /* TransferServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -147,6 +149,7 @@
 				A20000000000000000000013 /* PathSafetyTests.swift */,
 				A20000000000000000000014 /* MediaScannerTests.swift */,
 				A20000000000000000000015 /* PersistenceCompatibilityTests.swift */,
+				A20000000000000000000016 /* TransferServiceTests.swift */,
 			);
 			path = "Airwang DIT for MacTests";
 			sourceTree = "<group>";
@@ -280,6 +283,7 @@
 				A20000000000000000000003 /* PathSafetyTests.swift in Sources */,
 				A20000000000000000000004 /* MediaScannerTests.swift in Sources */,
 				A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */,
+				A20000000000000000000006 /* TransferServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

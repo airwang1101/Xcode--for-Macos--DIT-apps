@@ -104,6 +104,120 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertFalse(summary.days.contains { $0.date == oldDay && $0.hasActivity })
     }
 
+    func testCopyStatisticsHeatmapsCacheDailyWeeklyAndCumulativeModes() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let sunday = try XCTUnwrap(calendar.date(from: DateComponents(
+            timeZone: calendar.timeZone,
+            year: 2024,
+            month: 1,
+            day: 7
+        )))
+        let days = (0..<7).map { offset in
+            CopyActivityDay(
+                date: calendar.date(byAdding: .day, value: offset, to: sunday)!,
+                bytes: Int64((offset + 1) * 10),
+                files: offset + 1,
+                reportCount: 1,
+                successCount: 1
+            )
+        }
+
+        let heatmaps = CopyStatisticsHeatmaps.make(days: days, calendar: calendar)
+
+        XCTAssertEqual(heatmaps.daily.days.map(\.bytes), [10, 20, 30, 40, 50, 60, 70])
+        XCTAssertEqual(heatmaps.weekly.days.map(\.bytes), Array(repeating: 280, count: 7))
+        XCTAssertEqual(heatmaps.cumulative.days.map(\.bytes), [10, 30, 60, 100, 150, 210, 280])
+        XCTAssertEqual(heatmaps.daily.weeks.count, 1)
+        XCTAssertEqual(heatmaps.daily.peakDay?.date, days.last?.date)
+    }
+
+    func testCopyStatisticsIndexMatchesFullSummaryAndSupportsIncrementalMerge() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_767_916_800)
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let reports = [
+            makeReport(finishedAt: yesterday, totalBytes: 100, selectedFileCount: 3, success: true),
+            makeReport(finishedAt: today, totalBytes: 200, selectedFileCount: 2, success: false)
+        ]
+
+        let fullSummary = CopyStatisticsSummary.make(
+            reports: reports,
+            projects: [],
+            calendar: calendar,
+            now: now,
+            dayCount: 7
+        )
+        var index = CopyStatisticsIndex.make(
+            reports: [reports[0]],
+            calendar: calendar,
+            now: now
+        )
+        index.add(reports[1], calendar: calendar)
+        let indexedSummary = index.summary(
+            projects: [],
+            calendar: calendar,
+            now: now,
+            dayCount: 7
+        )
+
+        XCTAssertTrue(index.matches(reports: reports))
+        XCTAssertEqual(indexedSummary.totalBytes, fullSummary.totalBytes)
+        XCTAssertEqual(indexedSummary.totalFiles, fullSummary.totalFiles)
+        XCTAssertEqual(indexedSummary.totalReports, fullSummary.totalReports)
+        XCTAssertEqual(indexedSummary.successfulReports, fullSummary.successfulReports)
+        XCTAssertEqual(indexedSummary.days, fullSummary.days)
+    }
+
+    func testReportStoreWritesCompactAppLogWithoutSuccessfulFileRecords() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AirwangCompactReports-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("import-reports.json")
+        let finishedAt = Date(timeIntervalSince1970: 1_767_916_800)
+        let report = makeReport(
+            finishedAt: finishedAt,
+            totalBytes: 300,
+            selectedFileCount: 2,
+            success: false,
+            failedFiles: ["bad.mov"],
+            importedItems: ["good.mov", "bad.mov"],
+            fileRecords: [
+                FileVerificationRecord(
+                    relativePath: "good.mov",
+                    size: 100,
+                    sourceChecksum: "source",
+                    targetChecksum: "target",
+                    backupChecksum: nil,
+                    status: "通过",
+                    message: "ok"
+                ),
+                FileVerificationRecord(
+                    relativePath: "bad.mov",
+                    size: 200,
+                    sourceChecksum: nil,
+                    targetChecksum: nil,
+                    backupChecksum: nil,
+                    status: "异常",
+                    message: "failed"
+                )
+            ]
+        )
+
+        try JSONPersistence.writeReports([report], to: url)
+        let json = try String(contentsOf: url, encoding: .utf8)
+        let loaded = JSONPersistence.loadReports(from: url).value
+
+        XCTAssertFalse(json.contains("good.mov"))
+        XCTAssertTrue(json.contains("bad.mov"))
+        XCTAssertEqual(loaded.first?.importedItems, [])
+        XCTAssertEqual(loaded.first?.fileRecords.map(\.relativePath), ["bad.mov"])
+    }
+
     func testByteDisplayFormatterSwitchesToTerabytesAtThousandGigabytes() throws {
         XCTAssertTrue(ByteDisplayFormatter.string(fromByteCount: 999_999_999_999).contains("GB"))
         XCTAssertEqual(ByteDisplayFormatter.string(fromByteCount: 1_000_000_000_000), "1 TB")
@@ -170,7 +284,10 @@ final class PersistenceCompatibilityTests: XCTestCase {
         finishedAt: Date,
         totalBytes: Int64,
         selectedFileCount: Int,
-        success: Bool
+        success: Bool,
+        failedFiles: [String] = [],
+        importedItems: [String] = [],
+        fileRecords: [FileVerificationRecord] = []
     ) -> TransferReport {
         TransferReport(
             id: UUID(),
@@ -187,7 +304,7 @@ final class PersistenceCompatibilityTests: XCTestCase {
             namingRule: "Test",
             success: success,
             cancelled: false,
-            failedFiles: [],
+            failedFiles: failedFiles,
             copyFailedFiles: [],
             verificationFailedFiles: [],
             skippedFiles: [],
@@ -196,8 +313,8 @@ final class PersistenceCompatibilityTests: XCTestCase {
             duration: 60,
             reportDocumentPath: nil,
             localReportDocumentPath: nil,
-            importedItems: [],
-            fileRecords: []
+            importedItems: importedItems,
+            fileRecords: fileRecords
         )
     }
 }

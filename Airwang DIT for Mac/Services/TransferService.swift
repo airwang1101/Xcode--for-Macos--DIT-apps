@@ -1870,158 +1870,145 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        let fileLines = summary.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
-        }
-
-        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
-        let recordLines = fileRecords.enumerated().map { index, record in
+        return writeReportContent(targetURL: url, targetRootURL: targetRootURL, localURL: fallbackURL) { writer in
             if isEnglish {
-                return """
-                \(index + 1). \(record.relativePath)
-                   Status: \(record.status)
-                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-                   Source SHA-256: \(record.sourceChecksum ?? "-")
-                   Primary SHA-256: \(record.targetChecksum ?? "-")
-                   Backup SHA-256: \(record.backupChecksum ?? "-")
-                   Note: \(record.message)
-                """
+                try writer.write("""
+                Airwang DIT for Mac Copy Report
+                ========================================
+
+                [Task Summary]
+                Copy ID: \(taskFolder)
+                Started At: \(formatter.string(from: startedAt))
+                Finished At: \(formatter.string(from: finishedAt))
+                Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                Import Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+                Bundle ID: \(AppStorageScope.bundleIdentifier)
+                Local Storage: \(AppStorageScope.displayName)
+                Verification Mode: \(summary.verificationMode)
+                Naming Rule: \(summary.namingRule)
+                Verification Summary: \(verificationSummary)
+                Safety Event: \(interruptionReason ?? "None")
+
+                [Paths]
+                Source Device Name: \(summary.sourceVolume.name)
+                Source Device Path: \(summary.sourceVolume.url.path)
+                Actual Scan Folder: \(summary.sourceRootURL.path)
+                Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
+                Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
+                Target Capacity: \(capacityLines(for: destinations))
+
+                [Media Stats]
+                File Count: \(summary.selectedItems.count)
+                Total Size: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
+                Copy Failures: \(copyFailedFiles.count)
+                Verification Failures: \(verificationFailedFiles.count)
+                Skipped Verification: \(skippedFiles.count)
+
+                [Media List]
+
+                """)
+                for (index, item) in summary.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[Copy Failures]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "No copy failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Failures]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "No verification failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Skipped Files]")
+                try writeNumberedSection(skippedFiles, emptyText: "No skipped files", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Details]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: true,
+                    sourceLabel: "Source SHA-256",
+                    primaryLabel: "Primary SHA-256",
+                    backupLabel: "Backup SHA-256",
+                    emptyText: "No verification details",
+                    to: writer
+                )
+                try writer.writeLine("[Issue Files]")
+                try writeNumberedSection(failedFiles, emptyText: "No issue files", to: writer)
+                try writer.write("""
+
+                [Handoff Confirmation]
+                DIT/Media Manager Signature:
+                Receiver Signature:
+                Notes:
+                """)
+            } else {
+                try writer.write("""
+                Airwang DIT for Mac 拷贝报告
+                ========================================
+
+                [任务概要]
+                拷贝 ID: \(taskFolder)
+                开始时间: \(formatter.string(from: startedAt))
+                完成时间: \(formatter.string(from: finishedAt))
+                拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                导入状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
+                应用标识: \(AppStorageScope.bundleIdentifier)
+                本地存储: \(AppStorageScope.displayName)
+                校验方式: \(summary.verificationMode)
+                命名规则: \(summary.namingRule)
+                校验结论: \(verificationSummary)
+                安全事件: \(interruptionReason ?? "无")
+
+                [路径信息]
+                源设备名称: \(summary.sourceVolume.name)
+                源设备地址: \(summary.sourceVolume.url.path)
+                实际扫描目录: \(summary.sourceRootURL.path)
+                主目标地址: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
+                备份地址: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "未启用")
+                目标容量: \(capacityLines(for: destinations))
+
+                [素材统计]
+                文件数量: \(summary.selectedItems.count)
+                总容量: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
+                拷贝失败: \(copyFailedFiles.count)
+                校验失败: \(verificationFailedFiles.count)
+                跳过校验: \(skippedFiles.count)
+
+                [素材清单]
+
+                """)
+                for (index, item) in summary.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[拷贝失败文件]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[校验失败文件]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[跳过校验文件]")
+                try writeNumberedSection(skippedFiles, emptyText: "无跳过文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[文件校验明细]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: false,
+                    sourceLabel: "源 SHA-256",
+                    primaryLabel: "主目标 SHA-256",
+                    backupLabel: "备份 SHA-256",
+                    emptyText: "无校验明细",
+                    to: writer
+                )
+                try writer.writeLine("[异常文件]")
+                try writeNumberedSection(failedFiles, emptyText: "无异常文件", to: writer)
+                try writer.write("""
+
+                [交接确认]
+                DIT/素材管理员签名:
+                接收方签名:
+                备注:
+                """)
             }
-            return """
-            \(index + 1). \(record.relativePath)
-               状态: \(record.status)
-               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-               源 SHA-256: \(record.sourceChecksum ?? "-")
-               主目标 SHA-256: \(record.targetChecksum ?? "-")
-               备份 SHA-256: \(record.backupChecksum ?? "-")
-               说明: \(record.message)
-            """
-        }.joined(separator: "\n")
-
-        let content: String
-        if isEnglish {
-            content = """
-            Airwang DIT for Mac Copy Report
-            ========================================
-
-            [Task Summary]
-            Copy ID: \(taskFolder)
-            Started At: \(formatter.string(from: startedAt))
-            Finished At: \(formatter.string(from: finishedAt))
-            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-            Import Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
-            Bundle ID: \(AppStorageScope.bundleIdentifier)
-            Local Storage: \(AppStorageScope.displayName)
-            Verification Mode: \(summary.verificationMode)
-            Naming Rule: \(summary.namingRule)
-            Verification Summary: \(verificationSummary)
-            Safety Event: \(interruptionReason ?? "None")
-
-            [Paths]
-            Source Device Name: \(summary.sourceVolume.name)
-            Source Device Path: \(summary.sourceVolume.url.path)
-            Actual Scan Folder: \(summary.sourceRootURL.path)
-            Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
-            Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
-            Target Capacity: \(capacityLines(for: destinations))
-
-            [Media Stats]
-            File Count: \(summary.selectedItems.count)
-            Total Size: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
-            Copy Failures: \(copyFailedFiles.count)
-            Verification Failures: \(verificationFailedFiles.count)
-            Skipped Verification: \(skippedFiles.count)
-
-            [Media List]
-            \(fileLines.joined(separator: "\n"))
-
-            [Copy Failures]
-            \(copyFailedSection)
-
-            [Verification Failures]
-            \(verificationFailedSection)
-
-            [Skipped Files]
-            \(skippedSection)
-
-            [Verification Details]
-            \(recordLines.isEmpty ? "No verification details" : recordLines)
-
-            [Issue Files]
-            \(failedSection)
-
-            [Handoff Confirmation]
-            DIT/Media Manager Signature:
-            Receiver Signature:
-            Notes:
-            """
-        } else {
-            content = """
-        Airwang DIT for Mac 拷贝报告
-        ========================================
-
-        [任务概要]
-        拷贝 ID: \(taskFolder)
-        开始时间: \(formatter.string(from: startedAt))
-        完成时间: \(formatter.string(from: finishedAt))
-        拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-        导入状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
-        应用标识: \(AppStorageScope.bundleIdentifier)
-        本地存储: \(AppStorageScope.displayName)
-        校验方式: \(summary.verificationMode)
-        命名规则: \(summary.namingRule)
-        校验结论: \(verificationSummary)
-        安全事件: \(interruptionReason ?? "无")
-
-        [路径信息]
-        源设备名称: \(summary.sourceVolume.name)
-        源设备地址: \(summary.sourceVolume.url.path)
-        实际扫描目录: \(summary.sourceRootURL.path)
-        主目标地址: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
-        备份地址: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "未启用")
-        目标容量: \(capacityLines(for: destinations))
-
-        [素材统计]
-        文件数量: \(summary.selectedItems.count)
-        总容量: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
-        拷贝失败: \(copyFailedFiles.count)
-        校验失败: \(verificationFailedFiles.count)
-        跳过校验: \(skippedFiles.count)
-
-        [素材清单]
-        \(fileLines.joined(separator: "\n"))
-
-        [拷贝失败文件]
-        \(copyFailedSection)
-
-        [校验失败文件]
-        \(verificationFailedSection)
-
-        [跳过校验文件]
-        \(skippedSection)
-
-        [文件校验明细]
-        \(recordLines.isEmpty ? "无校验明细" : recordLines)
-
-        [异常文件]
-        \(failedSection)
-
-        [交接确认]
-        DIT/素材管理员签名:
-        接收方签名:
-        备注:
-        """
         }
-
-        return writeReportContent(
-            content,
-            targetURL: url,
-            targetRootURL: targetRootURL,
-            localURL: fallbackURL
-        )
     }
 
     private func writeProjectReportDocument(
@@ -2049,36 +2036,6 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        let fileLines = project.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
-        }
-        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
-        let recordLines = fileRecords.enumerated().map { index, record in
-            if isEnglish {
-                return """
-                \(index + 1). \(record.relativePath)
-                   Status: \(record.status)
-                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-                   Source Checksum: \(record.sourceChecksum ?? "-")
-                   Primary Checksum: \(record.targetChecksum ?? "-")
-                   Backup Checksum: \(record.backupChecksum ?? "-")
-                   Note: \(record.message)
-                """
-            }
-            return """
-            \(index + 1). \(record.relativePath)
-               状态: \(record.status)
-               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-               源校验值: \(record.sourceChecksum ?? "-")
-               主目标校验值: \(record.targetChecksum ?? "-")
-               备份校验值: \(record.backupChecksum ?? "-")
-               说明: \(record.message)
-            """
-        }.joined(separator: "\n")
-
         let routeLine: String
         switch stage {
         case .primary:
@@ -2087,137 +2044,155 @@ struct TransferService {
             routeLine = isEnglish ? "Stage Route: primary target path -> backup path. Backup reads from the primary target." : "本阶段路径: 主目标地址 -> 备份地址（备份来源为主目标盘）"
         }
 
-        let content: String
-        if isEnglish {
-            content = """
-            \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
-            ========================================
+        return writeReportContent(targetURL: url, targetRootURL: targetRootURL, localURL: fallbackURL) { writer in
+            if isEnglish {
+                try writer.write("""
+                \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
+                ========================================
 
-            [Task Summary]
-            Copy ID: \(project.taskFolderName)
-            Project Name: \(project.name)
-            Report Type: \(stage == .primary ? "Primary report" : "Backup report")
-            Started At: \(formatter.string(from: startedAt))
-            Finished At: \(formatter.string(from: finishedAt))
-            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-            Stage Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
-            Bundle ID: \(AppStorageScope.bundleIdentifier)
-            Local Storage: \(AppStorageScope.displayName)
-            Verification Mode: \(project.verificationMode.title)
-            Verification Risk Note: \(project.verificationMode.reportWarning)
-            Verification Summary: \(verificationSummary)
-            Safety Event: \(interruptionReason ?? "None")
+                [Task Summary]
+                Copy ID: \(project.taskFolderName)
+                Project Name: \(project.name)
+                Report Type: \(stage == .primary ? "Primary report" : "Backup report")
+                Started At: \(formatter.string(from: startedAt))
+                Finished At: \(formatter.string(from: finishedAt))
+                Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                Stage Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+                Bundle ID: \(AppStorageScope.bundleIdentifier)
+                Local Storage: \(AppStorageScope.displayName)
+                Verification Mode: \(project.verificationMode.title)
+                Verification Risk Note: \(project.verificationMode.reportWarning)
+                Verification Summary: \(verificationSummary)
+                Safety Event: \(interruptionReason ?? "None")
 
-            [Paths]
-            \(routeLine)
-            Original Source Name: \(project.sourceName)
-            Original Source Path: \(project.sourceVolumePath)
-            Original Scan Folder: \(project.sourceRootPath)
-            Stage Read Path: \(sourceBaseURL.path)
-            Primary Target Path: \(project.primaryImportURL.path)
-            Backup Path: \(project.backupImportURL?.path ?? "Disabled")
-            Stage Write Path: \(destinationFolderURL.path)
-            Target Capacity: \(capacityLines(for: [destination]))
+                [Paths]
+                \(routeLine)
+                Original Source Name: \(project.sourceName)
+                Original Source Path: \(project.sourceVolumePath)
+                Original Scan Folder: \(project.sourceRootPath)
+                Stage Read Path: \(sourceBaseURL.path)
+                Primary Target Path: \(project.primaryImportURL.path)
+                Backup Path: \(project.backupImportURL?.path ?? "Disabled")
+                Stage Write Path: \(destinationFolderURL.path)
+                Target Capacity: \(capacityLines(for: [destination]))
 
-            [Media Stats]
-            File Count: \(project.selectedItems.count)
-            Total Size: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
-            Copy Failures: \(copyFailedFiles.count)
-            Verification Failures: \(verificationFailedFiles.count)
-            Skipped Verification: \(skippedFiles.count)
+                [Media Stats]
+                File Count: \(project.selectedItems.count)
+                Total Size: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
+                Copy Failures: \(copyFailedFiles.count)
+                Verification Failures: \(verificationFailedFiles.count)
+                Skipped Verification: \(skippedFiles.count)
 
-            [Media List]
-            \(fileLines.joined(separator: "\n"))
+                [Media List]
 
-            [Copy Failures]
-            \(copyFailedSection)
+                """)
+                for (index, item) in project.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[Copy Failures]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "No copy failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Failures]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "No verification failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Skipped Files]")
+                try writeNumberedSection(skippedFiles, emptyText: "No skipped files", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Details]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: true,
+                    sourceLabel: "Source Checksum",
+                    primaryLabel: "Primary Checksum",
+                    backupLabel: "Backup Checksum",
+                    emptyText: "No verification details",
+                    to: writer
+                )
+                try writer.writeLine("[Issue Files]")
+                try writeNumberedSection(failedFiles, emptyText: "No issue files", to: writer)
+                try writer.write("""
 
-            [Verification Failures]
-            \(verificationFailedSection)
+                [Handoff Confirmation]
+                DIT/Media Manager Signature:
+                Receiver Signature:
+                Notes:
+                """)
+            } else {
+                try writer.write("""
+                \(stage.reportTitle)
+                ========================================
 
-            [Skipped Files]
-            \(skippedSection)
+                [任务概要]
+                拷贝 ID: \(project.taskFolderName)
+                项目名称: \(project.name)
+                报告类型: \(stage == .primary ? "第一份主盘报告" : "第二份备份报告")
+                开始时间: \(formatter.string(from: startedAt))
+                完成时间: \(formatter.string(from: finishedAt))
+                拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                阶段状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
+                应用标识: \(AppStorageScope.bundleIdentifier)
+                本地存储: \(AppStorageScope.displayName)
+                校验方式: \(project.verificationMode.title)
+                校验风险说明: \(project.verificationMode.reportWarning)
+                校验结论: \(verificationSummary)
+                安全事件: \(interruptionReason ?? "无")
 
-            [Verification Details]
-            \(recordLines.isEmpty ? "No verification details" : recordLines)
+                [路径信息]
+                \(routeLine)
+                原始源设备名称: \(project.sourceName)
+                原始源地址: \(project.sourceVolumePath)
+                原始扫描目录: \(project.sourceRootPath)
+                本阶段读取地址: \(sourceBaseURL.path)
+                主目标地址: \(project.primaryImportURL.path)
+                备份地址: \(project.backupImportURL?.path ?? "未启用")
+                本阶段写入地址: \(destinationFolderURL.path)
+                目标容量: \(capacityLines(for: [destination]))
 
-            [Issue Files]
-            \(failedSection)
+                [素材统计]
+                文件数量: \(project.selectedItems.count)
+                总容量: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
+                拷贝失败: \(copyFailedFiles.count)
+                校验失败: \(verificationFailedFiles.count)
+                跳过校验: \(skippedFiles.count)
 
-            [Handoff Confirmation]
-            DIT/Media Manager Signature:
-            Receiver Signature:
-            Notes:
-            """
-        } else {
-            content = """
-        \(stage.reportTitle)
-        ========================================
+                [素材清单]
 
-        [任务概要]
-        拷贝 ID: \(project.taskFolderName)
-        项目名称: \(project.name)
-        报告类型: \(stage == .primary ? "第一份主盘报告" : "第二份备份报告")
-        开始时间: \(formatter.string(from: startedAt))
-        完成时间: \(formatter.string(from: finishedAt))
-        拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-        阶段状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
-        应用标识: \(AppStorageScope.bundleIdentifier)
-        本地存储: \(AppStorageScope.displayName)
-        校验方式: \(project.verificationMode.title)
-        校验风险说明: \(project.verificationMode.reportWarning)
-        校验结论: \(verificationSummary)
-        安全事件: \(interruptionReason ?? "无")
+                """)
+                for (index, item) in project.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[拷贝失败文件]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[校验失败文件]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[跳过校验文件]")
+                try writeNumberedSection(skippedFiles, emptyText: "无跳过文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[文件校验明细]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: false,
+                    sourceLabel: "源校验值",
+                    primaryLabel: "主目标校验值",
+                    backupLabel: "备份校验值",
+                    emptyText: "无校验明细",
+                    to: writer
+                )
+                try writer.writeLine("[异常文件]")
+                try writeNumberedSection(failedFiles, emptyText: "无异常文件", to: writer)
+                try writer.write("""
 
-        [路径信息]
-        \(routeLine)
-        原始源设备名称: \(project.sourceName)
-        原始源地址: \(project.sourceVolumePath)
-        原始扫描目录: \(project.sourceRootPath)
-        本阶段读取地址: \(sourceBaseURL.path)
-        主目标地址: \(project.primaryImportURL.path)
-        备份地址: \(project.backupImportURL?.path ?? "未启用")
-        本阶段写入地址: \(destinationFolderURL.path)
-        目标容量: \(capacityLines(for: [destination]))
-
-        [素材统计]
-        文件数量: \(project.selectedItems.count)
-        总容量: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
-        拷贝失败: \(copyFailedFiles.count)
-        校验失败: \(verificationFailedFiles.count)
-        跳过校验: \(skippedFiles.count)
-
-        [素材清单]
-        \(fileLines.joined(separator: "\n"))
-
-        [拷贝失败文件]
-        \(copyFailedSection)
-
-        [校验失败文件]
-        \(verificationFailedSection)
-
-        [跳过校验文件]
-        \(skippedSection)
-
-        [文件校验明细]
-        \(recordLines.isEmpty ? "无校验明细" : recordLines)
-
-        [异常文件]
-        \(failedSection)
-
-        [交接确认]
-        DIT/素材管理员签名:
-        接收方签名:
-        备注:
-        """
+                [交接确认]
+                DIT/素材管理员签名:
+                接收方签名:
+                备注:
+                """)
+            }
         }
-
-        return writeReportContent(
-            content,
-            targetURL: url,
-            targetRootURL: targetRootURL,
-            localURL: fallbackURL
-        )
     }
 
     private func makeProjectVerificationSummary(
@@ -2306,6 +2281,47 @@ struct TransferService {
         )
     }
 
+    private func writeReportContent(
+        targetURL: URL?,
+        targetRootURL: URL?,
+        localURL: URL,
+        body: (ReportTextWriter) throws -> Void
+    ) -> ReportDocumentWriteResult {
+        var writtenTargetURL: URL?
+        var writtenLocalURL: URL?
+        var notes: [String] = []
+
+        if let targetURL {
+            if let targetRootURL {
+                do {
+                    try writeText(to: targetURL, under: targetRootURL, body: body)
+                    writtenTargetURL = targetURL
+                } catch {
+                    notes.append("目标盘报告写入失败：\(error.localizedDescription)")
+                }
+            } else {
+                notes.append("目标盘报告缺少安全根目录，已拒绝写入。")
+            }
+        } else {
+            notes.append("因预检安全拦截，未向目标盘写入报告，仅保存 App 本地报告。")
+        }
+
+        do {
+            try writeText(to: localURL, under: AppStorageScope.applicationSupportURL, body: body)
+            writtenLocalURL = localURL
+        } catch {
+            notes.append("本地备份报告写入失败：\(error.localizedDescription)")
+        }
+
+        let note = notes.isEmpty ? nil : notes.joined(separator: "；")
+        return ReportDocumentWriteResult(
+            requestedTargetURL: targetURL,
+            targetURL: writtenTargetURL,
+            localURL: writtenLocalURL,
+            note: note
+        )
+    }
+
     private func writeText(_ content: String, to url: URL, under rootURL: URL) throws {
         try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
         try FileManager.default.createDirectory(
@@ -2315,6 +2331,97 @@ struct TransferService {
         )
         try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
         try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func writeText(
+        to url: URL,
+        under rootURL: URL,
+        body: (ReportTextWriter) throws -> Void
+    ) throws {
+        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
+
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp", isDirectory: false)
+        try PathSafety.ensureSafeWritableFileTarget(for: temporaryURL, under: rootURL)
+        FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        let writer = ReportTextWriter(handle: handle)
+        do {
+            try body(writer)
+            try handle.synchronize()
+            try handle.close()
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(
+                    url,
+                    withItemAt: temporaryURL,
+                    backupItemName: nil,
+                    options: .usingNewMetadataOnly
+                )
+            } else {
+                try FileManager.default.moveItem(at: temporaryURL, to: url)
+            }
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+    }
+
+    private func writeNumberedSection(_ items: [String], emptyText: String, to writer: ReportTextWriter) throws {
+        guard !items.isEmpty else {
+            try writer.writeLine(emptyText)
+            return
+        }
+        for (index, item) in items.enumerated() {
+            try writer.writeLine("\(index + 1). \(item)")
+        }
+    }
+
+    private func writeVerificationDetails(
+        _ fileRecords: [FileVerificationRecord],
+        isEnglish: Bool,
+        sourceLabel: String,
+        primaryLabel: String,
+        backupLabel: String,
+        emptyText: String,
+        to writer: ReportTextWriter
+    ) throws {
+        guard !fileRecords.isEmpty else {
+            try writer.writeLine(emptyText)
+            return
+        }
+
+        for (index, record) in fileRecords.enumerated() {
+            if isEnglish {
+                try writer.write("""
+                \(index + 1). \(record.relativePath)
+                   Status: \(record.status)
+                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
+                   \(sourceLabel): \(record.sourceChecksum ?? "-")
+                   \(primaryLabel): \(record.targetChecksum ?? "-")
+                   \(backupLabel): \(record.backupChecksum ?? "-")
+                   Note: \(record.message)
+
+                """)
+            } else {
+                try writer.write("""
+                \(index + 1). \(record.relativePath)
+                   状态: \(record.status)
+                   大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
+                   \(sourceLabel): \(record.sourceChecksum ?? "-")
+                   \(primaryLabel): \(record.targetChecksum ?? "-")
+                   \(backupLabel): \(record.backupChecksum ?? "-")
+                   说明: \(record.message)
+
+                """)
+            }
+        }
     }
 
     private func formatDuration(_ value: TimeInterval) -> String {
@@ -2342,5 +2449,19 @@ struct TransferService {
             return "\(destination.label) 可用 \(free) / 总计 \(total)"
         }
         .joined(separator: " | ")
+    }
+}
+
+private struct ReportTextWriter {
+    let handle: FileHandle
+
+    func write(_ text: String) throws {
+        if let data = text.data(using: .utf8) {
+            try handle.write(contentsOf: data)
+        }
+    }
+
+    func writeLine(_ text: String = "") throws {
+        try write(text + "\n")
     }
 }

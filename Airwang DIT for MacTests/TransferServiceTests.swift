@@ -1,0 +1,420 @@
+import Foundation
+import XCTest
+@testable import Airwang_DIT_for_Mac
+
+/// 针对核心拷贝/校验引擎 `TransferService` 的端到端测试。
+///
+/// 这是产品的命根子：拷贝绝不能丢/不能损坏。测试通过公开接口
+/// (`runPrimaryStage` / `runBackupStage`) 在真实文件系统上验证拷贝、各校验模式、
+/// 缺源文件、路径穿越防护与备份镜像。私有方法 (copyFile/checksum/verifyProjectFile)
+/// 通过公开接口间接覆盖。
+///
+/// 关键约束：引擎的安全预检会**拒绝源盘与目标盘同处一个磁盘卷**(避免把素材写回源卡)，
+/// 因此凡是要真正触发拷贝的用例，目标盘必须是一个独立卷。这里用 `hdiutil` 临时挂载
+/// 一个磁盘镜像作为独立目标/备份卷；环境不支持时 (`XCTSkip`) 跳过而非误判失败。
+final class TransferServiceTests: XCTestCase {
+
+    // MARK: - 正常路径（需要独立目标卷）
+
+    func testPrimaryStageCopiesAndVerifiesWithSHA256() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷（hdiutil 不可用），跳过端到端拷贝测试。")
+        }
+        defer { volume.detach() }
+
+        let dataA = Data((0..<4096).map { UInt8($0 % 251) })
+        let dataB = Data("hello dit".utf8)
+        try writeFile(dataA, to: source.appendingPathComponent("clipA.mov"))
+        try writeFile(dataB, to: source.appendingPathComponent("day1/clipB.mov"))
+
+        let items = [
+            mediaItem(sourceRoot: source, relativePath: "clipA.mov", data: dataA),
+            mediaItem(sourceRoot: source, relativePath: "day1/clipB.mov", data: dataB)
+        ]
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: items, mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertTrue(result.report.success, "SHA-256 正常路径应成功：\(result.report.verificationSummary)")
+        XCTAssertEqual(result.finalState.copiedFiles, 2)
+        XCTAssertTrue(result.report.copyFailedFiles.isEmpty)
+        XCTAssertTrue(result.report.verificationFailedFiles.isEmpty)
+        XCTAssertEqual(result.report.selectedFileCount, 2)
+
+        let targetA = project.primaryImportURL.appendingPathComponent("clipA.mov")
+        let targetB = project.primaryImportURL.appendingPathComponent("day1/clipB.mov")
+        XCTAssertEqual(try Data(contentsOf: targetA), dataA, "主盘文件内容应与源一致")
+        XCTAssertEqual(try Data(contentsOf: targetB), dataB, "子目录文件应保留相对路径并内容一致")
+    }
+
+    func testSizeOnlyAndFingerprintSucceedOnGoodCopy() async throws {
+        for mode in [VerificationMode.sizeOnly, .fastFingerprint] {
+            let source = try makeTempDir(); defer { cleanup(source) }
+            guard let volume = try makeSeparateVolume() else {
+                throw XCTSkip("无法创建独立测试卷，跳过。")
+            }
+            defer { volume.detach() }
+
+            let data = Data((0..<200_000).map { UInt8($0 % 255) })
+            try writeFile(data, to: source.appendingPathComponent("a.mov"))
+            let items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data)]
+            let project = makeProject(source: source, target: volume.mount, backup: nil, items: items, mode: mode)
+
+            let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+            XCTAssertTrue(result.report.success, "\(mode.rawValue) 在正常拷贝下应成功")
+            XCTAssertEqual(
+                try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")),
+                data
+            )
+        }
+    }
+
+    func testSkippedVerificationStillCopiesFiles() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let data = Data("skip me".utf8)
+        try writeFile(data, to: source.appendingPathComponent("a.mov"))
+        let items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data)]
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: items, mode: .skipped)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertEqual(result.finalState.copiedFiles, 1, "跳过校验仍应完成拷贝")
+        XCTAssertTrue(result.report.copyFailedFiles.isEmpty)
+        XCTAssertEqual(
+            try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")),
+            data
+        )
+    }
+
+    // MARK: - 失败与安全
+
+    func testMissingSourceFileIsReportedAsFailure() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        // 声明了一个项目素材，但故意不在源盘创建它。
+        let ghost = ProjectMediaItem(
+            id: "ghost",
+            filePath: source.appendingPathComponent("ghost.mov").path,
+            relativePath: "ghost.mov",
+            displayName: "ghost.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: 1024,
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [ghost], mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success, "缺失源文件不应被判为成功")
+        XCTAssertTrue(result.report.failedFiles.contains("ghost.mov"))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: project.primaryImportURL.appendingPathComponent("ghost.mov").path),
+            "失败的文件不应在目标盘留下产物"
+        )
+    }
+
+    func testPathTraversalRelativePathIsRejected() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let data = Data("evil".utf8)
+        try writeFile(data, to: source.appendingPathComponent("real.mov"))
+
+        // relativePath 试图用 "../" 逃逸出任务文件夹。
+        let evil = ProjectMediaItem(
+            id: "evil",
+            filePath: source.appendingPathComponent("real.mov").path,
+            relativePath: "../escape.mov",
+            displayName: "escape.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: Int64(data.count),
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [evil], mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success, "路径穿越必须被拒绝，不能判为成功")
+        // "../escape.mov" 相对任务文件夹 (volume/Task) 会指向 volume/escape.mov。
+        let escapeURL = volume.mount.appendingPathComponent("escape.mov")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: escapeURL.path),
+            "不能在任务文件夹之外写入任何文件"
+        )
+    }
+
+    /// 安全预检：源盘与目标盘同处一个磁盘卷必须被拒绝（避免把素材写回源卡/同盘）。
+    /// 此用例不需要独立卷——同卷正是它要触发的条件，因此确定性强、运行快。
+    func testSameVolumeSourceAndTargetIsRejected() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let target = try makeTempDir(); defer { cleanup(target) }  // 与 source 同卷（都在临时目录）
+
+        let data = Data("same volume".utf8)
+        try writeFile(data, to: source.appendingPathComponent("a.mov"))
+        let items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data)]
+        let project = makeProject(source: source, target: target, backup: nil, items: items, mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success, "源盘与目标盘同卷必须被安全预检拒绝")
+        XCTAssertEqual(result.finalState.copiedFiles, 0, "被拒绝时不应发生任何拷贝")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: project.primaryImportURL.appendingPathComponent("a.mov").path)
+        )
+    }
+
+    // MARK: - 备份阶段（需要两个互相独立、且独立于源的卷）
+
+    func testBackupStageMirrorsPrimary() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primaryVolume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { primaryVolume.detach() }
+        guard let backupVolume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建第二个独立测试卷，跳过。")
+        }
+        defer { backupVolume.detach() }
+
+        let data = Data((0..<10_000).map { UInt8($0 % 200) })
+        try writeFile(data, to: source.appendingPathComponent("a.mov"))
+        let items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data)]
+        let project = makeProject(
+            source: source,
+            target: primaryVolume.mount,
+            backup: backupVolume.mount,
+            items: items,
+            mode: .sha256
+        )
+
+        let service = TransferService()
+        let primary = try await service.runPrimaryStage(project: project) { _ in }
+        XCTAssertTrue(primary.report.success, "主盘阶段应先成功：\(primary.report.verificationSummary)")
+
+        let backupResult = try await service.runBackupStage(project: project) { _ in }
+        XCTAssertTrue(backupResult.report.success, "备份阶段应通过校验：\(backupResult.report.verificationSummary)")
+
+        let backupFile = try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")
+        XCTAssertEqual(try Data(contentsOf: backupFile), data, "备份盘文件应与源一致")
+    }
+
+    // MARK: - 中断 / 鲁棒性 / 混合结果
+
+    /// 安全：携带"已停止"中断令牌时，拷贝必须在写盘前中止，不留下半成品。
+    func testInterruptionTokenAbortsCopy() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let data = Data((0..<8192).map { UInt8($0 % 233) })
+        try writeFile(data, to: source.appendingPathComponent("a.mov"))
+        let items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data)]
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: items, mode: .sha256)
+
+        let token = ImportInterruptionToken()
+        token.stop(reason: "测试触发的中断")
+
+        let result = try await TransferService().runPrimaryStage(project: project, interruptionToken: token) { _ in }
+
+        XCTAssertFalse(result.report.success, "已中断的任务不应判为成功")
+        XCTAssertEqual(result.finalState.copiedFiles, 0, "中断后不应有文件被计入已拷贝")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: project.primaryImportURL.appendingPathComponent("a.mov").path),
+            "中断不应在目标盘留下半成品"
+        )
+    }
+
+    /// 锁定行为：扫描时记录的 size 与拷贝时实际不一致（文件在扫描后被改动）时，
+    /// 引擎应按实际字节完整拷贝并通过校验，不因 size 陈旧而误报失败。
+    /// 对应 `copyFile` 中"对比实际读取字节数而非 expectedSize"的设计。
+    func testStaleScanSizeStillCopiesByteComplete() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let data = Data((0..<4096).map { UInt8($0 % 251) })
+        let fileURL = source.appendingPathComponent("a.mov")
+        try writeFile(data, to: fileURL)
+        // 故意把声明 size 设得远大于真实大小（模拟扫描后文件变小）；仍需 < 卷可用空间。
+        let staleItem = ProjectMediaItem(
+            id: fileURL.path,
+            filePath: fileURL.path,
+            relativePath: "a.mov",
+            displayName: "a.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: 1_000_000,
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [staleItem], mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertTrue(result.report.success, "实际字节完整拷贝应成功，不应因陈旧 size 误报：\(result.report.verificationSummary)")
+        XCTAssertEqual(
+            try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")),
+            data,
+            "目标内容应与源实际内容一致"
+        )
+    }
+
+    /// 锁定「当前真实行为」（存在产品决策待定，见下）：批量拷贝遇到**缺失的源文件**时，
+    /// 引擎把它当作「源文件断开」按**致命中断**处理（`ensureAvailable` 抛 `deviceUnavailable`
+    /// → `fatalInterruptionReason` 判致命），从而中止本批后续、整体判失败，并把缺失文件
+    /// 之前**已成功拷贝**的文件标记为「未校验」。关键保证：已落盘的数据**不回滚**，仍完整。
+    ///
+    /// ⚠️ 待产品确认：单个文件缺失是否应等同于「整卡掉线」中止整批？对大批量离线，
+    /// 这意味着可能因 1 个坏/缺文件停在第 3/5000。若决定改为「逐文件失败并继续」，
+    /// 需同步更新本测试与 `ensureAvailable`/`fatalInterruptionReason` 的分类。
+    func testMissingSourceFileAbortsBatchButKeepsAlreadyCopiedData() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let goodData = Data((0..<5000).map { UInt8($0 % 200) })
+        try writeFile(goodData, to: source.appendingPathComponent("good.mov"))
+        let good = mediaItem(sourceRoot: source, relativePath: "good.mov", data: goodData)
+        let ghost = ProjectMediaItem(
+            id: "ghost",
+            filePath: source.appendingPathComponent("ghost.mov").path,
+            relativePath: "ghost.mov",
+            displayName: "ghost.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: 5000,
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        // good 在前：它在 ghost 触发中断前已完成拷贝，数据应已落盘。
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [good, ghost], mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success, "存在缺失文件时整体应判失败")
+        XCTAssertNotNil(result.report.interruptionReason, "缺失源文件目前被当作致命中断")
+        XCTAssertTrue(result.report.copyFailedFiles.contains("ghost.mov"), "缺失文件应记为拷贝失败")
+
+        // 数据完整性保证：中断前已拷贝的正常文件，数据仍完整落盘、未被回滚。
+        let goodTarget = project.primaryImportURL.appendingPathComponent("good.mov")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: goodTarget.path), "已拷贝文件不应被删除")
+        XCTAssertEqual(try Data(contentsOf: goodTarget), goodData, "已拷贝文件内容应完整")
+    }
+
+    // MARK: - Helpers
+
+    private func makeTempDir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AirwangXfer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func cleanup(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func writeFile(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url)
+    }
+
+    private func mediaItem(sourceRoot: URL, relativePath: String, data: Data) -> ProjectMediaItem {
+        let fileURL = sourceRoot.appendingPathComponent(relativePath)
+        return ProjectMediaItem(
+            id: fileURL.path,
+            filePath: fileURL.path,
+            relativePath: relativePath,
+            displayName: fileURL.lastPathComponent,
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: Int64(data.count),
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+    }
+
+    private func makeProject(
+        source: URL,
+        target: URL,
+        backup: URL?,
+        items: [ProjectMediaItem],
+        mode: VerificationMode,
+        taskFolder: String = "Task"
+    ) -> CopyProject {
+        CopyProject(
+            name: "Test",
+            taskFolderName: taskFolder,
+            createdAt: Date(timeIntervalSince1970: 0),
+            updatedAt: Date(timeIntervalSince1970: 0),
+            sourceName: "Card",
+            sourceVolumePath: source.path,
+            sourceRootPath: source.path,
+            targetRootPath: target.path,
+            backupRootPath: backup?.path,
+            selectedItems: items,
+            totalBytes: items.reduce(Int64(0)) { $0 + $1.size },
+            verificationMode: mode,
+            orderIndex: 0
+        )
+    }
+
+    /// 用 hdiutil 创建并挂载一个独立的临时磁盘卷，作为目标/备份盘，
+    /// 以满足「目标盘必须与源盘不同卷」的安全预检。
+    /// 返回挂载点与一个 detach 闭包；环境不支持时返回 nil（调用方应 XCTSkip）。
+    private func makeSeparateVolume() throws -> (mount: URL, detach: () -> Void)? {
+        let fileManager = FileManager.default
+        let token = String(UUID().uuidString.prefix(8))
+        let dmgPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangVol-\(token).dmg")
+        let mountPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangMnt-\(token)")
+
+        func hdiutil(_ arguments: [String]) -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                return false
+            }
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        }
+
+        guard hdiutil(["create", "-size", "48m", "-fs", "HFS+", "-volname", "Airwang\(token)", "-quiet", dmgPath]) else {
+            return nil
+        }
+        try? fileManager.createDirectory(atPath: mountPath, withIntermediateDirectories: true)
+        guard hdiutil(["attach", dmgPath, "-mountpoint", mountPath, "-nobrowse", "-quiet"]) else {
+            try? fileManager.removeItem(atPath: dmgPath)
+            try? fileManager.removeItem(atPath: mountPath)
+            return nil
+        }
+
+        let detach: () -> Void = {
+            _ = hdiutil(["detach", mountPath, "-force", "-quiet"])
+            try? fileManager.removeItem(atPath: dmgPath)
+            try? fileManager.removeItem(atPath: mountPath)
+        }
+        return (URL(fileURLWithPath: mountPath, isDirectory: true), detach)
+    }
+}

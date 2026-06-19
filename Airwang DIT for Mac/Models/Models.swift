@@ -323,7 +323,8 @@ enum AppLocalization {
         "报告总数": "Reports",
         "最常用的校验": "Most Used Verification",
         "常用源设备": "Common Sources",
-        "次任务": "runs"
+        "次任务": "runs",
+        "刷新统计": "Refresh Stats"
     ]
 }
 
@@ -435,6 +436,11 @@ enum AppStorageScope {
     static var taskLogURL: URL {
         dataURL
             .appendingPathComponent("import-reports.json")
+    }
+
+    static var statisticsIndexURL: URL {
+        dataURL
+            .appendingPathComponent("statistics-index.json")
     }
 
     static var copyProjectsURL: URL {
@@ -1508,6 +1514,36 @@ struct TransferReport: Identifiable, Codable {
         self.fileRecords = fileRecords
     }
 
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(startedAt, forKey: .startedAt)
+        try container.encode(finishedAt, forKey: .finishedAt)
+        try container.encode(sourceName, forKey: .sourceName)
+        try container.encode(sourcePath, forKey: .sourcePath)
+        try container.encodeIfPresent(sourceRootPath, forKey: .sourceRootPath)
+        try container.encode(targetPath, forKey: .targetPath)
+        try container.encodeIfPresent(backupPath, forKey: .backupPath)
+        try container.encode(selectedFileCount, forKey: .selectedFileCount)
+        try container.encode(totalBytes, forKey: .totalBytes)
+        try container.encode(verificationMode, forKey: .verificationMode)
+        try container.encode(namingRule, forKey: .namingRule)
+        try container.encode(success, forKey: .success)
+        try container.encode(cancelled, forKey: .cancelled)
+        try container.encode(failedFiles, forKey: .failedFiles)
+        try container.encode(copyFailedFiles, forKey: .copyFailedFiles)
+        try container.encode(verificationFailedFiles, forKey: .verificationFailedFiles)
+        try container.encode(skippedFiles, forKey: .skippedFiles)
+        try container.encode(verificationSummary, forKey: .verificationSummary)
+        try container.encodeIfPresent(interruptionReason, forKey: .interruptionReason)
+        try container.encode(duration, forKey: .duration)
+        try container.encodeIfPresent(reportDocumentPath, forKey: .reportDocumentPath)
+        try container.encodeIfPresent(localReportDocumentPath, forKey: .localReportDocumentPath)
+        try container.encode(reportDocumentWriteFailed, forKey: .reportDocumentWriteFailed)
+        try container.encode([String](), forKey: .importedItems)
+        try container.encode(fileRecords.filter { $0.status != "通过" }, forKey: .fileRecords)
+    }
+
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -1563,7 +1599,7 @@ struct TransferReport: Identifiable, Codable {
     }
 }
 
-struct CopyActivityDay: Identifiable, Equatable {
+struct CopyActivityDay: Identifiable, Equatable, Codable {
     let date: Date
     let bytes: Int64
     let files: Int
@@ -1577,7 +1613,7 @@ struct CopyActivityDay: Identifiable, Equatable {
     }
 }
 
-struct CopyStatisticsCountItem: Identifiable, Equatable {
+struct CopyStatisticsCountItem: Identifiable, Equatable, Codable {
     let title: String
     let count: Int
 
@@ -1756,6 +1792,374 @@ struct CopyStatisticsSummary: Equatable {
             }
             .prefix(limit)
             .map { $0 }
+    }
+}
+
+struct CopyStatisticsIndex: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var indexedReportIDs: Set<UUID>
+    var dayBuckets: [CopyStatisticsIndexDay]
+    var totalBytes: Int64
+    var totalFiles: Int
+    var totalReports: Int
+    var successfulReports: Int
+    var peakDay: CopyActivityDay?
+    var longestReportDuration: TimeInterval
+    var backupReportCount: Int
+    var verificationModeCounts: [CopyStatisticsCountItem]
+    var sourceCounts: [CopyStatisticsCountItem]
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        indexedReportIDs: Set<UUID> = [],
+        dayBuckets: [CopyStatisticsIndexDay] = [],
+        totalBytes: Int64 = 0,
+        totalFiles: Int = 0,
+        totalReports: Int = 0,
+        successfulReports: Int = 0,
+        peakDay: CopyActivityDay? = nil,
+        longestReportDuration: TimeInterval = 0,
+        backupReportCount: Int = 0,
+        verificationModeCounts: [CopyStatisticsCountItem] = [],
+        sourceCounts: [CopyStatisticsCountItem] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.indexedReportIDs = indexedReportIDs
+        self.dayBuckets = dayBuckets
+        self.totalBytes = totalBytes
+        self.totalFiles = totalFiles
+        self.totalReports = totalReports
+        self.successfulReports = successfulReports
+        self.peakDay = peakDay
+        self.longestReportDuration = longestReportDuration
+        self.backupReportCount = backupReportCount
+        self.verificationModeCounts = verificationModeCounts
+        self.sourceCounts = sourceCounts
+    }
+
+    static func make(
+        reports: [TransferReport],
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> CopyStatisticsIndex {
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        var index = CopyStatisticsIndex()
+        for report in reports where report.finishedAt < endDay {
+            index.add(report, calendar: calendar)
+        }
+        index.normalize()
+        return index
+    }
+
+    func matches(reports: [TransferReport]) -> Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && indexedReportIDs == Set(reports.map(\.id))
+    }
+
+    mutating func add(_ report: TransferReport, calendar: Calendar = .current) {
+        guard !indexedReportIDs.contains(report.id) else { return }
+
+        let day = calendar.startOfDay(for: report.finishedAt)
+        if let index = dayBuckets.firstIndex(where: { $0.date == day }) {
+            dayBuckets[index].bytes += max(report.totalBytes, 0)
+            dayBuckets[index].files += max(report.selectedFileCount, 0)
+            dayBuckets[index].reportCount += 1
+            if report.success {
+                dayBuckets[index].successCount += 1
+            }
+        } else {
+            dayBuckets.append(CopyStatisticsIndexDay(
+                date: day,
+                bytes: max(report.totalBytes, 0),
+                files: max(report.selectedFileCount, 0),
+                reportCount: 1,
+                successCount: report.success ? 1 : 0
+            ))
+        }
+
+        indexedReportIDs.insert(report.id)
+        totalBytes += max(report.totalBytes, 0)
+        totalFiles += max(report.selectedFileCount, 0)
+        totalReports += 1
+        if report.success {
+            successfulReports += 1
+        }
+        if report.backupPath != nil {
+            backupReportCount += 1
+        }
+        longestReportDuration = max(longestReportDuration, report.duration)
+        verificationModeCounts = Self.incrementedCounts(report.verificationMode, counts: verificationModeCounts)
+        sourceCounts = Self.incrementedCounts(report.sourceName, counts: sourceCounts)
+        updatePeakDay(for: day)
+    }
+
+    mutating func normalize() {
+        dayBuckets.sort { $0.date < $1.date }
+        verificationModeCounts = Self.sortedCounts(verificationModeCounts)
+        sourceCounts = Self.sortedCounts(sourceCounts)
+        if let bucket = dayBuckets.max(by: { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }) {
+            let day = bucket.activityDay
+            peakDay = day.hasActivity ? day : nil
+        } else {
+            peakDay = nil
+        }
+    }
+
+    func summary(
+        projects: [CopyProject],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        dayCount: Int = 365
+    ) -> CopyStatisticsSummary {
+        let normalizedDayCount = max(dayCount, 7)
+        let today = calendar.startOfDay(for: now)
+        let firstDay = calendar.date(byAdding: .day, value: -(normalizedDayCount - 1), to: today) ?? today
+        let recent7Start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+        let bucketsByDate = Dictionary(uniqueKeysWithValues: dayBuckets.map { ($0.date, $0) })
+        let days = (0..<normalizedDayCount).compactMap { offset -> CopyActivityDay? in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
+                return nil
+            }
+            return (bucketsByDate[date] ?? CopyStatisticsIndexDay(date: date)).activityDay
+        }
+        let activeDates = Set(dayBuckets.filter(\.hasActivity).map(\.date))
+        let activeProjects = projects.filter { $0.status == .running || $0.status == .cancelling }
+
+        return CopyStatisticsSummary(
+            days: days,
+            totalBytes: totalBytes,
+            recent7Bytes: days.filter { $0.date >= recent7Start }.reduce(0) { $0 + $1.bytes },
+            totalFiles: totalFiles,
+            totalReports: totalReports,
+            successfulReports: successfulReports,
+            activeBytes: activeProjects.reduce(0) { $0 + Self.activeProcessedBytes(for: $1) },
+            activeProjectCount: activeProjects.count,
+            peakDayBytes: peakDay?.bytes ?? 0,
+            peakDay: peakDay,
+            longestReportDuration: longestReportDuration,
+            currentStreakDays: Self.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: Self.longestStreakDays(activeDates: activeDates, calendar: calendar),
+            activeDayCount: activeDates.count,
+            backupReportCount: backupReportCount,
+            verificationModeCounts: verificationModeCounts.prefix(5).map { $0 },
+            sourceCounts: sourceCounts.prefix(5).map { $0 }
+        )
+    }
+
+    private static func incrementedCounts(_ value: String, counts: [CopyStatisticsCountItem]) -> [CopyStatisticsCountItem] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return counts }
+        var updated = counts
+        if let index = updated.firstIndex(where: { $0.title == trimmed }) {
+            updated[index] = CopyStatisticsCountItem(title: trimmed, count: updated[index].count + 1)
+        } else {
+            updated.append(CopyStatisticsCountItem(title: trimmed, count: 1))
+        }
+        return Self.sortedCounts(updated)
+    }
+
+    private mutating func updatePeakDay(for date: Date) {
+        guard let bucket = dayBuckets.first(where: { $0.date == date }) else { return }
+        let day = bucket.activityDay
+        guard day.hasActivity else { return }
+        guard let current = peakDay else {
+            peakDay = day
+            return
+        }
+        if day.bytes > current.bytes || (day.bytes == current.bytes && day.date > current.date) {
+            peakDay = day
+        }
+    }
+
+    private static func sortedCounts(_ counts: [CopyStatisticsCountItem]) -> [CopyStatisticsCountItem] {
+        counts.sorted {
+            if $0.count == $1.count {
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            return $0.count > $1.count
+        }
+    }
+
+    private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
+        [
+            project.primaryCopyState,
+            project.primaryVerifyState,
+            project.backupCopyState,
+            project.backupVerifyState
+        ]
+        .filter(\.isActive)
+        .reduce(0) { partial, state in
+            partial + max(state.processedBytes, 0)
+        }
+    }
+
+    private static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
+        var streak = 0
+        var cursor = today
+        while activeDates.contains(cursor) {
+            streak += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+                break
+            }
+            cursor = previousDay
+        }
+        return streak
+    }
+
+    private static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
+        let sortedDates = activeDates.sorted()
+        var longest = 0
+        var current = 0
+        var previousDate: Date?
+
+        for date in sortedDates {
+            if let previousDate,
+               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
+               expectedDate == date {
+                current += 1
+            } else {
+                current = 1
+            }
+            longest = max(longest, current)
+            previousDate = date
+        }
+
+        return longest
+    }
+}
+
+struct CopyStatisticsIndexDay: Codable, Equatable {
+    let date: Date
+    var bytes: Int64 = 0
+    var files: Int = 0
+    var reportCount: Int = 0
+    var successCount: Int = 0
+
+    var hasActivity: Bool {
+        bytes > 0 || reportCount > 0
+    }
+
+    var activityDay: CopyActivityDay {
+        CopyActivityDay(
+            date: date,
+            bytes: bytes,
+            files: files,
+            reportCount: reportCount,
+            successCount: successCount
+        )
+    }
+}
+
+struct CopyStatisticsHeatmap: Equatable {
+    let days: [CopyActivityDay]
+    let weeks: [[CopyActivityDay?]]
+    let peakDay: CopyActivityDay?
+    let maxBytes: Int64
+
+    static func make(days: [CopyActivityDay], calendar: Calendar = .current) -> CopyStatisticsHeatmap {
+        let peakDay = days.max { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }
+        let activePeakDay = peakDay?.hasActivity == true ? peakDay : nil
+
+        return CopyStatisticsHeatmap(
+            days: days,
+            weeks: calendarWeeks(from: days, calendar: calendar),
+            peakDay: activePeakDay,
+            maxBytes: max(days.map(\.bytes).max() ?? 0, 1)
+        )
+    }
+
+    private static func calendarWeeks(from days: [CopyActivityDay], calendar: Calendar) -> [[CopyActivityDay?]] {
+        guard let firstDate = days.first?.date else { return [] }
+
+        let leadingEmptySlots = max(calendar.component(.weekday, from: firstDate) - 1, 0)
+        var slots = Array<CopyActivityDay?>(repeating: nil, count: leadingEmptySlots)
+        slots.append(contentsOf: days.map { Optional($0) })
+
+        while !slots.isEmpty && slots.count % 7 != 0 {
+            slots.append(nil)
+        }
+
+        return stride(from: 0, to: slots.count, by: 7).map { startIndex in
+            Array(slots[startIndex..<min(startIndex + 7, slots.count)])
+        }
+    }
+}
+
+struct CopyStatisticsHeatmaps: Equatable {
+    let daily: CopyStatisticsHeatmap
+    let weekly: CopyStatisticsHeatmap
+    let cumulative: CopyStatisticsHeatmap
+
+    static func make(days: [CopyActivityDay], calendar: Calendar = .current) -> CopyStatisticsHeatmaps {
+        CopyStatisticsHeatmaps(
+            daily: CopyStatisticsHeatmap.make(days: days, calendar: calendar),
+            weekly: CopyStatisticsHeatmap.make(days: weeklyDays(from: days, calendar: calendar), calendar: calendar),
+            cumulative: CopyStatisticsHeatmap.make(days: cumulativeDays(from: days), calendar: calendar)
+        )
+    }
+
+    func heatmap(for mode: StatisticsActivityMode) -> CopyStatisticsHeatmap {
+        switch mode {
+        case .daily:
+            return daily
+        case .weekly:
+            return weekly
+        case .cumulative:
+            return cumulative
+        }
+    }
+
+    private static func weeklyDays(from days: [CopyActivityDay], calendar: Calendar) -> [CopyActivityDay] {
+        CopyStatisticsHeatmap.make(days: days, calendar: calendar).weeks.flatMap { week in
+            let realDays = week.compactMap { $0 }
+            let bytes = realDays.reduce(0) { $0 + $1.bytes }
+            let files = realDays.reduce(0) { $0 + $1.files }
+            let reportCount = realDays.reduce(0) { $0 + $1.reportCount }
+            let successCount = realDays.reduce(0) { $0 + $1.successCount }
+            return realDays.map { day in
+                CopyActivityDay(
+                    date: day.date,
+                    bytes: bytes,
+                    files: files,
+                    reportCount: reportCount,
+                    successCount: successCount
+                )
+            }
+        }
+    }
+
+    private static func cumulativeDays(from days: [CopyActivityDay]) -> [CopyActivityDay] {
+        var runningBytes: Int64 = 0
+        var runningFiles = 0
+        var runningReports = 0
+        var runningSuccess = 0
+
+        return days.map { day in
+            runningBytes += day.bytes
+            runningFiles += day.files
+            runningReports += day.reportCount
+            runningSuccess += day.successCount
+            return CopyActivityDay(
+                date: day.date,
+                bytes: runningBytes,
+                files: runningFiles,
+                reportCount: runningReports,
+                successCount: runningSuccess
+            )
+        }
     }
 }
 

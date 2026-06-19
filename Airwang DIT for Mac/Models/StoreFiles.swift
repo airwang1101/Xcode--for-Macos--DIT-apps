@@ -72,12 +72,25 @@ enum JSONPersistence {
         )
     }
 
+    static func loadStatisticsIndex(from url: URL) -> PersistentLoadResult<CopyStatisticsIndex> {
+        loadValue(
+            from: url,
+            type: CopyStatisticsIndex.self,
+            emptyValue: CopyStatisticsIndex(),
+            dataName: "统计索引"
+        )
+    }
+
     static func writeProjects(_ projects: [CopyProject], to url: URL) throws {
         try write(ProjectStoreFile(projects: projects), to: url)
     }
 
     static func writeReports(_ reports: [TransferReport], to url: URL) throws {
         try write(ReportStoreFile(reports: reports), to: url)
+    }
+
+    static func writeStatisticsIndex(_ index: CopyStatisticsIndex, to url: URL) throws {
+        try write(index, to: url)
     }
 
     private static func loadArray<Wrapper: Decodable, Element: Decodable>(
@@ -119,6 +132,44 @@ enum JSONPersistence {
                     return PersistentLoadResult(
                         value: emptyValue,
                         warning: "\(dataName) 格式无法识别（可能来自更新版本）：\(diagnostic)。文件已保留，未自动清除。"
+                    )
+                }
+                let backupURL = backupCorruptFile(at: url)
+                let backupMessage = backupURL.map { "已备份到：\($0.path)" } ?? "备份损坏文件失败"
+                return PersistentLoadResult(
+                    value: emptyValue,
+                    warning: "\(dataName) JSON 语法损坏，无法解析：\(error.localizedDescription)。\(backupMessage)。"
+                )
+            }
+        } catch {
+            return PersistentLoadResult(
+                value: emptyValue,
+                warning: "\(dataName) 文件读取失败：\(error.localizedDescription)。"
+            )
+        }
+    }
+
+    private static func loadValue<Value: Decodable>(
+        from url: URL,
+        type: Value.Type,
+        emptyValue: Value,
+        dataName: String
+    ) -> PersistentLoadResult<Value> {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return PersistentLoadResult(value: emptyValue, warning: nil)
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            do {
+                let value = try JSONDecoder().decode(Value.self, from: data)
+                return PersistentLoadResult(value: value, warning: nil)
+            } catch {
+                let isSyntacticallyValid = (try? JSONSerialization.jsonObject(with: data)) != nil
+                if isSyntacticallyValid {
+                    return PersistentLoadResult(
+                        value: emptyValue,
+                        warning: "\(dataName) 格式无法识别（可能来自更新版本）：\(error.localizedDescription)。文件已保留，未自动清除。"
                     )
                 }
                 let backupURL = backupCorruptFile(at: url)

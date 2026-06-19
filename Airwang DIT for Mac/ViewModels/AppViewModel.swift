@@ -41,6 +41,10 @@ final class AppViewModel: ObservableObject {
     @Published var transferState = TransferState()
     @Published var latestReport: TransferReport?
     @Published var reports: [TransferReport] = []
+    @Published private(set) var copyStatistics = CopyStatisticsSummary.make(reports: [], projects: [])
+    @Published private(set) var copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: [])
+    @Published private(set) var statisticsRecentReports: [TransferReport] = []
+    @Published private(set) var statisticsRefreshedAt = Date.distantPast
     @Published var importError: String?
     @Published var hasUnsavedChanges = false
     @Published var activeFolderPicker: FolderPickerPurpose?
@@ -61,8 +65,10 @@ final class AppViewModel: ObservableObject {
     private let transferService = TransferService()
     private let interruptionToken = ImportInterruptionToken()
     private static let projectAutoStartDelay: TimeInterval = 300
+    private static let statisticsRefreshInterval: TimeInterval = 600
     private let reportURL: URL
     private let projectURL: URL
+    private let statisticsIndexURL: URL
     private var importTask: Task<Void, Never>?
     private var projectTasks: [UUID: Task<Void, Never>] = [:]
     private var projectTokens: [UUID: ImportInterruptionToken] = [:]
@@ -71,6 +77,7 @@ final class AppViewModel: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var folderChildrenTask: Task<Void, Never>?
     private var sourceFolderChildrenTask: Task<Void, Never>?
+    private var statisticsRefreshTask: Task<Void, Never>?
     private var activeImportSummary: ImportSelectionSummary?
     private var retrySourceItems: [MediaItem] = []
     private var scanSessionID = UUID()
@@ -81,6 +88,8 @@ final class AppViewModel: ObservableObject {
     private var relatedIDsByItemID: [String: Set<String>] = [:]
     private var projectsNeedSave = false
     private var reportsNeedSave = false
+    private var statisticsIndexNeedSave = false
+    private var copyStatisticsIndex = CopyStatisticsIndex()
     private var manualQueueRunActive = false
 
     init() {
@@ -91,14 +100,19 @@ final class AppViewModel: ObservableObject {
         autoStartQueuedProjects = uiSettings.autoStartQueuedProjects
         reportURL = Self.makeReportURL()
         projectURL = Self.makeProjectURL()
+        statisticsIndexURL = Self.makeStatisticsIndexURL()
         let reportLoad = Self.loadReports(from: reportURL)
         reports = reportLoad.items
+        let statisticsIndexLoad = Self.loadStatisticsIndex(from: statisticsIndexURL)
+        copyStatisticsIndex = statisticsIndexLoad.value
         let projectLoad = Self.loadProjects(from: projectURL)
         let storedProjects = projectLoad.items
         let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
         copyProjects = recoveredProjects
         orderedProjectsCache = Self.sortedProjects(recoveredProjects)
-        importError = [settingsStore.lastLoadWarning, reportLoad.warning, projectLoad.warning]
+        reconcileStatisticsIndexIfNeeded()
+        rebuildCopyStatistics()
+        importError = [settingsStore.lastLoadWarning, reportLoad.warning, statisticsIndexLoad.warning, projectLoad.warning]
             .compactMap { $0 }
             .joined(separator: "\n")
         if importError?.isEmpty == true {
@@ -119,6 +133,15 @@ final class AppViewModel: ObservableObject {
             saveProjects()
         }
         scheduleNextAutoStartCheck()
+        startStatisticsRefreshTimer()
+    }
+
+    deinit {
+        statisticsRefreshTask?.cancel()
+        autoStartTask?.cancel()
+        scanTask?.cancel()
+        folderChildrenTask?.cancel()
+        sourceFolderChildrenTask?.cancel()
     }
 
     var isConfigured: Bool {
@@ -289,10 +312,6 @@ final class AppViewModel: ObservableObject {
 
     var backupProjects: [CopyProject] {
         orderedProjects.filter(\.hasBackup)
-    }
-
-    var copyStatistics: CopyStatisticsSummary {
-        CopyStatisticsSummary.make(reports: reports, projects: orderedProjects)
     }
 
     var projectNamePreview: String {
@@ -789,9 +808,56 @@ final class AppViewModel: ObservableObject {
         if reportsNeedSave, saveReports() {
             messages.append("任务日志已保存")
         }
+        if statisticsIndexNeedSave, saveStatisticsIndex() {
+            messages.append("统计索引已保存")
+        }
         if !hasUnsavedChanges, !messages.isEmpty {
             importError = messages.joined(separator: "，") + "。"
         }
+    }
+
+    func refreshCopyStatistics() {
+        reconcileStatisticsIndexIfNeeded()
+        rebuildCopyStatistics()
+    }
+
+    private func startStatisticsRefreshTimer() {
+        statisticsRefreshTask?.cancel()
+        statisticsRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let nanoseconds = UInt64(Self.statisticsRefreshInterval * 1_000_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: nanoseconds)
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                self?.rebuildCopyStatistics()
+            }
+        }
+    }
+
+    private func rebuildCopyStatistics(now: Date = Date()) {
+        let summary = copyStatisticsIndex.summary(projects: orderedProjects, now: now)
+        copyStatistics = summary
+        copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: summary.days)
+        statisticsRecentReports = Array(reports.prefix(8))
+        statisticsRefreshedAt = now
+    }
+
+    private func reconcileStatisticsIndexIfNeeded() {
+        guard !copyStatisticsIndex.matches(reports: reports) else { return }
+        copyStatisticsIndex = CopyStatisticsIndex.make(reports: reports)
+        saveStatisticsIndex()
+    }
+
+    private func recordFinishedReport(_ report: TransferReport) {
+        latestReport = report
+        reports.insert(report, at: 0)
+        saveReports()
+        copyStatisticsIndex.add(report)
+        saveStatisticsIndex()
+        rebuildCopyStatistics()
     }
 
     func cancelImport() {
@@ -1113,9 +1179,7 @@ final class AppViewModel: ObservableObject {
                         self?.transferState = state
                     }
                 }
-                self.latestReport = result.report
-                self.reports.insert(result.report, at: 0)
-                self.saveReports()
+                self.recordFinishedReport(result.report)
             } catch is CancellationError {
                 self.transferState.phaseTitle = "任务已取消"
                 self.transferState.verificationStatus = "用户已取消"
@@ -1275,9 +1339,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func finishPrimaryStage(projectID: UUID, result: TransferService.ProjectStageResult) {
-        latestReport = result.report
-        reports.insert(result.report, at: 0)
-        saveReports()
+        recordFinishedReport(result.report)
 
         updateProject(projectID) { item in
             item.primaryReportID = result.report.id
@@ -1299,9 +1361,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func finishBackupStage(projectID: UUID, result: TransferService.ProjectStageResult) {
-        latestReport = result.report
-        reports.insert(result.report, at: 0)
-        saveReports()
+        recordFinishedReport(result.report)
 
         updateProject(projectID) { item in
             item.backupReportID = result.report.id
@@ -1803,7 +1863,7 @@ final class AppViewModel: ObservableObject {
         do {
             try JSONPersistence.writeReports(reports, to: reportURL)
             reportsNeedSave = false
-            hasUnsavedChanges = projectsNeedSave || reportsNeedSave
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
             return true
         } catch {
             reportsNeedSave = true
@@ -1814,11 +1874,26 @@ final class AppViewModel: ObservableObject {
     }
 
     @discardableResult
+    private func saveStatisticsIndex() -> Bool {
+        do {
+            try JSONPersistence.writeStatisticsIndex(copyStatisticsIndex, to: statisticsIndexURL)
+            statisticsIndexNeedSave = false
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
+            return true
+        } catch {
+            statisticsIndexNeedSave = true
+            hasUnsavedChanges = true
+            importError = "保存统计索引失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
     private func saveProjects() -> Bool {
         do {
             try JSONPersistence.writeProjects(orderedProjects, to: projectURL)
             projectsNeedSave = false
-            hasUnsavedChanges = projectsNeedSave || reportsNeedSave
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
             return true
         } catch {
             projectsNeedSave = true
@@ -1897,6 +1972,10 @@ final class AppViewModel: ObservableObject {
         return (result.value.sorted { $0.startedAt > $1.startedAt }, result.warning)
     }
 
+    private static func loadStatisticsIndex(from url: URL) -> PersistentLoadResult<CopyStatisticsIndex> {
+        JSONPersistence.loadStatisticsIndex(from: url)
+    }
+
     private static func loadProjects(from url: URL) -> (items: [CopyProject], warning: String?) {
         let result = JSONPersistence.loadProjects(from: url)
         return (result.value.sorted {
@@ -1925,6 +2004,10 @@ final class AppViewModel: ObservableObject {
 
     private static func makeReportURL() -> URL {
         AppStorageScope.taskLogURL
+    }
+
+    private static func makeStatisticsIndexURL() -> URL {
+        AppStorageScope.statisticsIndexURL
     }
 
     private static func makeProjectURL() -> URL {

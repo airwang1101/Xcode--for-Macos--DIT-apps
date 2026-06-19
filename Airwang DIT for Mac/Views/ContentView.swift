@@ -689,17 +689,9 @@ struct ContentView: View {
     }
 
     private func activityHeatmapCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
-        let displayDays = heatmapDays(summary.days, mode: selectedActivityMode)
-        let displayPeakDay = displayDays.max { lhs, rhs in
-            if lhs.bytes == rhs.bytes {
-                return lhs.date < rhs.date
-            }
-            return lhs.bytes < rhs.bytes
-        }
-        let peakDay = displayPeakDay?.hasActivity == true ? displayPeakDay : nil
-        let heatmapWeeks = heatmapCalendarWeeks(displayDays)
+        let heatmap = viewModel.copyStatisticsHeatmaps.heatmap(for: selectedActivityMode)
         let heatmapWidth = heatmapGridAvailableWidth(from: availableWidth)
-        let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmapWeeks.count)
+        let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmap.weeks.count)
         let cellGap = heatmapCellGap(availableWidth: heatmapWidth)
 
         return VStack(alignment: .leading, spacing: 18) {
@@ -715,14 +707,17 @@ struct ContentView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 10) {
-                    activityModePicker
-                    heatmapFocusSummary(fallbackDay: peakDay)
+                    HStack(spacing: 8) {
+                        activityModePicker
+                        statisticsRefreshButton
+                    }
+                    heatmapFocusSummary(fallbackDay: heatmap.peakDay)
                 }
             }
 
             HStack(alignment: .top, spacing: 12) {
                 weekdayRail(cellSize: cellSize, cellGap: cellGap)
-                heatmapGrid(days: displayDays, weeks: heatmapWeeks, availableWidth: heatmapWidth)
+                heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
             }
 
             heatmapLegend(summary)
@@ -739,6 +734,28 @@ struct ContentView: View {
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
         .animation(responsiveLayoutAnimation, value: hoveredActivityDay)
         .animation(responsiveLayoutAnimation, value: selectedActivityMode)
+    }
+
+    private var statisticsRefreshButton: some View {
+        Button {
+            viewModel.refreshCopyStatistics()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(primaryTextColor)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.white.opacity(viewModel.selectedTheme == .night ? 0.10 : 0.26))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(viewModel.selectedTheme == .night ? 0.14 : 0.42), lineWidth: 0.7)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(viewModel.localized("刷新统计"))
+        .accessibilityLabel(Text(viewModel.localized("刷新统计")))
     }
 
     private var activityModePicker: some View {
@@ -803,18 +820,17 @@ struct ContentView: View {
         }
     }
 
-    private func heatmapGrid(days: [CopyActivityDay], weeks: [[CopyActivityDay?]], availableWidth: CGFloat) -> some View {
-        let maxBytes = max(days.map(\.bytes).max() ?? 0, 1)
-        let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: weeks.count)
+    private func heatmapGrid(heatmap: CopyStatisticsHeatmap, availableWidth: CGFloat) -> some View {
+        let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: heatmap.weeks.count)
         let cellGap = heatmapCellGap(availableWidth: availableWidth)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: cellGap) {
-                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { _, week in
                     VStack(spacing: cellGap) {
                         ForEach(0..<week.count, id: \.self) { dayIndex in
                             if let day = week[dayIndex] {
-                                heatmapCell(day, maxBytes: maxBytes, size: cellSize)
+                                heatmapCell(day, maxBytes: heatmap.maxBytes, size: cellSize)
                             } else {
                                 heatmapEmptyCell(size: cellSize)
                             }
@@ -824,8 +840,8 @@ struct ContentView: View {
             }
 
             HStack(alignment: .top, spacing: cellGap) {
-                ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
-                    Text(heatmapMonthLabel(for: week, index: index, weeks: weeks))
+                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { index, week in
+                    Text(heatmapMonthLabel(for: week, index: index, weeks: heatmap.weeks))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(secondaryTextColor)
                         .lineLimit(1)
@@ -879,21 +895,21 @@ struct ContentView: View {
                 Text(viewModel.localized("最近报告"))
                     .sectionTitle()
                 Spacer()
-                Text("\(viewModel.reports.count)")
+                Text("\(viewModel.copyStatistics.totalReports)")
                     .font(.caption.monospacedDigit().weight(.bold))
                     .foregroundStyle(secondaryTextColor)
             }
 
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    if viewModel.reports.isEmpty {
+                    if viewModel.statisticsRecentReports.isEmpty {
                         emptyState(
                             title: viewModel.localized("暂无统计数据"),
                             detail: viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。")
                         )
                     }
 
-                    ForEach(viewModel.reports.prefix(8)) { report in
+                    ForEach(viewModel.statisticsRecentReports) { report in
                         recentStatisticsReportRow(report)
                     }
                 }
@@ -1917,65 +1933,6 @@ struct ContentView: View {
             return "\(report.selectedFileCount) files · \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes)) · total \(stopwatchText(report.duration))"
         }
         return "\(report.selectedFileCount) 个文件  ·  \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
-    }
-
-    private func heatmapDays(_ days: [CopyActivityDay], mode: StatisticsActivityMode) -> [CopyActivityDay] {
-        switch mode {
-        case .daily:
-            return days
-        case .weekly:
-            return heatmapCalendarWeeks(days).flatMap { week in
-                let realDays = week.compactMap { $0 }
-                let bytes = realDays.reduce(0) { $0 + $1.bytes }
-                let files = realDays.reduce(0) { $0 + $1.files }
-                let reportCount = realDays.reduce(0) { $0 + $1.reportCount }
-                let successCount = realDays.reduce(0) { $0 + $1.successCount }
-                return realDays.map { day in
-                    CopyActivityDay(
-                        date: day.date,
-                        bytes: bytes,
-                        files: files,
-                        reportCount: reportCount,
-                        successCount: successCount
-                    )
-                }
-            }
-        case .cumulative:
-            var runningBytes: Int64 = 0
-            var runningFiles = 0
-            var runningReports = 0
-            var runningSuccess = 0
-            return days.map { day in
-                runningBytes += day.bytes
-                runningFiles += day.files
-                runningReports += day.reportCount
-                runningSuccess += day.successCount
-                return CopyActivityDay(
-                    date: day.date,
-                    bytes: runningBytes,
-                    files: runningFiles,
-                    reportCount: runningReports,
-                    successCount: runningSuccess
-                )
-            }
-        }
-    }
-
-    private func heatmapCalendarWeeks(_ days: [CopyActivityDay]) -> [[CopyActivityDay?]] {
-        guard let firstDate = days.first?.date else { return [] }
-
-        let calendar = Calendar.current
-        let leadingEmptySlots = max(calendar.component(.weekday, from: firstDate) - 1, 0)
-        var slots = Array<CopyActivityDay?>(repeating: nil, count: leadingEmptySlots)
-        slots.append(contentsOf: days.map { Optional($0) })
-
-        while !slots.isEmpty && slots.count % 7 != 0 {
-            slots.append(nil)
-        }
-
-        return stride(from: 0, to: slots.count, by: 7).map { startIndex in
-            Array(slots[startIndex..<min(startIndex + 7, slots.count)])
-        }
     }
 
     private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat) -> some View {
