@@ -6,7 +6,7 @@ APP_NAME="Airwang DIT for Mac"
 PROJECT_NAME="Airwang DIT for Mac.xcodeproj"
 SCHEME_NAME="Airwang DIT for Mac"
 CONFIGURATION="Debug"
-BUNDLE_ID="com.airwang.ditformac"
+BUNDLE_ID="com.airwang.ditformac.dev"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA_DIR="$ROOT_DIR/.derivedData"
@@ -23,7 +23,6 @@ fi
 
 kill_running_app() {
   pkill -f "$APP_BINARY" >/dev/null 2>&1 || true
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 }
 
 build_app() {
