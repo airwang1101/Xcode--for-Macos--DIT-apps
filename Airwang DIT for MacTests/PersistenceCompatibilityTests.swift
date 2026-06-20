@@ -155,7 +155,7 @@ final class PersistenceCompatibilityTests: XCTestCase {
             calendar: calendar,
             now: now
         )
-        index.add(reports[1], calendar: calendar)
+        index.add(reports[1], calendar: calendar, now: now)
         let indexedSummary = index.summary(
             projects: [],
             calendar: calendar,
@@ -163,12 +163,83 @@ final class PersistenceCompatibilityTests: XCTestCase {
             dayCount: 7
         )
 
-        XCTAssertTrue(index.matches(reports: reports))
+        XCTAssertTrue(index.matches(reports: reports, calendar: calendar, now: now))
         XCTAssertEqual(indexedSummary.totalBytes, fullSummary.totalBytes)
         XCTAssertEqual(indexedSummary.totalFiles, fullSummary.totalFiles)
         XCTAssertEqual(indexedSummary.totalReports, fullSummary.totalReports)
         XCTAssertEqual(indexedSummary.successfulReports, fullSummary.successfulReports)
         XCTAssertEqual(indexedSummary.days, fullSummary.days)
+    }
+
+    func testCopyStatisticsIndexInvalidatesAcrossTimeZoneChanges() throws {
+        let now = Date()
+        var foreignCalendar = Calendar(identifier: .gregorian)
+        let currentOffset = TimeZone.current.secondsFromGMT(for: now)
+        foreignCalendar.timeZone = try XCTUnwrap(
+            TimeZone(secondsFromGMT: currentOffset == 0 ? 3_600 : 0)
+        )
+        let report = makeReport(
+            finishedAt: now,
+            totalBytes: 100,
+            selectedFileCount: 1,
+            success: true
+        )
+
+        let index = CopyStatisticsIndex.make(
+            reports: [report],
+            calendar: foreignCalendar,
+            now: now
+        )
+
+        XCTAssertFalse(index.matches(reports: [report]))
+    }
+
+    func testCopyStatisticsIndexMatchesUsingSameFutureReportCutoffAsBuild() throws {
+        let now = Date()
+        let futureReport = makeReport(
+            finishedAt: now.addingTimeInterval(2 * 24 * 60 * 60),
+            totalBytes: 100,
+            selectedFileCount: 1,
+            success: true
+        )
+
+        let index = CopyStatisticsIndex.make(
+            reports: [futureReport],
+            calendar: .current,
+            now: now
+        )
+
+        XCTAssertTrue(index.matches(reports: [futureReport]))
+    }
+
+    func testCopyStatisticsIndexSummaryMergesDuplicateDayBuckets() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_767_916_800)
+        let today = calendar.startOfDay(for: now)
+        let index = CopyStatisticsIndex(
+            dayBuckets: [
+                CopyStatisticsIndexDay(date: today, bytes: 100, files: 1, reportCount: 1, successCount: 1),
+                CopyStatisticsIndexDay(date: today, bytes: 200, files: 2, reportCount: 1, successCount: 0)
+            ],
+            totalBytes: 300,
+            totalFiles: 3,
+            totalReports: 2,
+            successfulReports: 1
+        )
+
+        let summary = index.summary(
+            projects: [],
+            calendar: calendar,
+            now: now,
+            dayCount: 7
+        )
+
+        let todaySummary = try XCTUnwrap(summary.days.first { $0.date == today })
+        XCTAssertEqual(todaySummary.bytes, 300)
+        XCTAssertEqual(todaySummary.files, 3)
+        XCTAssertEqual(todaySummary.reportCount, 2)
+        XCTAssertEqual(todaySummary.successCount, 1)
     }
 
     func testReportStoreWritesCompactAppLogWithoutSuccessfulFileRecords() throws {

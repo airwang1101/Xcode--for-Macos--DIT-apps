@@ -1796,9 +1796,11 @@ struct CopyStatisticsSummary: Equatable {
 }
 
 struct CopyStatisticsIndex: Codable, Equatable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
+    var calendarIdentifier: String
+    var timeZoneIdentifier: String
     var indexedReportIDs: Set<UUID>
     var dayBuckets: [CopyStatisticsIndexDay]
     var totalBytes: Int64
@@ -1823,9 +1825,12 @@ struct CopyStatisticsIndex: Codable, Equatable {
         longestReportDuration: TimeInterval = 0,
         backupReportCount: Int = 0,
         verificationModeCounts: [CopyStatisticsCountItem] = [],
-        sourceCounts: [CopyStatisticsCountItem] = []
+        sourceCounts: [CopyStatisticsCountItem] = [],
+        calendar: Calendar = .current
     ) {
         self.schemaVersion = schemaVersion
+        calendarIdentifier = Self.identifier(for: calendar)
+        timeZoneIdentifier = calendar.timeZone.identifier
         self.indexedReportIDs = indexedReportIDs
         self.dayBuckets = dayBuckets
         self.totalBytes = totalBytes
@@ -1839,27 +1844,75 @@ struct CopyStatisticsIndex: Codable, Equatable {
         self.sourceCounts = sourceCounts
     }
 
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case calendarIdentifier
+        case timeZoneIdentifier
+        case indexedReportIDs
+        case dayBuckets
+        case totalBytes
+        case totalFiles
+        case totalReports
+        case successfulReports
+        case peakDay
+        case longestReportDuration
+        case backupReportCount
+        case verificationModeCounts
+        case sourceCounts
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        calendarIdentifier = try container.decodeIfPresent(String.self, forKey: .calendarIdentifier) ?? ""
+        timeZoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timeZoneIdentifier) ?? ""
+        indexedReportIDs = try container.decodeIfPresent(Set<UUID>.self, forKey: .indexedReportIDs) ?? []
+        dayBuckets = try container.decodeIfPresent([CopyStatisticsIndexDay].self, forKey: .dayBuckets) ?? []
+        totalBytes = try container.decodeIfPresent(Int64.self, forKey: .totalBytes) ?? 0
+        totalFiles = try container.decodeIfPresent(Int.self, forKey: .totalFiles) ?? 0
+        totalReports = try container.decodeIfPresent(Int.self, forKey: .totalReports) ?? 0
+        successfulReports = try container.decodeIfPresent(Int.self, forKey: .successfulReports) ?? 0
+        peakDay = try container.decodeIfPresent(CopyActivityDay.self, forKey: .peakDay)
+        longestReportDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .longestReportDuration) ?? 0
+        backupReportCount = try container.decodeIfPresent(Int.self, forKey: .backupReportCount) ?? 0
+        verificationModeCounts = try container.decodeIfPresent(
+            [CopyStatisticsCountItem].self,
+            forKey: .verificationModeCounts
+        ) ?? []
+        sourceCounts = try container.decodeIfPresent([CopyStatisticsCountItem].self, forKey: .sourceCounts) ?? []
+    }
+
     static func make(
         reports: [TransferReport],
         calendar: Calendar = .current,
         now: Date = Date()
     ) -> CopyStatisticsIndex {
-        let today = calendar.startOfDay(for: now)
-        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        var index = CopyStatisticsIndex()
-        for report in reports where report.finishedAt < endDay {
-            index.add(report, calendar: calendar)
+        var index = CopyStatisticsIndex(calendar: calendar)
+        for report in eligibleReports(reports, calendar: calendar, now: now) {
+            index.add(report, calendar: calendar, now: now)
         }
         index.normalize()
         return index
     }
 
-    func matches(reports: [TransferReport]) -> Bool {
+    func matches(
+        reports: [TransferReport],
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> Bool {
         schemaVersion == Self.currentSchemaVersion
-            && indexedReportIDs == Set(reports.map(\.id))
+            && calendarIdentifier == Self.identifier(for: calendar)
+            && timeZoneIdentifier == calendar.timeZone.identifier
+            && Set(dayBuckets.map(\.date)).count == dayBuckets.count
+            && indexedReportIDs == Set(Self.eligibleReports(reports, calendar: calendar, now: now).map(\.id))
     }
 
-    mutating func add(_ report: TransferReport, calendar: Calendar = .current) {
+    mutating func add(
+        _ report: TransferReport,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) {
+        guard Self.isEligible(report, calendar: calendar, now: now) else { return }
         guard !indexedReportIDs.contains(report.id) else { return }
 
         let day = calendar.startOfDay(for: report.finishedAt)
@@ -1897,7 +1950,9 @@ struct CopyStatisticsIndex: Codable, Equatable {
     }
 
     mutating func normalize() {
-        dayBuckets.sort { $0.date < $1.date }
+        dayBuckets = Self.mergedDayBuckets(dayBuckets)
+            .values
+            .sorted { $0.date < $1.date }
         verificationModeCounts = Self.sortedCounts(verificationModeCounts)
         sourceCounts = Self.sortedCounts(sourceCounts)
         if let bucket = dayBuckets.max(by: { lhs, rhs in
@@ -1923,7 +1978,7 @@ struct CopyStatisticsIndex: Codable, Equatable {
         let today = calendar.startOfDay(for: now)
         let firstDay = calendar.date(byAdding: .day, value: -(normalizedDayCount - 1), to: today) ?? today
         let recent7Start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
-        let bucketsByDate = Dictionary(uniqueKeysWithValues: dayBuckets.map { ($0.date, $0) })
+        let bucketsByDate = Self.mergedDayBuckets(dayBuckets)
         let days = (0..<normalizedDayCount).compactMap { offset -> CopyActivityDay? in
             guard let date = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
                 return nil
@@ -1986,6 +2041,44 @@ struct CopyStatisticsIndex: Codable, Equatable {
             }
             return $0.count > $1.count
         }
+    }
+
+    private static func eligibleReports(
+        _ reports: [TransferReport],
+        calendar: Calendar,
+        now: Date
+    ) -> [TransferReport] {
+        reports.filter { isEligible($0, calendar: calendar, now: now) }
+    }
+
+    private static func isEligible(
+        _ report: TransferReport,
+        calendar: Calendar,
+        now: Date
+    ) -> Bool {
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        return report.finishedAt < endDay
+    }
+
+    private static func mergedDayBuckets(
+        _ buckets: [CopyStatisticsIndexDay]
+    ) -> [Date: CopyStatisticsIndexDay] {
+        buckets.reduce(into: [:]) { result, bucket in
+            guard var existing = result[bucket.date] else {
+                result[bucket.date] = bucket
+                return
+            }
+            existing.bytes += bucket.bytes
+            existing.files += bucket.files
+            existing.reportCount += bucket.reportCount
+            existing.successCount += bucket.successCount
+            result[bucket.date] = existing
+        }
+    }
+
+    private static func identifier(for calendar: Calendar) -> String {
+        String(describing: calendar.identifier)
     }
 
     private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
