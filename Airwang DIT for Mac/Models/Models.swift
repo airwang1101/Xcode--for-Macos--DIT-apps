@@ -408,6 +408,16 @@ struct AppPreferences: Codable {
     }
 }
 
+enum MainWindowLayoutPolicy {
+    static let minimumWidth: CGFloat = 640
+    static let minimumHeight: CGFloat = 560
+    static let portraitWidthBreakpoint: CGFloat = 760
+
+    static func usesPortraitLayout(width: CGFloat, height: CGFloat) -> Bool {
+        width < portraitWidthBreakpoint || height > width * 1.2
+    }
+}
+
 enum AppStorageScope {
     static var displayName: String { "App 专属存储" }
 

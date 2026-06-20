@@ -295,6 +295,17 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertEqual(ByteDisplayFormatter.string(fromByteCount: 2_500_000_000_000), "2.5 TB")
     }
 
+    func testMainWindowLayoutPolicyUsesPortraitLayoutForNarrowAndRotatedWindows() {
+        XCTAssertTrue(MainWindowLayoutPolicy.usesPortraitLayout(width: 700, height: 900))
+        XCTAssertTrue(MainWindowLayoutPolicy.usesPortraitLayout(width: 900, height: 1_300))
+        XCTAssertFalse(MainWindowLayoutPolicy.usesPortraitLayout(width: 1_280, height: 800))
+    }
+
+    func testMainWindowLayoutPolicyAllowsNarrowMacWindows() {
+        XCTAssertEqual(MainWindowLayoutPolicy.minimumWidth, 640)
+        XCTAssertEqual(MainWindowLayoutPolicy.minimumHeight, 560)
+    }
+
     func testStoreFileDecodesLegacyProjectArray() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("AirwangStore-\(UUID().uuidString)", isDirectory: true)

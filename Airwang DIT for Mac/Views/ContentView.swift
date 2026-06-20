@@ -150,8 +150,12 @@ struct ContentView: View {
         GeometryReader { proxy in
             let compact = proxy.size.width < 1180
             let heightCompact = proxy.size.height < 760
-            let contentPadding: CGFloat = compact ? 16 : 26
-            let contentSpacing: CGFloat = compact ? 14 : 18
+            let portraitOptimized = MainWindowLayoutPolicy.usesPortraitLayout(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            let contentPadding: CGFloat = portraitOptimized ? 12 : (compact ? 16 : 26)
+            let contentSpacing: CGFloat = portraitOptimized ? 12 : (compact ? 14 : 18)
             let availableWidth = max(0, proxy.size.width - contentPadding * 2)
             let bottomInset = max(proxy.safeAreaInsets.bottom, heightCompact ? 8 : (compact ? 10 : 16))
             let bottomReserve = bottomTabBarHeight(availableWidth: availableWidth, heightCompact: heightCompact)
@@ -160,13 +164,18 @@ struct ContentView: View {
 
             Color.clear
                 .overlay(alignment: .top) {
-                    dashboardContent(availableWidth: availableWidth, contentSpacing: contentSpacing)
+                    dashboardContent(
+                        availableWidth: availableWidth,
+                        contentSpacing: contentSpacing,
+                        portraitOptimized: portraitOptimized
+                    )
                         .padding(.horizontal, contentPadding)
                         .padding(.top, contentPadding)
                         .padding(.bottom, bottomReserve)
                         .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                         .animation(responsiveLayoutAnimation, value: compact)
                         .animation(responsiveLayoutAnimation, value: heightCompact)
+                        .animation(responsiveLayoutAnimation, value: portraitOptimized)
                 }
                 .overlay(alignment: .bottom) {
                     bottomTabBar(availableWidth: availableWidth, heightCompact: heightCompact)
@@ -175,6 +184,7 @@ struct ContentView: View {
                         .zIndex(2)
                         .animation(responsiveLayoutAnimation, value: compact)
                         .animation(responsiveLayoutAnimation, value: heightCompact)
+                        .animation(responsiveLayoutAnimation, value: portraitOptimized)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 .onChange(of: proxy.size) { _, _ in
@@ -183,18 +193,22 @@ struct ContentView: View {
         }
     }
 
-    private func dashboardContent(availableWidth: CGFloat, contentSpacing: CGFloat) -> some View {
+    private func dashboardContent(
+        availableWidth: CGFloat,
+        contentSpacing: CGFloat,
+        portraitOptimized: Bool
+    ) -> some View {
         VStack(spacing: contentSpacing) {
             workspaceHeader(availableWidth: availableWidth)
 
             Group {
                 switch viewModel.selectedSection {
                 case .copy:
-                    copyWorkspace(availableWidth: availableWidth)
+                    copyWorkspace(availableWidth: availableWidth, portraitOptimized: portraitOptimized)
                 case .dashboard:
-                    dashboardWorkspace(availableWidth: availableWidth)
+                    dashboardWorkspace(availableWidth: availableWidth, portraitOptimized: portraitOptimized)
                 case .backup:
-                    backupWorkspace
+                    backupWorkspace(portraitOptimized: portraitOptimized)
                 case .statistics:
                     statisticsWorkspace(availableWidth: availableWidth)
                 }
@@ -211,14 +225,14 @@ struct ContentView: View {
         return Group {
             if tightHeader {
                 VStack(alignment: .leading, spacing: 14) {
-                    headerTitle
+                    headerTitle(compact: true)
                     headerControls
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(alignment: .top, spacing: 12) {
-                    headerTitle
+                    headerTitle(compact: false)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
                     headerControls
@@ -230,10 +244,10 @@ struct ContentView: View {
         .animation(responsiveLayoutAnimation, value: tightHeader)
     }
 
-    private var headerTitle: some View {
+    private func headerTitle(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Airwang DIT for Mac")
-                .font(.system(size: 34, weight: .semibold, design: .serif))
+                .font(.system(size: compact ? 28 : 34, weight: .semibold, design: .serif))
                 .minimumScaleFactor(0.8)
                 .lineLimit(1)
                 .foregroundStyle(primaryTextColor)
@@ -318,8 +332,22 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func copyWorkspace(availableWidth: CGFloat) -> some View {
-        if availableWidth < 1180 {
+    private func copyWorkspace(availableWidth: CGFloat, portraitOptimized: Bool) -> some View {
+        if portraitOptimized {
+            ScrollView {
+                VStack(spacing: 14) {
+                    copyPresetCard(availableWidth: availableWidth)
+                    volumeListCard
+                        .frame(minHeight: 320)
+                    projectQueueCard
+                        .frame(minHeight: 420)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 4)
+            }
+            .scrollIndicators(.visible)
+            .transition(responsiveLayoutTransition)
+        } else if availableWidth < 1180 {
             VStack(spacing: 14) {
                 copyPresetCard(availableWidth: availableWidth)
                 volumeListCard
@@ -351,8 +379,22 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func dashboardWorkspace(availableWidth: CGFloat) -> some View {
-        if availableWidth < 1180 {
+    private func dashboardWorkspace(availableWidth: CGFloat, portraitOptimized: Bool) -> some View {
+        if portraitOptimized {
+            ScrollView {
+                VStack(spacing: 14) {
+                    queueControlStrip(availableWidth: availableWidth)
+                    dashboardProjectList
+                        .frame(minHeight: 420)
+                    logCard
+                        .frame(minHeight: 340)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 4)
+            }
+            .scrollIndicators(.visible)
+            .transition(responsiveLayoutTransition)
+        } else if availableWidth < 1180 {
             VStack(spacing: 14) {
                 queueControlStrip(availableWidth: availableWidth)
                 dashboardProjectList
@@ -402,27 +444,24 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var backupWorkspace: some View {
+    private func backupWorkspace(portraitOptimized: Bool) -> some View {
         let backupProjects = viewModel.backupProjects
 
         return VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.localized("备份工作台"))
-                        .sectionTitle()
-                    Text(viewModel.localized("这里只显示在拷贝项目里配置了备份盘的项目，备份来源固定为主目标盘。"))
-                        .foregroundStyle(secondaryTextColor)
+            Group {
+                if portraitOptimized {
+                    VStack(alignment: .leading, spacing: 12) {
+                        backupWorkspaceTitle
+                        backupWorkspaceStartButton
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                } else {
+                    HStack {
+                        backupWorkspaceTitle
+                        Spacer()
+                        backupWorkspaceStartButton
+                    }
                 }
-                Spacer()
-                Button {
-                    viewModel.startQueue()
-                } label: {
-                    Label(viewModel.localized("执行队列"), systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accentColor)
-                .disabled(!viewModel.canStartQueue)
-                .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
             }
 
             ScrollView {
@@ -440,6 +479,28 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private var backupWorkspaceTitle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(viewModel.localized("备份工作台"))
+                .sectionTitle()
+            Text(viewModel.localized("这里只显示在拷贝项目里配置了备份盘的项目，备份来源固定为主目标盘。"))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var backupWorkspaceStartButton: some View {
+        Button {
+            viewModel.startQueue()
+        } label: {
+            Label(viewModel.localized("执行队列"), systemImage: "play.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(accentColor)
+        .disabled(!viewModel.canStartQueue)
+        .help(viewModel.startQueueDisabledHelp ?? viewModel.localized("开始执行排队中的拷贝项目"))
     }
 
     @ViewBuilder
@@ -690,37 +751,55 @@ struct ContentView: View {
 
     private func activityHeatmapCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
         let heatmap = viewModel.copyStatisticsHeatmaps.heatmap(for: selectedActivityMode)
-        let heatmapWidth = heatmapGridAvailableWidth(from: availableWidth)
+        let narrowLayout = availableWidth < MainWindowLayoutPolicy.portraitWidthBreakpoint
+        let heatmapWidth = narrowLayout ? max(620, availableWidth - 56) : heatmapGridAvailableWidth(from: availableWidth)
         let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmap.weeks.count)
         let cellGap = heatmapCellGap(availableWidth: heatmapWidth)
 
         return VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.localized("拷贝活动"))
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(primaryTextColor)
-                    Text(viewModel.localized("颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。"))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(secondaryTextColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 10) {
-                    HStack(spacing: 8) {
-                        activityModePicker
-                        statisticsRefreshButton
+            Group {
+                if narrowLayout {
+                    VStack(alignment: .leading, spacing: 14) {
+                        heatmapTitleBlock
+                        HStack(spacing: 8) {
+                            activityModePicker
+                            statisticsRefreshButton
+                            Spacer()
+                        }
+                        heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: true)
                     }
-                    heatmapFocusSummary(fallbackDay: heatmap.peakDay)
+                } else {
+                    HStack(alignment: .top) {
+                        heatmapTitleBlock
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 10) {
+                            HStack(spacing: 8) {
+                                activityModePicker
+                                statisticsRefreshButton
+                            }
+                            heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: false)
+                        }
+                    }
                 }
             }
 
-            HStack(alignment: .top, spacing: 12) {
-                weekdayRail(cellSize: cellSize, cellGap: cellGap)
-                heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
+            if narrowLayout {
+                HStack(alignment: .top, spacing: 12) {
+                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
+                    ScrollView(.horizontal) {
+                        heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
+                            .frame(width: heatmapWidth, alignment: .leading)
+                    }
+                    .scrollIndicators(.visible)
+                }
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
+                    heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
+                }
             }
 
-            heatmapLegend(summary)
+            heatmapLegend(summary, compact: narrowLayout)
 
             if !summary.hasReportActivity {
                 Text(viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。"))
@@ -730,10 +809,23 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .frame(minHeight: 320, alignment: .topLeading)
-        .padding(30)
+        .padding(narrowLayout ? 18 : 30)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
         .animation(responsiveLayoutAnimation, value: hoveredActivityDay)
         .animation(responsiveLayoutAnimation, value: selectedActivityMode)
+        .animation(responsiveLayoutAnimation, value: narrowLayout)
+    }
+
+    private var heatmapTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(viewModel.localized("拷贝活动"))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+            Text(viewModel.localized("颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var statisticsRefreshButton: some View {
@@ -771,31 +863,38 @@ struct ContentView: View {
         }
     }
 
-    private func heatmapFocusSummary(fallbackDay: CopyActivityDay?) -> some View {
+    private func heatmapFocusSummary(fallbackDay: CopyActivityDay?, compact: Bool) -> some View {
         let focusedDay = hoveredActivityDay ?? fallbackDay
         let label = hoveredActivityDay == nil ? heatmapFallbackLabel : heatmapFocusedLabel
 
-        return VStack(alignment: .trailing, spacing: 5) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-
-            if let focusedDay {
-                Text("\(shortDateText(focusedDay.date)) · \(ByteDisplayFormatter.string(fromByteCount: focusedDay.bytes))")
-                    .font(.subheadline.monospacedDigit().weight(.bold))
-                    .foregroundStyle(primaryTextColor)
-                    .lineLimit(1)
-                Text(heatmapDayDetailText(focusedDay))
-                    .font(.caption2.weight(.semibold))
+        return Group {
+            let content = VStack(alignment: compact ? .leading : .trailing, spacing: 5) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(secondaryTextColor)
-                    .lineLimit(1)
+
+                if let focusedDay {
+                    Text("\(shortDateText(focusedDay.date)) · \(ByteDisplayFormatter.string(fromByteCount: focusedDay.bytes))")
+                        .font(.subheadline.monospacedDigit().weight(.bold))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                    Text(heatmapDayDetailText(focusedDay))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                } else {
+                    Text(viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(primaryTextColor)
+                }
+            }
+
+            if compact {
+                content.frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Text(viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(primaryTextColor)
+                content.frame(minWidth: 168, alignment: .trailing)
             }
         }
-        .frame(minWidth: 168, alignment: .trailing)
     }
 
     private var heatmapFallbackLabel: String {
@@ -867,7 +966,31 @@ struct ContentView: View {
         .padding(.vertical, 3)
     }
 
-    private func heatmapLegend(_ summary: CopyStatisticsSummary) -> some View {
+    @ViewBuilder
+    private func heatmapLegend(_ summary: CopyStatisticsSummary, compact: Bool) -> some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 10) {
+                heatmapLegendScale
+                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+            }
+        } else {
+            HStack(spacing: 8) {
+                heatmapLegendScale
+                Spacer()
+                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+            }
+        }
+    }
+
+    private var heatmapLegendScale: some View {
         HStack(spacing: 8) {
             Text(viewModel.selectedLanguage == .english ? "Less" : "少")
                 .font(.caption2.weight(.semibold))
@@ -880,12 +1003,6 @@ struct ContentView: View {
             Text(viewModel.selectedLanguage == .english ? "More" : "多")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(secondaryTextColor)
-            Spacer()
-            Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-                .lineLimit(1)
-                .minimumScaleFactor(0.76)
         }
     }
 

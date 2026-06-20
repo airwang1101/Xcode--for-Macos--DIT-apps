@@ -23,12 +23,37 @@ struct AirwangDITForMacApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
-                .frame(minWidth: 980, minHeight: 720)
+                .frame(
+                    minWidth: MainWindowLayoutPolicy.minimumWidth,
+                    minHeight: MainWindowLayoutPolicy.minimumHeight
+                )
+                .background(
+                    MainWindowConfigurator(
+                        minSize: NSSize(
+                            width: MainWindowLayoutPolicy.minimumWidth,
+                            height: MainWindowLayoutPolicy.minimumHeight
+                        )
+                    )
+                )
+                .overlay(alignment: .top) {
+                    HStack(spacing: 0) {
+                        Color.clear
+                            .frame(width: 78)
+                            .allowsHitTesting(false)
+                        MainWindowDragRegion()
+                        Color.clear
+                            .frame(width: 220)
+                            .allowsHitTesting(false)
+                    }
+                    .frame(height: 28)
+                    .accessibilityHidden(true)
+                }
                 .onAppear {
                     appDelegate.viewModel = viewModel
                 }
         }
-        .defaultSize(width: 1460, height: 920)
+        .defaultSize(width: 1280, height: 820)
+        .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -37,6 +62,56 @@ struct AirwangDITForMacApp: App {
         Settings {
             AppSettingsView()
                 .environmentObject(viewModel)
+        }
+    }
+}
+
+private struct MainWindowConfigurator: NSViewRepresentable {
+    let minSize: NSSize
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
+            window.collectionBehavior.insert(.fullScreenPrimary)
+            window.minSize = minSize
+            window.contentMinSize = minSize
+            window.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+            window.title = "Airwang DIT for Mac"
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.standardWindowButton(.zoomButton)?.isEnabled = true
+            window.standardWindowButton(.zoomButton)?.isHidden = false
+        }
+    }
+}
+
+private struct MainWindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NativeWindowDragView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class NativeWindowDragView: NSView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let window else { return }
+            if event.clickCount == 2 {
+                window.performZoom(nil)
+            } else {
+                window.performDrag(with: event)
+            }
         }
     }
 }
