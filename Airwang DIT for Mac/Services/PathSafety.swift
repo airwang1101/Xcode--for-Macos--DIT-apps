@@ -137,17 +137,20 @@ enum PathSafety {
         }
     }
 
+    /// 源(读)文件的安全约束入口。语义化命名便于调用点阅读。
     static func ensureSafeExistingFileTarget(for candidateURL: URL, under baseURL: URL) throws {
-        guard isContained(candidateURL, in: baseURL) else {
-            throw Error.pathEscapesBase(relativePath: candidateURL.path, basePath: normalizedPath(baseURL))
-        }
-        try ensureNoSymlinkAncestors(for: candidateURL, under: baseURL)
-        if isSymbolicLink(candidateURL) {
-            throw Error.symlinkTarget(candidateURL)
-        }
+        try ensureSafeFileTarget(for: candidateURL, under: baseURL)
     }
 
+    /// 目标(写)文件的安全约束入口。语义化命名便于调用点阅读。
     static func ensureSafeWritableFileTarget(for candidateURL: URL, under baseURL: URL) throws {
+        try ensureSafeFileTarget(for: candidateURL, under: baseURL)
+    }
+
+    /// 源(读)与目标(写)目前共享同一套硬约束:必须包含在 baseURL 内、祖先链无符号
+    /// 链接、目标自身不是符号链接。两个语义化入口委托到这里,避免将来单边修改某条
+    /// 路径的规则时,读/写两侧的判断静默失同步。
+    private static func ensureSafeFileTarget(for candidateURL: URL, under baseURL: URL) throws {
         guard isContained(candidateURL, in: baseURL) else {
             throw Error.pathEscapesBase(relativePath: candidateURL.path, basePath: normalizedPath(baseURL))
         }

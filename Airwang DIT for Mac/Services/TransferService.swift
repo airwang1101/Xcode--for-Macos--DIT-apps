@@ -1569,7 +1569,12 @@ struct TransferService {
         ) else { return }
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
-            if name.hasPrefix(".airwang-") && (name.hasSuffix(".part") || name.hasSuffix(".tmp")) {
+            // .airwang-<UUID>.part / .tmp 来自分块拷贝;.airwang-replacement-<UUID> 来自
+            // installCopiedFile 的覆盖中转(无扩展名),进程在 move→replace 间被杀会残留,
+            // 此前清扫只匹配 .part/.tmp 会漏掉它。
+            let isPartTemp = name.hasPrefix(".airwang-") && (name.hasSuffix(".part") || name.hasSuffix(".tmp"))
+            let isReplacementTemp = name.hasPrefix(".airwang-replacement-")
+            if isPartTemp || isReplacementTemp {
                 try? FileManager.default.removeItem(at: url)
             }
         }
