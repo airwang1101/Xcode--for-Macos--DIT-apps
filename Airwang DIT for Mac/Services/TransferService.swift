@@ -2436,11 +2436,6 @@ struct TransferService {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func makeNumberedSection(_ items: [String], emptyText: String) -> String {
-        guard !items.isEmpty else { return emptyText }
-        return items.enumerated().map { index, item in "\(index + 1). \(item)" }.joined(separator: "\n")
-    }
-
     private func capacityLines(for destinations: [Destination]) -> String {
         destinations.map { destination in
             let capacity = DiskCapacityResolver.capacity(for: destination.rootURL)

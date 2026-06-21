@@ -2,6 +2,41 @@ import AppKit
 import QuickLookThumbnailing
 import SwiftUI
 
+/// 复用 DateFormatter 实例。DateFormatter 创建开销高，而这些日期文本只在主线程的
+/// 视图渲染里产出（热力图月标、报告行等会随 hover/滚动反复重算），按 locale+格式
+/// 缓存可避免每次渲染都重建格式器。仅限主线程访问，故用 @MainActor 隔离。
+@MainActor
+private enum CachedDateFormatters {
+    private static var cache: [String: DateFormatter] = [:]
+
+    static func formatter(localeIdentifier: String, template: String? = nil, fixedFormat: String? = nil) -> DateFormatter {
+        let key = "\(localeIdentifier)|t:\(template ?? "")|f:\(fixedFormat ?? "")"
+        if let cached = cache[key] { return cached }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: localeIdentifier)
+        if let template { formatter.setLocalizedDateFormatFromTemplate(template) }
+        if let fixedFormat { formatter.dateFormat = fixedFormat }
+        cache[key] = formatter
+        return formatter
+    }
+
+    /// 剩余时间（ETA）格式器：传输进度行高频重算，复用两种单位配置即可。
+    static let etaHoursMinutes: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    static let etaMinutesSeconds: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+}
+
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @EnvironmentObject private var viewModel: AppViewModel
@@ -668,85 +703,6 @@ struct ContentView: View {
     private func percentText(numerator: Int, denominator: Int) -> String {
         guard denominator > 0 else { return "0%" }
         return "\(Int((Double(numerator) / Double(denominator) * 100).rounded()))%"
-    }
-
-    private func statisticsOverviewStrip(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
-        let compact = availableWidth < 720
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: compact ? 2 : 4)
-
-        return LazyVGrid(columns: columns, spacing: 12) {
-            statisticMetricCard(
-                title: viewModel.localized("写入总量"),
-                value: ByteDisplayFormatter.string(fromByteCount: summary.totalBytes),
-                detail: equivalentStorageText(summary.totalBytes),
-                systemImage: "externaldrive.fill.badge.checkmark",
-                tint: accentColor
-            )
-
-            statisticMetricCard(
-                title: viewModel.localized("近 7 天"),
-                value: ByteDisplayFormatter.string(fromByteCount: summary.recent7Bytes),
-                detail: recent7Detail(summary),
-                systemImage: "calendar.badge.clock",
-                tint: Color(red: 0.20, green: 0.62, blue: 0.45)
-            )
-
-            statisticMetricCard(
-                title: viewModel.localized("报告数"),
-                value: "\(summary.totalReports)",
-                detail: "\(summary.successfulReports) \(viewModel.localized("成功")) · \(summary.totalFiles) \(viewModel.selectedLanguage == .english ? "files" : "个文件")",
-                systemImage: "doc.text.magnifyingglass",
-                tint: secondaryAccentColor
-            )
-
-            statisticMetricCard(
-                title: viewModel.localized("进行中"),
-                value: "\(summary.activeProjectCount)",
-                detail: ByteDisplayFormatter.string(fromByteCount: summary.activeBytes),
-                systemImage: "bolt.horizontal.circle.fill",
-                tint: Color(red: 0.28, green: 0.58, blue: 1.00)
-            )
-        }
-        .padding(24)
-        .background(glassSurface(cornerRadius: 24, elevation: .panel))
-        .animation(responsiveLayoutAnimation, value: compact)
-    }
-
-    private func statisticMetricCard(
-        title: String,
-        value: String,
-        detail: String,
-        systemImage: String,
-        tint: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tint)
-                Spacer()
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-                    .lineLimit(1)
-            }
-
-            Text(value)
-                .font(.system(size: 25, weight: .semibold, design: .serif))
-                .foregroundStyle(primaryTextColor)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-
-            Text(detail)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-                .lineLimit(2)
-                .minimumScaleFactor(0.82)
-        }
-        .frame(maxWidth: .infinity, minHeight: 116, alignment: .topLeading)
-        .padding(16)
-        .background(glassSurface(cornerRadius: 18, tint: tint, elevation: .tile))
     }
 
     private func activityHeatmapCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
@@ -2179,10 +2135,9 @@ struct ContentView: View {
         }
 
         if viewModel.selectedLanguage == .english {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
-            formatter.setLocalizedDateFormatFromTemplate("MMM")
-            return formatter.string(from: firstDate)
+            return CachedDateFormatters
+                .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier, template: "MMM")
+                .string(from: firstDate)
         }
 
         return "\(month)月"
@@ -2193,14 +2148,6 @@ struct ContentView: View {
             return "\(day.reportCount) reports · \(day.files) files"
         }
         return "\(day.reportCount) 份报告 · \(day.files) 个文件"
-    }
-
-    private func recent7Detail(_ summary: CopyStatisticsSummary) -> String {
-        let daysWithActivity = summary.days.suffix(7).filter(\.hasActivity).count
-        if viewModel.selectedLanguage == .english {
-            return "\(daysWithActivity) active days"
-        }
-        return "\(daysWithActivity) 天有写入"
     }
 
     private func equivalentStorageText(_ bytes: Int64) -> String {
@@ -2219,25 +2166,21 @@ struct ContentView: View {
     }
 
     private func shortDateText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
-        if viewModel.selectedLanguage == .english {
-            formatter.setLocalizedDateFormatFromTemplate("MMM d")
-        } else {
-            formatter.dateFormat = "M月d日"
-        }
-        return formatter.string(from: date)
+        let isEnglish = viewModel.selectedLanguage == .english
+        return CachedDateFormatters
+            .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier,
+                       template: isEnglish ? "MMM d" : nil,
+                       fixedFormat: isEnglish ? nil : "M月d日")
+            .string(from: date)
     }
 
     private func shortDateTimeText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
-        if viewModel.selectedLanguage == .english {
-            formatter.setLocalizedDateFormatFromTemplate("MMM d, HH:mm")
-        } else {
-            formatter.dateFormat = "M月d日 HH:mm"
-        }
-        return formatter.string(from: date)
+        let isEnglish = viewModel.selectedLanguage == .english
+        return CachedDateFormatters
+            .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier,
+                       template: isEnglish ? "MMM d, HH:mm" : nil,
+                       fixedFormat: isEnglish ? nil : "M月d日 HH:mm")
+            .string(from: date)
     }
 
     private func destinationCard(badge: String, title: String, path: String?, actionTitle: String, action: @escaping () -> Void) -> some View {
@@ -2312,9 +2255,7 @@ struct ContentView: View {
 
     private func etaText(_ value: TimeInterval?) -> String {
         guard let value else { return "--" }
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = value > 3600 ? [.hour, .minute] : [.minute, .second]
-        formatter.unitsStyle = .abbreviated
+        let formatter = value > 3600 ? CachedDateFormatters.etaHoursMinutes : CachedDateFormatters.etaMinutesSeconds
         return formatter.string(from: value) ?? "--"
     }
 
@@ -2331,10 +2272,9 @@ struct ContentView: View {
     }
 
     private func preciseDateTimeText(_ value: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 HH:mm:ss"
-        return formatter.string(from: value)
+        CachedDateFormatters
+            .formatter(localeIdentifier: "zh_CN", fixedFormat: "yyyy年M月d日 HH:mm:ss")
+            .string(from: value)
     }
 
     private func onboardingFeature(label: String, detail: String) -> some View {
@@ -2348,35 +2288,6 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(glassSurface(cornerRadius: 18, elevation: .tile))
-    }
-
-    private func emphasisBlock(label: String, value: String, capacityLine: String?, accent: Color) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label.uppercased())
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(accent.opacity(0.08))
-                .overlay(
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(value)
-                            .font(.headline)
-                            .foregroundStyle(primaryTextColor)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.88)
-                        if let capacityLine {
-                            Text(capacityLine)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(secondaryTextColor)
-                                .lineLimit(1)
-                        }
-                    }
-                    .padding(14)
-                )
-                .frame(height: 96)
-                .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accent, tintStrength: 0.35, elevation: .tile, enabled: !reduceVisualEffects)
-        }
     }
 
     private func emptyState(title: String, detail: String) -> some View {
@@ -2405,20 +2316,6 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(glassSurface(cornerRadius: 16, elevation: .tile))
-    }
-
-    private func metricTile(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(primaryTextColor)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
         .background(glassSurface(cornerRadius: 16, elevation: .tile))
     }
 
@@ -3938,10 +3835,6 @@ private struct ImportSheet: View {
     private var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
     private var accentColor: Color { viewModel.selectedTheme.accentColor }
     private var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
-
-    private var groupFill: Color {
-        viewModel.selectedTheme == .night ? Color.white.opacity(0.08) : Color.gray.opacity(0.08)
-    }
 
     private var thumbFill: Color {
         viewModel.selectedTheme == .night ? Color.white.opacity(0.06) : Color.black.opacity(0.08)

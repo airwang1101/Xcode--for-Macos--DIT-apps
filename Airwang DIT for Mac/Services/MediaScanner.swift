@@ -78,6 +78,7 @@ struct MediaScanner {
 
     func makeTimeGroups(items: [MediaItem]) -> [TimeGroup] {
         let calendar = Calendar.current
+        let idFormatter = ISO8601DateFormatter()
         let grouped = Dictionary(grouping: items) { item in
             calendar.startOfDay(for: item.createdAt)
         }
@@ -85,7 +86,7 @@ struct MediaScanner {
         return grouped
             .map { date, values in
                 TimeGroup(
-                    id: ISO8601DateFormatter().string(from: date),
+                    id: idFormatter.string(from: date),
                     date: date,
                     items: values,
                     totalSize: values.reduce(0) { $0 + $1.size }
