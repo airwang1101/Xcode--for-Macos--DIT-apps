@@ -283,16 +283,20 @@ final class TransferServiceTests: XCTestCase {
     /// ⚠️ 待产品确认：单个文件缺失是否应等同于「整卡掉线」中止整批？对大批量离线，
     /// 这意味着可能因 1 个坏/缺文件停在第 3/5000。若决定改为「逐文件失败并继续」，
     /// 需同步更新本测试与 `ensureAvailable`/`fatalInterruptionReason` 的分类。
-    func testMissingSourceFileAbortsBatchButKeepsAlreadyCopiedData() async throws {
+    /// M5：源根仍在、单个源文件缺失 → 记为单文件失败并继续，不中断整批。
+    func testMissingSingleSourceFileRecordsFailureAndContinues() async throws {
         let source = try makeTempDir(); defer { cleanup(source) }
         guard let volume = try makeSeparateVolume() else {
             throw XCTSkip("无法创建独立测试卷，跳过。")
         }
         defer { volume.detach() }
 
-        let goodData = Data((0..<5000).map { UInt8($0 % 200) })
-        try writeFile(goodData, to: source.appendingPathComponent("good.mov"))
-        let good = mediaItem(sourceRoot: source, relativePath: "good.mov", data: goodData)
+        let dataA = Data((0..<5000).map { UInt8($0 % 200) })
+        let dataB = Data((0..<5000).map { UInt8(($0 + 7) % 200) })
+        try writeFile(dataA, to: source.appendingPathComponent("good.mov"))
+        try writeFile(dataB, to: source.appendingPathComponent("good2.mov"))
+        let good = mediaItem(sourceRoot: source, relativePath: "good.mov", data: dataA)
+        // ghost 夹在两个正常文件中间，且故意不在源盘创建。
         let ghost = ProjectMediaItem(
             id: "ghost",
             filePath: source.appendingPathComponent("ghost.mov").path,
@@ -302,19 +306,92 @@ final class TransferServiceTests: XCTestCase {
             size: 5000,
             mediaKindRawValue: ScanFilter.video.rawValue
         )
-        // good 在前：它在 ghost 触发中断前已完成拷贝，数据应已落盘。
-        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [good, ghost], mode: .sha256)
+        let good2 = mediaItem(sourceRoot: source, relativePath: "good2.mov", data: dataB)
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [good, ghost, good2], mode: .sha256)
 
         let result = try await TransferService().runPrimaryStage(project: project) { _ in }
 
         XCTAssertFalse(result.report.success, "存在缺失文件时整体应判失败")
-        XCTAssertNotNil(result.report.interruptionReason, "缺失源文件目前被当作致命中断")
+        XCTAssertNil(result.report.interruptionReason, "单文件缺失（源根仍在）不应被当作致命中断")
         XCTAssertTrue(result.report.copyFailedFiles.contains("ghost.mov"), "缺失文件应记为拷贝失败")
 
-        // 数据完整性保证：中断前已拷贝的正常文件，数据仍完整落盘、未被回滚。
+        // 关键：ghost 之后的 good2 仍应被继续处理并完整落盘。
         let goodTarget = project.primaryImportURL.appendingPathComponent("good.mov")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: goodTarget.path), "已拷贝文件不应被删除")
-        XCTAssertEqual(try Data(contentsOf: goodTarget), goodData, "已拷贝文件内容应完整")
+        let good2Target = project.primaryImportURL.appendingPathComponent("good2.mov")
+        XCTAssertEqual(try Data(contentsOf: goodTarget), dataA, "缺失文件之前的文件应完整")
+        XCTAssertEqual(try Data(contentsOf: good2Target), dataB, "缺失文件之后的文件应继续拷贝并完整")
+        XCTAssertEqual(result.finalState.copiedFiles, 2, "应有 2 个文件成功拷贝")
+    }
+
+    /// M5：源根（源设备）丢失 → 立即致命中断整阶段。这里用进度回调模拟“拷到一半拔卡”。
+    func testMissingSourceRootInterruptsWholeStage() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let dataA = Data((0..<5000).map { UInt8($0 % 200) })
+        let dataB = Data((0..<5000).map { UInt8(($0 + 7) % 200) })
+        try writeFile(dataA, to: source.appendingPathComponent("a.mov"))
+        try writeFile(dataB, to: source.appendingPathComponent("b.mov"))
+        let items = [
+            mediaItem(sourceRoot: source, relativePath: "a.mov", data: dataA),
+            mediaItem(sourceRoot: source, relativePath: "b.mov", data: dataB)
+        ]
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: items, mode: .sha256)
+
+        let sourcePath = source.path
+        let result = try await TransferService().runPrimaryStage(project: project) { state in
+            // 第一个文件拷完后，模拟源盘被整体拔出：删除源根目录。
+            if state.copiedFiles >= 1 {
+                try? FileManager.default.removeItem(atPath: sourcePath)
+            }
+        }
+
+        XCTAssertFalse(result.report.success, "源根丢失整体应判失败")
+        XCTAssertNotNil(result.report.interruptionReason, "源根（源设备）丢失必须触发致命中断")
+    }
+
+    /// M5：非缺失的单文件读失败（源根仍在）也应记为单文件失败并继续。
+    /// 用“目录冒充文件”制造可靠的读失败：路径存在但无法作为普通文件读取。
+    func testReadErrorRecordsSingleFileFailureWhenRootStillAvailable() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let goodData = Data((0..<5000).map { UInt8($0 % 200) })
+        try writeFile(goodData, to: source.appendingPathComponent("good.mov"))
+        // bad.mov 是一个目录：它“存在”，但作为文件读取会失败（EISDIR）。
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent("bad.mov", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let bad = ProjectMediaItem(
+            id: "bad",
+            filePath: source.appendingPathComponent("bad.mov").path,
+            relativePath: "bad.mov",
+            displayName: "bad.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: 5000,
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        let good = mediaItem(sourceRoot: source, relativePath: "good.mov", data: goodData)
+        // bad 在前失败，good 在后仍应完成。
+        let project = makeProject(source: source, target: volume.mount, backup: nil, items: [bad, good], mode: .sha256)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertNil(result.report.interruptionReason, "单文件读失败（源根仍在）不应致命中断")
+        XCTAssertTrue(result.report.copyFailedFiles.contains("bad.mov"), "读失败文件应记为拷贝失败")
+        XCTAssertEqual(
+            try Data(contentsOf: project.primaryImportURL.appendingPathComponent("good.mov")),
+            goodData,
+            "读失败文件之后的文件应继续拷贝并完整"
+        )
     }
 
     func testPrimaryStageFailsWhenDestinationFileAlreadyExists() async throws {

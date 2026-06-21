@@ -14,6 +14,8 @@ struct TransferService {
         case pathOverlap(String)
         case destinationAlreadyExists(String)
         case copySizeMismatch(file: String, expected: Int64, actual: Int64)
+        /// 源根目录仍在,但单个源文件缺失。视为单文件失败(记录并继续),不致命中断整批。
+        case sourceFileMissing(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +35,8 @@ struct TransferService {
                 return "目标文件已存在，为避免覆盖素材，已停止写入：\(path)"
             case let .copySizeMismatch(file, expected, actual):
                 return "\(file) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
+            case let .sourceFileMissing(path):
+                return "源文件缺失，已记为单文件失败并跳过：\(path)"
             }
         }
     }
@@ -1325,6 +1329,17 @@ struct TransferService {
         }
     }
 
+    /// 区分"单个源文件缺失"与"源根/源设备丢失":
+    /// - 源根仍在、仅单个文件缺失 → `.sourceFileMissing`(非致命,记单文件失败并继续)。
+    /// - 源根也不存在(拔卡/断盘)→ `.deviceUnavailable`(致命,中断整阶段)。
+    private func ensureSourceFileExists(_ url: URL, root: URL, sourceRole: String) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        if !FileManager.default.fileExists(atPath: root.path) {
+            throw TransferError.deviceUnavailable(role: sourceRole, path: root.path)
+        }
+        throw TransferError.sourceFileMissing(path: url.path)
+    }
+
     private func ensureWritableDestination(_ url: URL, role: String) throws {
         let values = try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey, .isWritableKey])
         if values?.volumeIsReadOnly == true || values?.isWritable == false || !FileManager.default.isWritableFile(atPath: url.path) {
@@ -1366,7 +1381,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
+            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch, .sourceFileMissing:
                 break
             }
         }
@@ -1392,7 +1407,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
+            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch, .sourceFileMissing:
                 break
             }
         }
@@ -1491,7 +1506,7 @@ struct TransferService {
 
         try checkInterruption(interruptionToken)
         try ensureAvailable(sourceRoot, role: sourceRole)
-        try ensureAvailable(sourceURL, role: "源文件")
+        try ensureSourceFileExists(sourceURL, root: sourceRoot, sourceRole: sourceRole)
         try ensureAvailable(destination.rootURL, role: destination.label)
         try ensureWritableDestination(destination.rootURL, role: destination.label)
         try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRoot)
