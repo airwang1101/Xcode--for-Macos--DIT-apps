@@ -7,6 +7,7 @@ struct TransferService {
 
     enum TransferError: LocalizedError {
         case insufficientSpace(destination: String, available: Int64, required: Int64)
+        case capacityUnavailable(destination: String, path: String)
         case deviceUnavailable(role: String, path: String)
         case destinationNotWritable(role: String, path: String)
         case transferInterrupted(reason: String)
@@ -18,6 +19,8 @@ struct TransferService {
             switch self {
             case let .insufficientSpace(destination, available, required):
                 return "\(destination) 剩余空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))。"
+            case let .capacityUnavailable(destination, path):
+                return "\(destination) 容量不可读，为避免写满或中断，已阻止执行：\(path)"
             case let .deviceUnavailable(role, path):
                 return "\(role) 已断开或不可访问：\(path)"
             case let .destinationNotWritable(role, path):
@@ -206,6 +209,7 @@ struct TransferService {
         var fatalStopReason: String?
         var preflightFailureMessage: String?
         var stageVerificationMode = project.verificationMode
+        var spacePreflightResults: [DestinationSpacePreflight] = []
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
@@ -218,7 +222,17 @@ struct TransferService {
                 destinationFolderURL: destinationFolderURL,
                 destinationRootURL: destinationRootURL
             )
-            try preflightSpace(destinations: [destination], requiredBytes: totalBytes)
+            spacePreflightResults = makeSpacePreflightResults(
+                destinations: [destination],
+                payloadBytes: totalBytes
+            )
+            state.spacePreflightResults = spacePreflightResults
+            try validateSpacePreflight(spacePreflightResults)
+            if let result = spacePreflightResults.first,
+               let available = result.availableBytes {
+                state.phaseTitle = "空间预检通过：需要 \(ByteDisplayFormatter.string(fromByteCount: result.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))"
+                await progress(state)
+            }
             sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
             preflightFailureMessage = error.localizedDescription
@@ -519,6 +533,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -618,6 +633,7 @@ struct TransferService {
         var fileRecords: [FileVerificationRecord] = []
         var copiedItemPaths: Set<String> = []
         var fatalStopReason: String?
+        var spacePreflightResults: [DestinationSpacePreflight] = []
 
         do {
             try validateDestinationSeparation(summary: summary)
@@ -631,7 +647,17 @@ struct TransferService {
                     destinationRootURL: destination.rootURL
                 )
             }
-            try preflightSpace(destinations: destinations, requiredBytes: totalBytes)
+            spacePreflightResults = makeSpacePreflightResults(
+                destinations: destinations,
+                payloadBytes: totalBytes
+            )
+            state.spacePreflightResults = spacePreflightResults
+            try validateSpacePreflight(spacePreflightResults)
+            if let result = spacePreflightResults.first,
+               let available = result.availableBytes {
+                state.phaseTitle = "空间预检通过：需要 \(ByteDisplayFormatter.string(fromByteCount: result.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))"
+                await progress(state)
+            }
         } catch {
             let result = makePreflightFailureResult(
                 error: error,
@@ -643,6 +669,7 @@ struct TransferService {
                 primaryImportFolder: primaryImportFolder,
                 reportDocumentURL: reportDocumentURL,
                 fallbackReportDocumentURL: fallbackReportDocumentURL,
+                spacePreflightResults: spacePreflightResults,
                 language: language
             )
             await progress(state)
@@ -931,6 +958,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -986,6 +1014,7 @@ struct TransferService {
         primaryImportFolder: URL,
         reportDocumentURL: URL,
         fallbackReportDocumentURL: URL,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> TransferResult {
         let finishedAt = Date()
@@ -1029,6 +1058,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: nil,
             verificationSummary: verificationSummary,
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -1133,36 +1163,37 @@ struct TransferService {
         }
     }
 
-    private func preflightSpace(destinations: [Destination], requiredBytes: Int64) throws {
-        for destination in destinations {
-            let available = availableCapacity(for: destination.rootURL)
-            if let available, available < requiredBytes {
+    private func makeSpacePreflightResults(
+        destinations: [Destination],
+        payloadBytes: Int64
+    ) -> [DestinationSpacePreflight] {
+        destinations.map { destination in
+            SpacePreflightPolicy.evaluate(
+                destinationLabel: destination.label,
+                destinationPath: destination.rootURL.path,
+                payloadBytes: payloadBytes,
+                availableBytes: availableCapacity(for: destination.rootURL)
+            )
+        }
+    }
+
+    private func validateSpacePreflight(_ results: [DestinationSpacePreflight]) throws {
+        for result in results {
+            switch result.status {
+            case .passed:
+                continue
+            case .insufficient:
                 throw TransferError.insufficientSpace(
-                    destination: destination.label,
-                    available: available,
-                    required: requiredBytes
+                    destination: result.destinationLabel,
+                    available: result.availableBytes ?? 0,
+                    required: result.requirement.requiredBytes
+                )
+            case .capacityUnavailable:
+                throw TransferError.capacityUnavailable(
+                    destination: result.destinationLabel,
+                    path: result.destinationPath
                 )
             }
-        }
-
-        let groupedByVolume = Dictionary(grouping: destinations) { destination in
-            DiskCapacityResolver.volumeRootPath(for: destination.rootURL) ?? destination.rootURL.path
-        }
-
-        for destinationsOnVolume in groupedByVolume.values where destinationsOnVolume.count > 1 {
-            let combinedRequired = requiredBytes * Int64(destinationsOnVolume.count)
-            guard let firstDestination = destinationsOnVolume.first,
-                  let available = availableCapacity(for: firstDestination.rootURL),
-                  available < combinedRequired else {
-                continue
-            }
-
-            let labels = destinationsOnVolume.map(\.label).joined(separator: " + ")
-            throw TransferError.insufficientSpace(
-                destination: labels,
-                available: available,
-                required: combinedRequired
-            )
         }
     }
 
@@ -1335,7 +1366,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
+            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
                 break
             }
         }
@@ -1361,7 +1392,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
+            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
                 break
             }
         }
@@ -1888,6 +1919,7 @@ struct TransferService {
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
         let isEnglish = language == .english
@@ -1914,6 +1946,7 @@ struct TransferService {
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
                 \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
 
                 [Paths]
                 Source Device Name: \(summary.sourceVolume.name)
@@ -1983,6 +2016,7 @@ struct TransferService {
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
                 \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
 
                 [路径信息]
                 源设备名称: \(summary.sourceVolume.name)
@@ -2056,6 +2090,7 @@ struct TransferService {
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
         let isEnglish = language == .english
@@ -2092,6 +2127,7 @@ struct TransferService {
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
                 \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
 
                 [Paths]
                 \(routeLine)
@@ -2166,6 +2202,7 @@ struct TransferService {
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
                 \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
 
                 [路径信息]
                 \(routeLine)
@@ -2271,6 +2308,58 @@ struct TransferService {
         失败详情: \(verificationSummary)
         处理建议: 改项目名、更换目标目录或人工确认后重试
         """
+    }
+
+    private func spacePreflightReportSection(
+        _ results: [DestinationSpacePreflight],
+        isEnglish: Bool
+    ) -> String {
+        guard !results.isEmpty else {
+            return isEnglish
+                ? "[Space Preflight]\nResult: Not completed"
+                : "[空间预检]\n预检结果: 未完成"
+        }
+
+        let sections = results.map { result in
+            let requirement = result.requirement
+            let available = result.availableBytes.map { ByteDisplayFormatter.string(fromByteCount: $0) }
+                ?? (isEnglish ? "Unavailable" : "容量不可读")
+            let status: String
+            switch result.status {
+            case .passed:
+                status = isEnglish ? "Passed" : "通过"
+            case .insufficient:
+                status = isEnglish ? "Insufficient space" : "空间不足"
+            case .capacityUnavailable:
+                status = isEnglish ? "Capacity unavailable" : "容量不可读"
+            }
+
+            if isEnglish {
+                return """
+                Destination: \(result.destinationLabel)
+                Path: \(result.destinationPath)
+                Payload Size: \(ByteDisplayFormatter.string(fromByteCount: requirement.payloadBytes))
+                Safety Margin: \(ByteDisplayFormatter.string(fromByteCount: requirement.safetyMarginBytes))
+                Minimum Required: \(ByteDisplayFormatter.string(fromByteCount: requirement.requiredBytes))
+                Available Space: \(available)
+                Preflight Result: \(status)
+                """
+            }
+
+            return """
+            目标: \(result.destinationLabel)
+            路径: \(result.destinationPath)
+            素材总量: \(ByteDisplayFormatter.string(fromByteCount: requirement.payloadBytes))
+            安全冗余: \(ByteDisplayFormatter.string(fromByteCount: requirement.safetyMarginBytes))
+            最低需求: \(ByteDisplayFormatter.string(fromByteCount: requirement.requiredBytes))
+            可用空间: \(available)
+            预检结果: \(status)
+            """
+        }
+
+        return (isEnglish ? "[Space Preflight]" : "[空间预检]")
+            + "\n"
+            + sections.joined(separator: "\n\n")
     }
 
     private func finalProjectPhaseTitle(

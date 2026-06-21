@@ -3673,6 +3673,7 @@ private struct ImportSheet: View {
                 title: "主目标盘",
                 path: viewModel.preferences.targetPath ?? "-",
                 capacity: viewModel.targetCapacity,
+                spacePreflight: viewModel.targetSpacePreflight,
                 tint: accentColor
             )
 
@@ -3681,6 +3682,7 @@ private struct ImportSheet: View {
                     title: "备份盘",
                     path: viewModel.preferences.backupPath ?? "未设置",
                     capacity: viewModel.backupCapacity,
+                    spacePreflight: viewModel.backupSpacePreflight,
                     tint: secondaryAccentColor
                 )
             }
@@ -3716,6 +3718,7 @@ private struct ImportSheet: View {
         title: String,
         path: String,
         capacity: StorageCapacitySnapshot?,
+        spacePreflight: DestinationSpacePreflight?,
         tint: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3736,6 +3739,33 @@ private struct ImportSheet: View {
                 tint: tint,
                 backgroundColor: secondaryTextColor.opacity(0.16)
             )
+
+            if let preflight = spacePreflight {
+                Divider()
+                    .overlay(secondaryTextColor.opacity(0.16))
+                spacePreflightRow(
+                    title: viewModel.localized("素材总量"),
+                    value: ByteDisplayFormatter.string(fromByteCount: preflight.requirement.payloadBytes)
+                )
+                spacePreflightRow(
+                    title: viewModel.localized("安全冗余"),
+                    value: ByteDisplayFormatter.string(fromByteCount: preflight.requirement.safetyMarginBytes)
+                )
+                spacePreflightRow(
+                    title: viewModel.localized("最低需求"),
+                    value: ByteDisplayFormatter.string(fromByteCount: preflight.requirement.requiredBytes)
+                )
+                spacePreflightRow(
+                    title: viewModel.localized("可用空间"),
+                    value: preflight.availableBytes.map { ByteDisplayFormatter.string(fromByteCount: $0) }
+                        ?? viewModel.localized("容量暂不可读")
+                )
+                spacePreflightRow(
+                    title: viewModel.localized("预检状态"),
+                    value: spacePreflightStatusText(preflight.status),
+                    valueColor: preflight.status == .passed ? tint : .red
+                )
+            }
         }
         .padding(12)
         .background(
@@ -3748,6 +3778,33 @@ private struct ImportSheet: View {
                 reduceEffects: false
             )
         )
+    }
+
+    private func spacePreflightRow(
+        title: String,
+        value: String,
+        valueColor: Color? = nil
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .foregroundStyle(secondaryTextColor)
+            Spacer(minLength: 8)
+            Text(value)
+                .foregroundStyle(valueColor ?? primaryTextColor)
+                .multilineTextAlignment(.trailing)
+        }
+        .font(.caption.weight(.semibold))
+    }
+
+    private func spacePreflightStatusText(_ status: DestinationSpacePreflight.Status) -> String {
+        switch status {
+        case .passed:
+            return viewModel.localized("可执行")
+        case .insufficient:
+            return viewModel.localized("空间不足")
+        case .capacityUnavailable:
+            return viewModel.localized("容量不可读，已阻止执行")
+        }
     }
 
     private var startDisabledReason: String {

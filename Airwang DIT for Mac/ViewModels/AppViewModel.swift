@@ -209,19 +209,31 @@ final class AppViewModel: ObservableObject {
     var destinationWarnings: [String] {
         guard let summary = selectionSummary else { return [] }
         var warnings: [String] = []
-        let required = summary.totalSize
+        let requirement = SpacePreflightPolicy.requirement(for: summary.totalSize)
 
-        if let available = availableCapacity(for: summary.targetURL), available < required {
-            warnings.append("主目标盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+        if let preflight = targetSpacePreflight {
+            switch preflight.status {
+            case .passed:
+                break
+            case .insufficient:
+                warnings.append("主目标盘空间不足：最低需要 \(ByteDisplayFormatter.string(fromByteCount: preflight.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: preflight.availableBytes ?? 0))")
+            case .capacityUnavailable:
+                warnings.append("主目标盘容量不可读，为避免写满或中断，已阻止创建项目。")
+            }
         }
         if !isWritableDestination(summary.targetURL) {
             warnings.append("主目标盘不可写或位于只读卷，请重新选择。")
         }
 
-        if let backupURL = summary.backupURL,
-           let available = availableCapacity(for: backupURL),
-           available < required {
-            warnings.append("备份盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+        if let preflight = backupSpacePreflight {
+            switch preflight.status {
+            case .passed:
+                break
+            case .insufficient:
+                warnings.append("备份盘空间不足：最低需要 \(ByteDisplayFormatter.string(fromByteCount: preflight.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: preflight.availableBytes ?? 0))")
+            case .capacityUnavailable:
+                warnings.append("备份盘容量不可读，为避免写满或中断，已阻止创建项目。")
+            }
         }
         if let backupURL = summary.backupURL, !isWritableDestination(backupURL) {
             warnings.append("备份盘不可写或位于只读卷，请重新选择。")
@@ -232,9 +244,10 @@ final class AppViewModel: ObservableObject {
            let backupRoot = DiskCapacityResolver.volumeRootPath(for: backupURL),
            targetRoot == backupRoot,
            let available = availableCapacity(for: summary.targetURL) {
-            let combinedRequired = required * 2
-            if available < combinedRequired {
-                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写需要 \(ByteDisplayFormatter.string(fromByteCount: combinedRequired))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+            let (combinedRequired, overflowed) = requirement.requiredBytes.multipliedReportingOverflow(by: 2)
+            let safeCombinedRequired = overflowed ? Int64.max : combinedRequired
+            if available < safeCombinedRequired {
+                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写最低需要 \(ByteDisplayFormatter.string(fromByteCount: safeCombinedRequired))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
             }
         }
 
@@ -345,6 +358,27 @@ final class AppViewModel: ObservableObject {
     var backupCapacity: StorageCapacitySnapshot? {
         guard let backupURL = preferences.backupURL else { return nil }
         return DiskCapacityResolver.capacity(for: backupURL)
+    }
+
+    var targetSpacePreflight: DestinationSpacePreflight? {
+        guard let summary = selectionSummary else { return nil }
+        return SpacePreflightPolicy.evaluate(
+            destinationLabel: "主目标盘",
+            destinationPath: summary.targetURL.path,
+            payloadBytes: summary.totalSize,
+            availableBytes: targetCapacity?.availableCapacity
+        )
+    }
+
+    var backupSpacePreflight: DestinationSpacePreflight? {
+        guard let summary = selectionSummary,
+              let backupURL = summary.backupURL else { return nil }
+        return SpacePreflightPolicy.evaluate(
+            destinationLabel: "备份盘",
+            destinationPath: backupURL.path,
+            payloadBytes: summary.totalSize,
+            availableBytes: backupCapacity?.availableCapacity
+        )
     }
 
     func openFolderPicker(for purpose: FolderPickerPurpose) {

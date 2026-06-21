@@ -312,6 +312,57 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertEqual(ByteDisplayFormatter.string(fromByteCount: 2_500_000_000_000), "2.5 TB")
     }
 
+    func testSpacePreflightRequiresAtLeastOneGBMargin() {
+        let requirement = SpacePreflightPolicy.requirement(for: 10_000_000_000)
+
+        XCTAssertEqual(requirement.payloadBytes, 10_000_000_000)
+        XCTAssertEqual(requirement.safetyMarginBytes, 1_000_000_000)
+        XCTAssertEqual(requirement.requiredBytes, 11_000_000_000)
+    }
+
+    func testSpacePreflightUsesFivePercentForLargeTransfers() {
+        let requirement = SpacePreflightPolicy.requirement(for: 100_000_000_000)
+
+        XCTAssertEqual(requirement.safetyMarginBytes, 5_000_000_000)
+        XCTAssertEqual(requirement.requiredBytes, 105_000_000_000)
+    }
+
+    func testSpacePreflightFailsWhenAvailableOnlyEqualsRawTotalBytes() {
+        let result = SpacePreflightPolicy.evaluate(
+            destinationLabel: "主目标盘",
+            destinationPath: "/Volumes/Target",
+            payloadBytes: 10_000_000_000,
+            availableBytes: 10_000_000_000
+        )
+
+        XCTAssertEqual(result.status, .insufficient)
+        XCTAssertFalse(result.isAllowed)
+    }
+
+    func testSpacePreflightFailsWhenCapacityUnreadable() {
+        let result = SpacePreflightPolicy.evaluate(
+            destinationLabel: "主目标盘",
+            destinationPath: "/Volumes/Target",
+            payloadBytes: 10_000_000_000,
+            availableBytes: nil
+        )
+
+        XCTAssertEqual(result.status, .capacityUnavailable)
+        XCTAssertFalse(result.isAllowed)
+    }
+
+    func testSpacePreflightAllowsAvailableEqualToMinimumRequirement() {
+        let result = SpacePreflightPolicy.evaluate(
+            destinationLabel: "主目标盘",
+            destinationPath: "/Volumes/Target",
+            payloadBytes: 10_000_000_000,
+            availableBytes: 11_000_000_000
+        )
+
+        XCTAssertEqual(result.status, .passed)
+        XCTAssertTrue(result.isAllowed)
+    }
+
     func testMainWindowLayoutPolicyUsesPortraitLayoutForNarrowAndRotatedWindows() {
         XCTAssertTrue(MainWindowLayoutPolicy.usesPortraitLayout(width: 700, height: 900))
         XCTAssertTrue(MainWindowLayoutPolicy.usesPortraitLayout(width: 900, height: 1_300))

@@ -228,6 +228,14 @@ enum AppLocalization {
         "外部设备": "External Device",
         "可用卷": "Available Volume",
         "容量暂不可读": "Capacity unavailable",
+        "素材总量": "Payload Size",
+        "安全冗余": "Safety Margin",
+        "最低需求": "Minimum Required",
+        "可用空间": "Available Space",
+        "预检状态": "Preflight Status",
+        "可执行": "Ready",
+        "空间不足": "Insufficient Space",
+        "容量不可读，已阻止执行": "Capacity unavailable, execution blocked",
         "存储": "Storage",
         "源设备": "Source Device",
         "目标": "Target",
@@ -560,6 +568,73 @@ struct StorageCapacitySnapshot: Equatable, Hashable {
 
     var shortAvailableText: String {
         availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "未知"
+    }
+}
+
+struct SpaceRequirement: Equatable {
+    let payloadBytes: Int64
+    let safetyMarginBytes: Int64
+    let requiredBytes: Int64
+}
+
+struct DestinationSpacePreflight: Equatable {
+    enum Status: Equatable {
+        case passed
+        case insufficient
+        case capacityUnavailable
+    }
+
+    let destinationLabel: String
+    let destinationPath: String
+    let requirement: SpaceRequirement
+    let availableBytes: Int64?
+    let status: Status
+
+    var isAllowed: Bool {
+        status == .passed
+    }
+}
+
+enum SpacePreflightPolicy {
+    static let minimumSafetyMarginBytes: Int64 = 1_000_000_000
+
+    static func requirement(for payloadBytes: Int64) -> SpaceRequirement {
+        let payload = max(payloadBytes, 0)
+        let quotient = payload / 20
+        let remainder = payload % 20
+        let fivePercentMargin = quotient + (remainder == 0 ? 0 : 1)
+        let safetyMargin = max(fivePercentMargin, minimumSafetyMarginBytes)
+        let (required, overflowed) = payload.addingReportingOverflow(safetyMargin)
+
+        return SpaceRequirement(
+            payloadBytes: payload,
+            safetyMarginBytes: safetyMargin,
+            requiredBytes: overflowed ? Int64.max : required
+        )
+    }
+
+    static func evaluate(
+        destinationLabel: String,
+        destinationPath: String,
+        payloadBytes: Int64,
+        availableBytes: Int64?
+    ) -> DestinationSpacePreflight {
+        let requirement = requirement(for: payloadBytes)
+        let status: DestinationSpacePreflight.Status
+
+        if let availableBytes {
+            status = availableBytes >= requirement.requiredBytes ? .passed : .insufficient
+        } else {
+            status = .capacityUnavailable
+        }
+
+        return DestinationSpacePreflight(
+            destinationLabel: destinationLabel,
+            destinationPath: destinationPath,
+            requirement: requirement,
+            availableBytes: availableBytes,
+            status: status
+        )
     }
 }
 
@@ -1331,6 +1406,7 @@ struct TransferState {
     var currentSpeedBytesPerSecond: Double = 0
     var currentVerificationSpeedBytesPerSecond: Double = 0
     var interruptionReason: String?
+    var spacePreflightResults: [DestinationSpacePreflight] = []
 
     var copyFraction: Double {
         guard totalBytes > 0 else { return 0 }

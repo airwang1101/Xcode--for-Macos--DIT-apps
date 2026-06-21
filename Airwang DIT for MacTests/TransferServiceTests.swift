@@ -506,6 +506,37 @@ final class TransferServiceTests: XCTestCase {
         XCTAssertNotNil(result.report.reportDocumentPath)
     }
 
+    func testTextReportContainsSpacePreflightDetails() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("space report payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sizeOnly,
+            taskFolder: "SpaceReport-\(UUID().uuidString.prefix(8))"
+        )
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertTrue(result.report.success)
+        let reportPath = try XCTUnwrap(result.report.reportDocumentPath)
+        let report = try String(contentsOfFile: reportPath, encoding: .utf8)
+        XCTAssertTrue(report.contains("[空间预检]"))
+        XCTAssertTrue(report.contains("素材总量:"))
+        XCTAssertTrue(report.contains("安全冗余:"))
+        XCTAssertTrue(report.contains("最低需求:"))
+        XCTAssertTrue(report.contains("可用空间:"))
+        XCTAssertTrue(report.contains("预检结果: 通过"))
+    }
+
     // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {
@@ -571,7 +602,7 @@ final class TransferServiceTests: XCTestCase {
     private func makeSeparateVolume() throws -> (mount: URL, detach: () -> Void)? {
         let fileManager = FileManager.default
         let token = String(UUID().uuidString.prefix(8))
-        let dmgPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangVol-\(token).dmg")
+        let dmgPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangVol-\(token).sparseimage")
         let mountPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangMnt-\(token)")
 
         func hdiutil(_ arguments: [String]) -> Bool {
@@ -589,7 +620,7 @@ final class TransferServiceTests: XCTestCase {
             return process.terminationStatus == 0
         }
 
-        guard hdiutil(["create", "-size", "48m", "-fs", "HFS+", "-volname", "Airwang\(token)", "-quiet", dmgPath]) else {
+        guard hdiutil(["create", "-size", "2g", "-type", "SPARSE", "-fs", "HFS+", "-volname", "Airwang\(token)", "-quiet", dmgPath]) else {
             return nil
         }
         try? fileManager.createDirectory(atPath: mountPath, withIntermediateDirectories: true)
