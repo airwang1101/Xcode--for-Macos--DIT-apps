@@ -158,6 +158,10 @@ enum AppLocalization {
         "自动执行": "Auto Start",
         "新建任务默认 5 分钟后自动执行": "Auto-start new queued projects after 5 minutes",
         "关闭后，新建项目只加入队列，需要手动执行。": "When off, new projects only enter the queue and require manual start.",
+        "当前执行方式": "Current Run Policy",
+        "加入队列，等待手动执行": "Queue and wait for manual start",
+        "加入队列，5 分钟后自动执行": "Queue and auto-start after 5 minutes",
+        "任务将在 5 分钟后开始写入目标盘，请确认源盘、主盘、备份盘路径无误。": "The task will start writing in 5 minutes. Confirm the source, primary, and backup paths first.",
         "拷贝": "Copy",
         "仪表盘": "Dashboard",
         "备份": "Backup",
@@ -474,7 +478,7 @@ struct AppUISettings: Codable {
     var language: AppLanguage
     var autoStartQueuedProjects: Bool
 
-    static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: true)
+    static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: false)
 
     enum CodingKeys: String, CodingKey {
         case theme
@@ -485,7 +489,7 @@ struct AppUISettings: Codable {
     init(
         theme: AppTheme,
         language: AppLanguage = .chinese,
-        autoStartQueuedProjects: Bool = true
+        autoStartQueuedProjects: Bool = false
     ) {
         self.theme = theme
         self.language = language
@@ -496,7 +500,7 @@ struct AppUISettings: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         theme = try container.decodeIfPresent(AppTheme.self, forKey: .theme) ?? .day
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .chinese
-        autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? true
+        autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? false
     }
 }
 

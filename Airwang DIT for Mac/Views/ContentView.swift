@@ -3626,6 +3626,31 @@ private struct ImportSheet: View {
             .padding(12)
             .background(glassPanel(cornerRadius: 16))
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text(viewModel.localized("当前执行方式"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                Text(viewModel.localized(
+                    viewModel.autoStartQueuedProjects
+                        ? "加入队列，5 分钟后自动执行"
+                        : "加入队列，等待手动执行"
+                ))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+
+                if viewModel.autoStartQueuedProjects {
+                    Label(
+                        viewModel.localized("任务将在 5 分钟后开始写入目标盘，请确认源盘、主盘、备份盘路径无误。"),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .background(glassPanel(cornerRadius: 16))
+
             VStack(alignment: .leading, spacing: 10) {
                 Text("校验方式")
                     .font(.caption.weight(.semibold))

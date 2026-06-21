@@ -35,7 +35,11 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertNil(project.autoStartDeadline)
     }
 
-    func testUISettingsDecodesLegacyThemeOnlySettings() throws {
+    func testDefaultUISettingsDisableAutoStart() {
+        XCTAssertFalse(AppUISettings.default.autoStartQueuedProjects)
+    }
+
+    func testDecodedMissingAutoStartDefaultsToFalse() throws {
         let json = """
         {
           "theme": "night"
@@ -46,6 +50,19 @@ final class PersistenceCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(settings.theme, .night)
         XCTAssertEqual(settings.language, .chinese)
+        XCTAssertFalse(settings.autoStartQueuedProjects)
+    }
+
+    func testDecodedExplicitAutoStartTrueRemainsTrue() throws {
+        let json = """
+        {
+          "theme": "night",
+          "autoStartQueuedProjects": true
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(AppUISettings.self, from: json)
+
         XCTAssertTrue(settings.autoStartQueuedProjects)
     }
 

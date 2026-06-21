@@ -7,7 +7,7 @@ final class AppViewModel: ObservableObject {
     @Published var preferences: AppPreferences
     @Published var selectedTheme: AppTheme = .day
     @Published var selectedLanguage: AppLanguage = .chinese
-    @Published var autoStartQueuedProjects = true
+    @Published var autoStartQueuedProjects = false
     @Published var selectedSection: MainSection = .copy
     @Published var copyProjects: [CopyProject] = [] {
         didSet { orderedProjectsCache = Self.sortedProjects(copyProjects) }
