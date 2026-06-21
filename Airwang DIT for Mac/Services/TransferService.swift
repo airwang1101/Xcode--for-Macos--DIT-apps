@@ -16,6 +16,8 @@ struct TransferService {
         case copySizeMismatch(file: String, expected: Int64, actual: Int64)
         /// 源根目录仍在,但单个源文件缺失。视为单文件失败(记录并继续),不致命中断整批。
         case sourceFileMissing(path: String)
+        case sourceReadFailed(path: String, reason: String)
+        case destinationWriteFailed(path: String, reason: String)
 
         var errorDescription: String? {
             switch self {
@@ -37,6 +39,10 @@ struct TransferService {
                 return "\(file) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
             case let .sourceFileMissing(path):
                 return "源文件缺失，已记为单文件失败并跳过：\(path)"
+            case let .sourceReadFailed(path, reason):
+                return "源文件读取失败，已记为单文件失败并跳过：\(path)。\(reason)"
+            case let .destinationWriteFailed(path, reason):
+                return "目标盘写入失败，已停止当前阶段：\(path)。\(reason)"
             }
         }
     }
@@ -104,6 +110,14 @@ struct TransferService {
         var hasFailure: Bool {
             localURL == nil || (requestedTargetURL != nil && targetURL == nil)
         }
+    }
+
+    private struct PreflightReportDetails {
+        let failureType: String
+        let englishFailureType: String
+        let detail: String
+        let recommendation: String
+        let englishRecommendation: String
     }
 
     func runPrimaryStage(
@@ -212,6 +226,7 @@ struct TransferService {
         var copiedItemPaths = Set<String>()
         var fatalStopReason: String?
         var preflightFailureMessage: String?
+        var preflightReportDetails: PreflightReportDetails?
         var stageVerificationMode = project.verificationMode
         var spacePreflightResults: [DestinationSpacePreflight] = []
 
@@ -219,6 +234,10 @@ struct TransferService {
             try validateProjectStageSeparation(project: project, stage: stage)
             try validateRelativePaths(sources)
             try ensureAvailable(sourceBaseURL, role: sourceLabel)
+            let spacePreflightPayloadBytes = try livePayloadBytes(
+                sources.map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
+                under: sourceBaseURL
+            )
             try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
             try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
             try ensureDestinationFilesDoNotExist(
@@ -228,7 +247,7 @@ struct TransferService {
             )
             spacePreflightResults = makeSpacePreflightResults(
                 destinations: [destination],
-                payloadBytes: totalBytes
+                payloadBytes: spacePreflightPayloadBytes
             )
             state.spacePreflightResults = spacePreflightResults
             try validateSpacePreflight(spacePreflightResults)
@@ -240,6 +259,7 @@ struct TransferService {
             sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
             preflightFailureMessage = error.localizedDescription
+            preflightReportDetails = makePreflightReportDetails(for: error)
             failedFiles = sources.map(\.relativePath)
             skippedFiles = failedFiles
             fileRecords = sources.map { item in
@@ -537,6 +557,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            preflightReportDetails: preflightReportDetails,
             spacePreflightResults: spacePreflightResults,
             language: language
         )
@@ -643,6 +664,10 @@ struct TransferService {
             try validateDestinationSeparation(summary: summary)
             try validateRelativePaths(sources)
             try ensureRequiredLocations(summary: summary, destinations: destinations)
+            let spacePreflightPayloadBytes = try livePayloadBytes(
+                sources.map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
+                under: summary.sourceRootURL
+            )
             for destination in destinations {
                 let destinationFolderURL = destination.rootURL.appendingPathComponent(taskFolder, isDirectory: true)
                 try ensureDestinationFilesDoNotExist(
@@ -653,7 +678,7 @@ struct TransferService {
             }
             spacePreflightResults = makeSpacePreflightResults(
                 destinations: destinations,
-                payloadBytes: totalBytes
+                payloadBytes: spacePreflightPayloadBytes
             )
             state.spacePreflightResults = spacePreflightResults
             try validateSpacePreflight(spacePreflightResults)
@@ -686,6 +711,7 @@ struct TransferService {
             state.verificationStatus = "等待整批校验"
             await progress(state)
 
+            let processedBytesAtItemStart = state.processedBytes
             var installedFiles: [URL] = []
             do {
                 try checkInterruption(interruptionToken)
@@ -712,6 +738,8 @@ struct TransferService {
                 copiedItemPaths.insert(item.relativePath)
                 await progress(state)
             } catch {
+                state.processedBytes = processedBytesAtItemStart
+                state.currentSpeedBytesPerSecond = 0
                 let cleanupMessage = cleanupInstalledCopies(installedFiles)
                 let handledError: Error = error is CancellationError
                     ? TransferError.transferInterrupted(reason: Self.userCancellationReason)
@@ -962,6 +990,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            preflightReportDetails: nil,
             spacePreflightResults: spacePreflightResults,
             language: language
         )
@@ -1062,6 +1091,7 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: nil,
             verificationSummary: verificationSummary,
+            preflightReportDetails: makePreflightReportDetails(for: error),
             spacePreflightResults: spacePreflightResults,
             language: language
         )
@@ -1165,6 +1195,34 @@ struct TransferService {
         if PathSafety.pathsShareVolume(summary.targetURL, backupURL) {
             throw TransferError.pathOverlap("主目标盘与备份盘不能位于同一个磁盘卷上，请选择独立备份盘。")
         }
+    }
+
+    private func livePayloadBytes(
+        _ items: [(relativePath: String, fallbackSize: Int64)],
+        under sourceRootURL: URL
+    ) throws -> Int64 {
+        var total: Int64 = 0
+
+        for item in items {
+            let sourceURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceRootURL)
+            let liveSize: Int64
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRootURL)
+                let values = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values?.isRegularFile == true, let fileSize = values?.fileSize {
+                    liveSize = Int64(fileSize)
+                } else {
+                    liveSize = max(item.fallbackSize, 0)
+                }
+            } else {
+                liveSize = max(item.fallbackSize, 0)
+            }
+
+            let (newTotal, overflowed) = total.addingReportingOverflow(liveSize)
+            total = overflowed ? Int64.max : newTotal
+        }
+
+        return total
     }
 
     private func makeSpacePreflightResults(
@@ -1377,11 +1435,21 @@ struct TransferService {
         summary: ImportSelectionSummary,
         destinations: [Destination]
     ) -> String? {
+        if let pathSafetyError = error as? PathSafety.Error {
+            return pathSafetyError.localizedDescription
+        }
         if let transferError = error as? TransferError {
             switch transferError {
-            case .deviceUnavailable, .transferInterrupted:
+            case .deviceUnavailable,
+                 .transferInterrupted,
+                 .insufficientSpace,
+                 .capacityUnavailable,
+                 .destinationNotWritable,
+                 .pathOverlap,
+                 .destinationAlreadyExists,
+                 .destinationWriteFailed:
                 return transferError.localizedDescription
-            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch, .sourceFileMissing:
+            case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
                 break
             }
         }
@@ -1403,11 +1471,21 @@ struct TransferService {
         destinations: [Destination],
         sourceRole: String
     ) -> String? {
+        if let pathSafetyError = error as? PathSafety.Error {
+            return pathSafetyError.localizedDescription
+        }
         if let transferError = error as? TransferError {
             switch transferError {
-            case .deviceUnavailable, .transferInterrupted:
+            case .deviceUnavailable,
+                 .transferInterrupted,
+                 .insufficientSpace,
+                 .capacityUnavailable,
+                 .destinationNotWritable,
+                 .pathOverlap,
+                 .destinationAlreadyExists,
+                 .destinationWriteFailed:
                 return transferError.localizedDescription
-            case .insufficientSpace, .capacityUnavailable, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch, .sourceFileMissing:
+            case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
                 break
             }
         }
@@ -1503,6 +1581,10 @@ struct TransferService {
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> String? {
         let folder = destinationURL.deletingLastPathComponent()
+        let safetyMarginBytes = state.spacePreflightResults
+            .first { $0.destinationPath == destination.rootURL.path }?
+            .requirement.safetyMarginBytes
+            ?? SpacePreflightPolicy.minimumSafetyMarginBytes
 
         try checkInterruption(interruptionToken)
         try ensureAvailable(sourceRoot, role: sourceRole)
@@ -1511,14 +1593,38 @@ struct TransferService {
         try ensureWritableDestination(destination.rootURL, role: destination.label)
         try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRoot)
         try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            throw TransferError.destinationWriteFailed(
+                path: folder.path,
+                reason: error.localizedDescription
+            )
+        }
         try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
-        let temporaryURL = try makeTemporaryCopyURL(in: folder)
+        let temporaryURL: URL
+        do {
+            temporaryURL = try makeTemporaryCopyURL(in: folder)
+        } catch {
+            throw TransferError.destinationWriteFailed(
+                path: folder.path,
+                reason: error.localizedDescription
+            )
+        }
         try PathSafety.ensureSafeWritableFileTarget(for: temporaryURL, under: destination.rootURL)
 
         var temporaryFileCreated = false
+        let processedBytesAtFileStart = state.processedBytes
         do {
-            let sourceHandle = try FileHandle(forReadingFrom: sourceURL)
+            let sourceHandle: FileHandle
+            do {
+                sourceHandle = try FileHandle(forReadingFrom: sourceURL)
+            } catch {
+                throw TransferError.sourceReadFailed(
+                    path: sourceURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             var destinationHandle: FileHandle?
             var sourceClosed = false
             var destinationClosed = false
@@ -1532,7 +1638,14 @@ struct TransferService {
                 }
             }
 
-            destinationHandle = try createExclusiveFileHandle(at: temporaryURL)
+            do {
+                destinationHandle = try createExclusiveFileHandle(at: temporaryURL)
+            } catch {
+                throw TransferError.destinationWriteFailed(
+                    path: temporaryURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             temporaryFileCreated = true
 
             let chunkSize = 16 * 1024 * 1024
@@ -1541,7 +1654,7 @@ struct TransferService {
             var bytesSinceLastUpdate: Int64 = 0
             var bytesCopiedForFile: Int64 = 0
             var lastUpdateAt = Date()
-            var lastAvailabilityCheckAt = Date()
+            var lastAvailabilityCheckAt = Date.distantPast
             var sourceHasher = computeSourceHash ? SHA256() : nil
 
             while true {
@@ -1550,8 +1663,14 @@ struct TransferService {
                 if availabilityCheckAt.timeIntervalSince(lastAvailabilityCheckAt) >= availabilityCheckInterval {
                     try ensureAvailable(sourceRoot, role: sourceRole)
                     try ensureAvailable(destination.rootURL, role: destination.label)
-                    let remainingBytes = max(expectedSize - bytesCopiedForFile, 0)
-                    try ensureEnoughAvailableSpace(destination.rootURL, role: destination.label, requiredBytes: remainingBytes)
+                    let currentSourceSize = fileSize(at: sourceURL) ?? max(expectedSize, bytesCopiedForFile)
+                    let remainingBytes = max(currentSourceSize - bytesCopiedForFile, 0)
+                    let (requiredWithMargin, overflowed) = remainingBytes.addingReportingOverflow(safetyMarginBytes)
+                    try ensureEnoughAvailableSpace(
+                        destination.rootURL,
+                        role: destination.label,
+                        requiredBytes: overflowed ? Int64.max : requiredWithMargin
+                    )
                     lastAvailabilityCheckAt = availabilityCheckAt
                 }
 
@@ -1560,10 +1679,26 @@ struct TransferService {
                 // 排水点(await)间隔 0.5s,16MB 块不及时排水会让内存峰值飙到数百 MB。
                 var chunkBytes: Int64 = 0
                 try autoreleasepool {
-                    guard let data = try sourceHandle.read(upToCount: chunkSize), !data.isEmpty else {
+                    let data: Data?
+                    do {
+                        data = try sourceHandle.read(upToCount: chunkSize)
+                    } catch {
+                        throw TransferError.sourceReadFailed(
+                            path: sourceURL.path,
+                            reason: error.localizedDescription
+                        )
+                    }
+                    guard let data, !data.isEmpty else {
                         return
                     }
-                    try destinationHandle?.write(contentsOf: data)
+                    do {
+                        try destinationHandle?.write(contentsOf: data)
+                    } catch {
+                        throw TransferError.destinationWriteFailed(
+                            path: temporaryURL.path,
+                            reason: error.localizedDescription
+                        )
+                    }
                     sourceHasher?.update(data: data)
                     chunkBytes = Int64(data.count)
                 }
@@ -1587,7 +1722,14 @@ struct TransferService {
 
             state.phaseTitle = "正在确认写入到\(destination.label)"
             await progress(state)
-            try destinationHandle?.synchronize()
+            do {
+                try destinationHandle?.synchronize()
+            } catch {
+                throw TransferError.destinationWriteFailed(
+                    path: temporaryURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             try? sourceHandle.close()
             sourceClosed = true
             try? destinationHandle?.close()
@@ -1608,6 +1750,8 @@ struct TransferService {
                 hasher.finalize().map { String(format: "%02x", $0) }.joined()
             }
         } catch {
+            state.processedBytes = processedBytesAtFileStart
+            state.currentSpeedBytesPerSecond = 0
             if temporaryFileCreated {
                 try? FileManager.default.removeItem(at: temporaryURL)
             }
@@ -1623,7 +1767,10 @@ struct TransferService {
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 throw TransferError.destinationAlreadyExists(destinationURL.path)
             }
-            throw error
+            throw TransferError.destinationWriteFailed(
+                path: destinationURL.path,
+                reason: error.localizedDescription
+            )
         }
     }
 
@@ -1934,6 +2081,7 @@ struct TransferService {
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        preflightReportDetails: PreflightReportDetails?,
         spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
@@ -1960,7 +2108,7 @@ struct TransferService {
                 Naming Rule: \(summary.namingRule)
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
-                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: true))
                 \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
 
                 [Paths]
@@ -2030,7 +2178,7 @@ struct TransferService {
                 命名规则: \(summary.namingRule)
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
-                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: false))
                 \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
 
                 [路径信息]
@@ -2105,6 +2253,7 @@ struct TransferService {
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        preflightReportDetails: PreflightReportDetails?,
         spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
@@ -2141,7 +2290,7 @@ struct TransferService {
                 Verification Risk Note: \(project.verificationMode.reportWarning)
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
-                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: true))
                 \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
 
                 [Paths]
@@ -2216,7 +2365,7 @@ struct TransferService {
                 校验风险说明: \(project.verificationMode.reportWarning)
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
-                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: false))
                 \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
 
                 [路径信息]
@@ -2302,27 +2451,107 @@ struct TransferService {
         return "\(stage.destinationLabel)阶段完成但存在异常：发现 \(failedFiles.count) 个异常文件，请复核明细。"
     }
 
-    private func preflightReportSection(verificationSummary: String, isEnglish: Bool) -> String {
-        guard verificationSummary.contains("目标文件已存在") else {
+    private func preflightReportSection(details: PreflightReportDetails?, isEnglish: Bool) -> String {
+        guard let details else {
             return isEnglish
-                ? "[Preflight]\nResult: Passed or no destination collision detected"
-                : "[预检]\n结果: 通过或未发现目标文件冲突"
+                ? "[Preflight]\nResult: Passed"
+                : "[预检]\n结果: 通过"
         }
 
         if isEnglish {
             return """
             [Preflight]
-            Failure Type: Destination already exists
-            Failure Detail: \(verificationSummary)
-            Recommendation: Rename the project, choose another destination folder, or review the existing file manually before retrying
+            Failure Type: \(details.englishFailureType)
+            Failure Detail: \(details.detail)
+            Recommendation: \(details.englishRecommendation)
             """
         }
         return """
         [预检]
-        失败类型: 目标文件已存在
-        失败详情: \(verificationSummary)
-        处理建议: 改项目名、更换目标目录或人工确认后重试
+        失败类型: \(details.failureType)
+        失败详情: \(details.detail)
+        处理建议: \(details.recommendation)
         """
+    }
+
+    private func makePreflightReportDetails(for error: Error) -> PreflightReportDetails {
+        let detail = error.localizedDescription
+
+        if let pathSafetyError = error as? PathSafety.Error {
+            return PreflightReportDetails(
+                failureType: "路径安全检查失败",
+                englishFailureType: "Path safety check failed",
+                detail: pathSafetyError.localizedDescription,
+                recommendation: "检查目标路径、符号链接和目录结构后重试",
+                englishRecommendation: "Review the destination path, symbolic links, and directory structure before retrying"
+            )
+        }
+
+        if let transferError = error as? TransferError {
+            switch transferError {
+            case .destinationAlreadyExists:
+                return PreflightReportDetails(
+                    failureType: "目标文件已存在",
+                    englishFailureType: "Destination already exists",
+                    detail: detail,
+                    recommendation: "改项目名、更换目标目录或人工确认后重试",
+                    englishRecommendation: "Rename the project, choose another destination folder, or review the existing file manually before retrying"
+                )
+            case .insufficientSpace:
+                return PreflightReportDetails(
+                    failureType: "目标盘空间不足",
+                    englishFailureType: "Insufficient destination space",
+                    detail: detail,
+                    recommendation: "释放目标盘空间或更换容量充足的目标盘后重试",
+                    englishRecommendation: "Free destination space or choose a destination with sufficient capacity before retrying"
+                )
+            case .capacityUnavailable:
+                return PreflightReportDetails(
+                    failureType: "目标盘容量不可读",
+                    englishFailureType: "Destination capacity unavailable",
+                    detail: detail,
+                    recommendation: "重新连接目标盘并确认系统能够读取容量后重试",
+                    englishRecommendation: "Reconnect the destination and confirm its capacity is readable before retrying"
+                )
+            case .destinationNotWritable, .destinationWriteFailed:
+                return PreflightReportDetails(
+                    failureType: "目标盘不可写",
+                    englishFailureType: "Destination is not writable",
+                    detail: detail,
+                    recommendation: "检查目标盘权限、只读状态和连接状态后重试",
+                    englishRecommendation: "Check destination permissions, read-only status, and connection before retrying"
+                )
+            case .pathOverlap:
+                return PreflightReportDetails(
+                    failureType: "路径关系不安全",
+                    englishFailureType: "Unsafe path relationship",
+                    detail: detail,
+                    recommendation: "重新选择相互独立的源盘、主目标盘和备份盘",
+                    englishRecommendation: "Choose independent source, primary, and backup volumes before retrying"
+                )
+            case .deviceUnavailable:
+                return PreflightReportDetails(
+                    failureType: "设备不可访问",
+                    englishFailureType: "Device unavailable",
+                    detail: detail,
+                    recommendation: "重新连接设备并确认路径可访问后重试",
+                    englishRecommendation: "Reconnect the device and confirm the path is accessible before retrying"
+                )
+            case .transferInterrupted,
+                 .copySizeMismatch,
+                 .sourceFileMissing,
+                 .sourceReadFailed:
+                break
+            }
+        }
+
+        return PreflightReportDetails(
+            failureType: "预检失败",
+            englishFailureType: "Preflight failed",
+            detail: detail,
+            recommendation: "检查报告中的失败详情并排除问题后重试",
+            englishRecommendation: "Review the failure details, resolve the issue, and retry"
+        )
     }
 
     private func spacePreflightReportSection(

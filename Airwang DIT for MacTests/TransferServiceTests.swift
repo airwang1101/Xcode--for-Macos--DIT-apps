@@ -240,6 +240,41 @@ final class TransferServiceTests: XCTestCase {
         )
     }
 
+    func testInterruptedPartialCopyRollsBackProcessedBytes() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let data = Data(repeating: 0xA5, count: 32 * 1024 * 1024)
+        try writeFile(data, to: source.appendingPathComponent("large.mov"))
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "large.mov", data: data)],
+            mode: .sha256
+        )
+        let token = ImportInterruptionToken()
+
+        let result = try await TransferService().runPrimaryStage(
+            project: project,
+            interruptionToken: token
+        ) { state in
+            if state.processedBytes > 0, state.copiedFiles == 0 {
+                token.stop(reason: "测试中断部分文件")
+            }
+        }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(result.finalState.copiedFiles, 0)
+        XCTAssertEqual(result.finalState.processedBytes, 0, "已删除的临时文件字节不应保留在完成进度中")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: project.primaryImportURL.appendingPathComponent("large.mov").path)
+        )
+    }
+
     /// 锁定行为：扫描时记录的 size 与拷贝时实际不一致（文件在扫描后被改动）时，
     /// 引擎应按实际字节完整拷贝并通过校验，不因 size 陈旧而误报失败。
     /// 对应 `copyFile` 中"对比实际读取字节数而非 expectedSize"的设计。
@@ -272,6 +307,48 @@ final class TransferServiceTests: XCTestCase {
             try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")),
             data,
             "目标内容应与源实际内容一致"
+        )
+    }
+
+    func testSpacePreflightUsesLiveSourceSizeWhenScanSizeIsSmaller() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume(size: "1200m") else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let available = try XCTUnwrap(DiskCapacityResolver.capacity(for: volume.mount).availableCapacity)
+        guard available > SpacePreflightPolicy.minimumSafetyMarginBytes + 20_000_000 else {
+            throw XCTSkip("测试卷可用空间不足以构造扫描大小陈旧场景。")
+        }
+        let liveSize = available - SpacePreflightPolicy.minimumSafetyMarginBytes + 50_000_000
+        let sourceURL = source.appendingPathComponent("grown.mov")
+        try writeSparseFile(size: liveSize, to: sourceURL)
+        let staleItem = ProjectMediaItem(
+            id: sourceURL.path,
+            filePath: sourceURL.path,
+            relativePath: "grown.mov",
+            displayName: "grown.mov",
+            createdAt: Date(timeIntervalSince1970: 0),
+            size: 1,
+            mediaKindRawValue: ScanFilter.video.rawValue
+        )
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [staleItem],
+            mode: .sizeOnly,
+            taskFolder: "LiveSize-\(UUID().uuidString.prefix(8))"
+        )
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(result.finalState.copiedFiles, 0)
+        XCTAssertTrue(result.report.verificationSummary.contains("空间不足"))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: project.primaryImportURL.appendingPathComponent("grown.mov").path)
         )
     }
 
@@ -351,6 +428,96 @@ final class TransferServiceTests: XCTestCase {
 
         XCTAssertFalse(result.report.success, "源根丢失整体应判失败")
         XCTAssertNotNil(result.report.interruptionReason, "源根（源设备）丢失必须触发致命中断")
+    }
+
+    func testDestinationCollisionAfterPreflightStopsRemainingFiles() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let firstData = Data("first".utf8)
+        let secondData = Data("second".utf8)
+        let thirdData = Data("third".utf8)
+        try writeFile(firstData, to: source.appendingPathComponent("a.mov"))
+        try writeFile(secondData, to: source.appendingPathComponent("b.mov"))
+        try writeFile(thirdData, to: source.appendingPathComponent("c.mov"))
+        let items = [
+            mediaItem(sourceRoot: source, relativePath: "a.mov", data: firstData),
+            mediaItem(sourceRoot: source, relativePath: "b.mov", data: secondData),
+            mediaItem(sourceRoot: source, relativePath: "c.mov", data: thirdData)
+        ]
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: items,
+            mode: .sizeOnly,
+            taskFolder: "RuntimeCollision-\(UUID().uuidString.prefix(8))"
+        )
+        let collisionURL = project.primaryImportURL.appendingPathComponent("b.mov")
+        let thirdTargetURL = project.primaryImportURL.appendingPathComponent("c.mov")
+
+        let result = try await TransferService().runPrimaryStage(project: project) { state in
+            if state.copiedFiles == 1,
+               !FileManager.default.fileExists(atPath: collisionURL.path) {
+                _ = FileManager.default.createFile(
+                    atPath: collisionURL.path,
+                    contents: Data("external payload".utf8)
+                )
+            }
+        }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertNotNil(result.report.interruptionReason, "运行期目标冲突必须停止阶段")
+        XCTAssertTrue(result.report.copyFailedFiles.contains("b.mov"))
+        XCTAssertTrue(result.report.skippedFiles.contains("c.mov"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: thirdTargetURL.path))
+    }
+
+    func testPathSafetyFailureAfterPreflightStopsRemainingFiles() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let external = try makeTempDir(); defer { cleanup(external) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let firstData = Data("first".utf8)
+        let secondData = Data("second".utf8)
+        let thirdData = Data("third".utf8)
+        try writeFile(firstData, to: source.appendingPathComponent("a.mov"))
+        try writeFile(secondData, to: source.appendingPathComponent("redirected/b.mov"))
+        try writeFile(thirdData, to: source.appendingPathComponent("c.mov"))
+        let items = [
+            mediaItem(sourceRoot: source, relativePath: "a.mov", data: firstData),
+            mediaItem(sourceRoot: source, relativePath: "redirected/b.mov", data: secondData),
+            mediaItem(sourceRoot: source, relativePath: "c.mov", data: thirdData)
+        ]
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: items,
+            mode: .sizeOnly,
+            taskFolder: "RuntimeSymlink-\(UUID().uuidString.prefix(8))"
+        )
+        let symlinkURL = project.primaryImportURL.appendingPathComponent("redirected", isDirectory: true)
+        let thirdTargetURL = project.primaryImportURL.appendingPathComponent("c.mov")
+
+        let result = try await TransferService().runPrimaryStage(project: project) { state in
+            if state.copiedFiles == 1,
+               !FileManager.default.fileExists(atPath: symlinkURL.path) {
+                try? FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: external)
+            }
+        }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertNotNil(result.report.interruptionReason, "运行期路径安全失败必须停止阶段")
+        XCTAssertTrue(result.report.skippedFiles.contains("c.mov"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: thirdTargetURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: external.appendingPathComponent("b.mov").path))
     }
 
     /// M5：非缺失的单文件读失败（源根仍在）也应记为单文件失败并继续。
@@ -491,6 +658,10 @@ final class TransferServiceTests: XCTestCase {
 
         XCTAssertFalse(result.report.success)
         XCTAssertEqual(try Data(contentsOf: protectedURL), protectedData)
+        let localReportPath = try XCTUnwrap(result.report.localReportDocumentPath)
+        let localReport = try String(contentsOfFile: localReportPath, encoding: .utf8)
+        XCTAssertTrue(localReport.contains("失败类型: 路径安全检查失败"))
+        XCTAssertFalse(localReport.contains("[预检]\n结果: 通过"))
     }
 
     func testRejectDestinationInsideSymlinkAncestor() async throws {
@@ -635,6 +806,19 @@ final class TransferServiceTests: XCTestCase {
         try data.write(to: url)
     }
 
+    private func writeSparseFile(size: Int64, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(size))
+    }
+
     private func mediaItem(sourceRoot: URL, relativePath: String, data: Data) -> ProjectMediaItem {
         let fileURL = sourceRoot.appendingPathComponent(relativePath)
         return ProjectMediaItem(
@@ -676,7 +860,7 @@ final class TransferServiceTests: XCTestCase {
     /// 用 hdiutil 创建并挂载一个独立的临时磁盘卷，作为目标/备份盘，
     /// 以满足「目标盘必须与源盘不同卷」的安全预检。
     /// 返回挂载点与一个 detach 闭包；环境不支持时返回 nil（调用方应 XCTSkip）。
-    private func makeSeparateVolume() throws -> (mount: URL, detach: () -> Void)? {
+    private func makeSeparateVolume(size: String = "2g") throws -> (mount: URL, detach: () -> Void)? {
         let fileManager = FileManager.default
         let token = String(UUID().uuidString.prefix(8))
         let dmgPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("AirwangVol-\(token).sparseimage")
@@ -697,7 +881,7 @@ final class TransferServiceTests: XCTestCase {
             return process.terminationStatus == 0
         }
 
-        guard hdiutil(["create", "-size", "2g", "-type", "SPARSE", "-fs", "HFS+", "-volname", "Airwang\(token)", "-quiet", dmgPath]) else {
+        guard hdiutil(["create", "-size", size, "-type", "SPARSE", "-fs", "HFS+", "-volname", "Airwang\(token)", "-quiet", dmgPath]) else {
             return nil
         }
         try? fileManager.createDirectory(atPath: mountPath, withIntermediateDirectories: true)
