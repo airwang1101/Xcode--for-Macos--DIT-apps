@@ -811,7 +811,7 @@ struct ContentView: View {
         .frame(minHeight: 320, alignment: .topLeading)
         .padding(narrowLayout ? 18 : 30)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
-        .animation(responsiveLayoutAnimation, value: hoveredActivityDay)
+        // hover 不再驱动整张卡片动画——高亮动画已下沉到单个格子（见 heatmapCell）。
         .animation(responsiveLayoutAnimation, value: selectedActivityMode)
         .animation(responsiveLayoutAnimation, value: narrowLayout)
     }
@@ -922,6 +922,8 @@ struct ContentView: View {
     private func heatmapGrid(heatmap: CopyStatisticsHeatmap, availableWidth: CGFloat) -> some View {
         let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: heatmap.weeks.count)
         let cellGap = heatmapCellGap(availableWidth: availableWidth)
+        // 提前算一次"今天"，避免在 371 个格子里各调一次 Calendar.startOfDay。
+        let todayStart = Calendar.current.startOfDay(for: Date())
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: cellGap) {
@@ -929,11 +931,26 @@ struct ContentView: View {
                     VStack(spacing: cellGap) {
                         ForEach(0..<week.count, id: \.self) { dayIndex in
                             if let day = week[dayIndex] {
-                                heatmapCell(day, maxBytes: heatmap.maxBytes, size: cellSize)
+                                heatmapCell(day, maxBytes: heatmap.maxBytes, size: cellSize, todayStart: todayStart)
                             } else {
                                 heatmapEmptyCell(size: cellSize)
                             }
                         }
+                    }
+                }
+            }
+            // 用单个连续 hover 检测器代替每格的 onHover，避免几百个 NSTrackingArea 拖垮滚动。
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let point):
+                    if let day = heatmapDay(at: point, in: heatmap, cellSize: cellSize, cellGap: cellGap),
+                       hoveredActivityDay?.id != day.id {
+                        hoveredActivityDay = day
+                    }
+                case .ended:
+                    if hoveredActivityDay != nil {
+                        hoveredActivityDay = nil
                     }
                 }
             }
@@ -2052,10 +2069,10 @@ struct ContentView: View {
         return "\(report.selectedFileCount) 个文件  ·  \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
     }
 
-    private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat) -> some View {
+    private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat, todayStart: Date) -> some View {
         let level = heatmapLevel(bytes: day.bytes, maxBytes: maxBytes)
         let isHovered = hoveredActivityDay?.id == day.id
-        let isToday = day.date == Calendar.current.startOfDay(for: Date())
+        let isToday = day.date == todayStart
 
         return RoundedRectangle(cornerRadius: 3, style: .continuous)
             .fill(heatmapColor(level: level))
@@ -2069,15 +2086,26 @@ struct ContentView: View {
             .frame(width: size, height: size)
             .scaleEffect(isHovered ? 1.10 : 1)
             .zIndex(isHovered ? 1 : 0)
-            .contentShape(Rectangle())
-            .help(heatmapDayHelpText(day, mode: selectedActivityMode))
-            .onHover { isInside in
-                if isInside {
-                    hoveredActivityDay = day
-                } else if hoveredActivityDay?.id == day.id {
-                    hoveredActivityDay = nil
-                }
-            }
+            // 高亮动画只作用于当前格子，避免整张卡片随 hover 跑弹簧。
+            .animation(reduceMotionEffects ? nil : .easeOut(duration: 0.12), value: isHovered)
+    }
+
+    /// 把网格本地坐标映射回某一天。每列恒为 7 格、列宽/行高为固定步长，可直接整除定位。
+    private func heatmapDay(at point: CGPoint, in heatmap: CopyStatisticsHeatmap, cellSize: CGFloat, cellGap: CGFloat) -> CopyActivityDay? {
+        let stride = cellSize + cellGap
+        guard stride > 0, point.x >= 0, point.y >= 0 else { return nil }
+
+        let column = Int(point.x / stride)
+        let row = Int(point.y / stride)
+        guard column >= 0, column < heatmap.weeks.count, row >= 0, row < 7 else { return nil }
+
+        // 落在格间空隙里时返回 nil，由调用方保持上一次高亮，避免抖动。
+        guard point.x - CGFloat(column) * stride <= cellSize,
+              point.y - CGFloat(row) * stride <= cellSize else { return nil }
+
+        let week = heatmap.weeks[column]
+        guard row < week.count else { return nil }
+        return week[row]
     }
 
     private func heatmapEmptyCell(size: CGFloat) -> some View {
@@ -2160,34 +2188,6 @@ struct ContentView: View {
         return "\(month)月"
     }
 
-    private func heatmapDayHelpText(_ day: CopyActivityDay, mode: StatisticsActivityMode) -> String {
-        let amountLabel: String
-        switch mode {
-        case .daily:
-            amountLabel = viewModel.selectedLanguage == .english ? "Copied" : "当天拷贝量"
-        case .weekly:
-            amountLabel = viewModel.selectedLanguage == .english ? "Copied this week" : "本周拷贝量"
-        case .cumulative:
-            amountLabel = viewModel.selectedLanguage == .english ? "Cumulative copied" : "累计拷贝量"
-        }
-
-        if viewModel.selectedLanguage == .english {
-            return [
-                fullDateText(day.date),
-                "\(amountLabel) \(ByteDisplayFormatter.string(fromByteCount: day.bytes))",
-                "\(day.reportCount) reports · \(day.files) files",
-                "\(day.successCount) successful reports"
-            ].joined(separator: "\n")
-        }
-
-        return [
-            fullDateText(day.date),
-            "\(amountLabel) \(ByteDisplayFormatter.string(fromByteCount: day.bytes))",
-            "\(day.reportCount) 份报告 · \(day.files) 个文件",
-            "\(day.successCount) 份成功报告"
-        ].joined(separator: "\n")
-    }
-
     private func heatmapDayDetailText(_ day: CopyActivityDay) -> String {
         if viewModel.selectedLanguage == .english {
             return "\(day.reportCount) reports · \(day.files) files"
@@ -2225,17 +2225,6 @@ struct ContentView: View {
             formatter.setLocalizedDateFormatFromTemplate("MMM d")
         } else {
             formatter.dateFormat = "M月d日"
-        }
-        return formatter.string(from: date)
-    }
-
-    private func fullDateText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: viewModel.selectedLanguage.localeIdentifier)
-        if viewModel.selectedLanguage == .english {
-            formatter.setLocalizedDateFormatFromTemplate("EEEE, MMM d, yyyy")
-        } else {
-            formatter.dateFormat = "yyyy年M月d日 EEEE"
         }
         return formatter.string(from: date)
     }
