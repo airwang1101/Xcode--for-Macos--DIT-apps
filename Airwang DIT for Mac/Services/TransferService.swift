@@ -11,6 +11,7 @@ struct TransferService {
         case destinationNotWritable(role: String, path: String)
         case transferInterrupted(reason: String)
         case pathOverlap(String)
+        case destinationAlreadyExists(String)
         case copySizeMismatch(file: String, expected: Int64, actual: Int64)
 
         var errorDescription: String? {
@@ -25,6 +26,8 @@ struct TransferService {
                 return reason
             case let .pathOverlap(message):
                 return message
+            case let .destinationAlreadyExists(path):
+                return "目标文件已存在，为避免覆盖素材，已停止写入：\(path)"
             case let .copySizeMismatch(file, expected, actual):
                 return "\(file) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
             }
@@ -210,6 +213,11 @@ struct TransferService {
             try ensureAvailable(sourceBaseURL, role: sourceLabel)
             try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
             try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
+            try ensureDestinationFilesDoNotExist(
+                relativePaths: sources.map(\.relativePath),
+                destinationFolderURL: destinationFolderURL,
+                destinationRootURL: destinationRootURL
+            )
             try preflightSpace(destinations: [destination], requiredBytes: totalBytes)
             sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
@@ -615,6 +623,14 @@ struct TransferService {
             try validateDestinationSeparation(summary: summary)
             try validateRelativePaths(sources)
             try ensureRequiredLocations(summary: summary, destinations: destinations)
+            for destination in destinations {
+                let destinationFolderURL = destination.rootURL.appendingPathComponent(taskFolder, isDirectory: true)
+                try ensureDestinationFilesDoNotExist(
+                    relativePaths: sources.map(\.relativePath),
+                    destinationFolderURL: destinationFolderURL,
+                    destinationRootURL: destination.rootURL
+                )
+            }
             try preflightSpace(destinations: destinations, requiredBytes: totalBytes)
         } catch {
             let result = makePreflightFailureResult(
@@ -1285,6 +1301,24 @@ struct TransferService {
         }
     }
 
+    private func ensureDestinationFilesDoNotExist(
+        relativePaths: [String],
+        destinationFolderURL: URL,
+        destinationRootURL: URL
+    ) throws {
+        for relativePath in relativePaths {
+            let destinationURL = try PathSafety.resolvedURL(for: relativePath, under: destinationFolderURL)
+            try ensureDestinationDoesNotExist(destinationURL, under: destinationRootURL)
+        }
+    }
+
+    private func ensureDestinationDoesNotExist(_ url: URL, under rootURL: URL) throws {
+        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
+        if FileManager.default.fileExists(atPath: url.path) {
+            throw TransferError.destinationAlreadyExists(url.path)
+        }
+    }
+
     private func ensureEnoughAvailableSpace(_ url: URL, role: String, requiredBytes: Int64) throws {
         guard requiredBytes > 0, let available = availableCapacity(for: url), available < requiredBytes else {
             return
@@ -1301,7 +1335,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .copySizeMismatch:
+            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
                 break
             }
         }
@@ -1327,7 +1361,7 @@ struct TransferService {
             switch transferError {
             case .deviceUnavailable, .transferInterrupted:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .copySizeMismatch:
+            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .destinationAlreadyExists, .copySizeMismatch:
                 break
             }
         }
@@ -1430,9 +1464,9 @@ struct TransferService {
         try ensureAvailable(destination.rootURL, role: destination.label)
         try ensureWritableDestination(destination.rootURL, role: destination.label)
         try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRoot)
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destination.rootURL)
+        try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destination.rootURL)
+        try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
         let temporaryURL = try makeTemporaryCopyURL(in: folder)
         try PathSafety.ensureSafeWritableFileTarget(for: temporaryURL, under: destination.rootURL)
 
@@ -1536,28 +1570,14 @@ struct TransferService {
     }
 
     private func installCopiedFile(from temporaryURL: URL, to destinationURL: URL, under destinationRootURL: URL) throws {
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            let replacementURL = destinationURL
-                .deletingLastPathComponent()
-                .appendingPathComponent(".airwang-replacement-\(UUID().uuidString)", isDirectory: false)
-            try PathSafety.ensureSafeWritableFileTarget(for: replacementURL, under: destinationRootURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: replacementURL)
-            do {
-                try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
-                _ = try FileManager.default.replaceItemAt(
-                    destinationURL,
-                    withItemAt: replacementURL,
-                    backupItemName: nil,
-                    options: []
-                )
-            } catch {
-                try? FileManager.default.removeItem(at: replacementURL)
-                throw error
-            }
-        } else {
-            try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
+        try ensureDestinationDoesNotExist(destinationURL, under: destinationRootURL)
+        do {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        } catch {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                throw TransferError.destinationAlreadyExists(destinationURL.path)
+            }
+            throw error
         }
     }
 
@@ -1893,6 +1913,7 @@ struct TransferService {
                 Naming Rule: \(summary.namingRule)
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
+                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
 
                 [Paths]
                 Source Device Name: \(summary.sourceVolume.name)
@@ -1961,6 +1982,7 @@ struct TransferService {
                 命名规则: \(summary.namingRule)
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
+                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
 
                 [路径信息]
                 源设备名称: \(summary.sourceVolume.name)
@@ -2069,6 +2091,7 @@ struct TransferService {
                 Verification Risk Note: \(project.verificationMode.reportWarning)
                 Verification Summary: \(verificationSummary)
                 Safety Event: \(interruptionReason ?? "None")
+                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: true))
 
                 [Paths]
                 \(routeLine)
@@ -2142,6 +2165,7 @@ struct TransferService {
                 校验风险说明: \(project.verificationMode.reportWarning)
                 校验结论: \(verificationSummary)
                 安全事件: \(interruptionReason ?? "无")
+                \(preflightReportSection(verificationSummary: verificationSummary, isEnglish: false))
 
                 [路径信息]
                 \(routeLine)
@@ -2226,6 +2250,29 @@ struct TransferService {
         return "\(stage.destinationLabel)阶段完成但存在异常：发现 \(failedFiles.count) 个异常文件，请复核明细。"
     }
 
+    private func preflightReportSection(verificationSummary: String, isEnglish: Bool) -> String {
+        guard verificationSummary.contains("目标文件已存在") else {
+            return isEnglish
+                ? "[Preflight]\nResult: Passed or no destination collision detected"
+                : "[预检]\n结果: 通过或未发现目标文件冲突"
+        }
+
+        if isEnglish {
+            return """
+            [Preflight]
+            Failure Type: Destination already exists
+            Failure Detail: \(verificationSummary)
+            Recommendation: Rename the project, choose another destination folder, or review the existing file manually before retrying
+            """
+        }
+        return """
+        [预检]
+        失败类型: 目标文件已存在
+        失败详情: \(verificationSummary)
+        处理建议: 改项目名、更换目标目录或人工确认后重试
+        """
+    }
+
     private func finalProjectPhaseTitle(
         stage: ProjectTransferStage,
         failedFiles: [String],
@@ -2258,8 +2305,9 @@ struct TransferService {
         if let targetURL {
             if let targetRootURL {
                 do {
-                    try writeText(content, to: targetURL, under: targetRootURL)
-                    writtenTargetURL = targetURL
+                    let outputURL = nonCollidingReportURL(for: targetURL)
+                    try writeText(content, to: outputURL, under: targetRootURL)
+                    writtenTargetURL = outputURL
                 } catch {
                     notes.append("目标盘报告写入失败：\(error.localizedDescription)")
                 }
@@ -2271,8 +2319,9 @@ struct TransferService {
         }
 
         do {
-            try writeText(content, to: localURL, under: AppStorageScope.applicationSupportURL)
-            writtenLocalURL = localURL
+            let outputURL = nonCollidingReportURL(for: localURL)
+            try writeText(content, to: outputURL, under: AppStorageScope.applicationSupportURL)
+            writtenLocalURL = outputURL
         } catch {
             notes.append("本地备份报告写入失败：\(error.localizedDescription)")
         }
@@ -2299,8 +2348,9 @@ struct TransferService {
         if let targetURL {
             if let targetRootURL {
                 do {
-                    try writeText(to: targetURL, under: targetRootURL, body: body)
-                    writtenTargetURL = targetURL
+                    let outputURL = nonCollidingReportURL(for: targetURL)
+                    try writeText(to: outputURL, under: targetRootURL, body: body)
+                    writtenTargetURL = outputURL
                 } catch {
                     notes.append("目标盘报告写入失败：\(error.localizedDescription)")
                 }
@@ -2312,8 +2362,9 @@ struct TransferService {
         }
 
         do {
-            try writeText(to: localURL, under: AppStorageScope.applicationSupportURL, body: body)
-            writtenLocalURL = localURL
+            let outputURL = nonCollidingReportURL(for: localURL)
+            try writeText(to: outputURL, under: AppStorageScope.applicationSupportURL, body: body)
+            writtenLocalURL = outputURL
         } catch {
             notes.append("本地备份报告写入失败：\(error.localizedDescription)")
         }
@@ -2328,14 +2379,9 @@ struct TransferService {
     }
 
     private func writeText(_ content: String, to url: URL, under rootURL: URL) throws {
-        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
-        try content.write(to: url, atomically: true, encoding: .utf8)
+        try writeText(to: url, under: rootURL) { writer in
+            try writer.write(content)
+        }
     }
 
     private func writeText(
@@ -2361,21 +2407,34 @@ struct TransferService {
             try body(writer)
             try handle.synchronize()
             try handle.close()
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(
-                    url,
-                    withItemAt: temporaryURL,
-                    backupItemName: nil,
-                    options: .usingNewMetadataOnly
-                )
-            } else {
+            try ensureDestinationDoesNotExist(url, under: rootURL)
+            do {
                 try FileManager.default.moveItem(at: temporaryURL, to: url)
+            } catch {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    throw TransferError.destinationAlreadyExists(url.path)
+                }
+                throw error
             }
         } catch {
             try? handle.close()
             try? FileManager.default.removeItem(at: temporaryURL)
             throw error
         }
+    }
+
+    private func nonCollidingReportURL(for preferredURL: URL) -> URL {
+        guard FileManager.default.fileExists(atPath: preferredURL.path) else {
+            return preferredURL
+        }
+
+        let pathExtension = preferredURL.pathExtension
+        let stem = preferredURL.deletingPathExtension().lastPathComponent
+        let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+        let fileName = pathExtension.isEmpty
+            ? "\(stem)_\(suffix)"
+            : "\(stem)_\(suffix).\(pathExtension)"
+        return preferredURL.deletingLastPathComponent().appendingPathComponent(fileName, isDirectory: false)
     }
 
     private func writeNumberedSection(_ items: [String], emptyText: String, to writer: ReportTextWriter) throws {

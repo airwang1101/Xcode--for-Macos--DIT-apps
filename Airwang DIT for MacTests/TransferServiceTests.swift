@@ -317,6 +317,195 @@ final class TransferServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: goodTarget), goodData, "已拷贝文件内容应完整")
     }
 
+    func testPrimaryStageFailsWhenDestinationFileAlreadyExists() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("new source payload".utf8)
+        let existingData = Data("existing destination payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let taskFolder = "ExistingPrimary-\(UUID().uuidString.prefix(8))"
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: taskFolder
+        )
+        let destination = project.primaryImportURL.appendingPathComponent("a.mov")
+        try writeFile(existingData, to: destination)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(try Data(contentsOf: destination), existingData, "既有目标文件必须保持原内容")
+        XCTAssertTrue(result.report.verificationSummary.contains("目标文件已存在"))
+        let localReportPath = try XCTUnwrap(result.report.localReportDocumentPath)
+        let localReport = try String(contentsOfFile: localReportPath, encoding: .utf8)
+        XCTAssertTrue(localReport.contains("失败类型: 目标文件已存在"))
+        XCTAssertTrue(localReport.contains("处理建议: 改项目名、更换目标目录或人工确认后重试"))
+    }
+
+    func testBackupStageFailsWhenDestinationFileAlreadyExists() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primaryVolume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建主目标测试卷，跳过。")
+        }
+        defer { primaryVolume.detach() }
+        guard let backupVolume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建备份测试卷，跳过。")
+        }
+        defer { backupVolume.detach() }
+
+        let sourceData = Data("primary payload".utf8)
+        let existingData = Data("existing backup payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let project = makeProject(
+            source: source,
+            target: primaryVolume.mount,
+            backup: backupVolume.mount,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: "ExistingBackup-\(UUID().uuidString.prefix(8))"
+        )
+        let primaryResult = try await TransferService().runPrimaryStage(project: project) { _ in }
+        XCTAssertTrue(primaryResult.report.success)
+
+        let backupDestination = try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")
+        try writeFile(existingData, to: backupDestination)
+
+        let result = try await TransferService().runBackupStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(try Data(contentsOf: backupDestination), existingData, "既有备份文件必须保持原内容")
+        XCTAssertTrue(result.report.verificationSummary.contains("目标文件已存在"))
+    }
+
+    func testRejectExistingDestinationSymlink() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let external = try makeTempDir(); defer { cleanup(external) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("source payload".utf8)
+        let protectedData = Data("protected payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let protectedURL = external.appendingPathComponent("protected.mov")
+        try writeFile(protectedData, to: protectedURL)
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: "SymlinkFile-\(UUID().uuidString.prefix(8))"
+        )
+        try FileManager.default.createDirectory(at: project.primaryImportURL, withIntermediateDirectories: true)
+        let destination = project.primaryImportURL.appendingPathComponent("a.mov")
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: protectedURL)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(try Data(contentsOf: protectedURL), protectedData)
+    }
+
+    func testRejectDestinationInsideSymlinkAncestor() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("nested payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("day1/a.mov"))
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "day1/a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: "SymlinkAncestor-\(UUID().uuidString.prefix(8))"
+        )
+        let redirectDirectory = volume.mount.appendingPathComponent("redirect", isDirectory: true)
+        try FileManager.default.createDirectory(at: redirectDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project.primaryImportURL, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: project.primaryImportURL.appendingPathComponent("day1", isDirectory: true),
+            withDestinationURL: redirectDirectory
+        )
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: redirectDirectory.appendingPathComponent("a.mov").path))
+    }
+
+    func testRejectExistingDestinationDirectory() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("source payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: "ExistingDirectory-\(UUID().uuidString.prefix(8))"
+        )
+        let destination = project.primaryImportURL.appendingPathComponent("a.mov", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertFalse(result.report.success)
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
+    func testReportWriterDoesNotOverwriteExistingReport() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let volume = try makeSeparateVolume() else {
+            throw XCTSkip("无法创建独立测试卷，跳过。")
+        }
+        defer { volume.detach() }
+
+        let sourceData = Data("report collision payload".utf8)
+        try writeFile(sourceData, to: source.appendingPathComponent("a.mov"))
+        let taskFolder = "ReportCollision-\(UUID().uuidString.prefix(8))"
+        let project = makeProject(
+            source: source,
+            target: volume.mount,
+            backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "a.mov", data: sourceData)],
+            mode: .sha256,
+            taskFolder: taskFolder
+        )
+        let existingReport = project.primaryImportURL
+            .appendingPathComponent("Airwang_Primary_Copy_Report_\(taskFolder).txt")
+        let originalReportData = Data("existing report must remain unchanged".utf8)
+        try writeFile(originalReportData, to: existingReport)
+
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+
+        XCTAssertTrue(result.report.success)
+        XCTAssertEqual(try Data(contentsOf: existingReport), originalReportData)
+        XCTAssertNotEqual(result.report.reportDocumentPath, existingReport.path)
+        XCTAssertNotNil(result.report.reportDocumentPath)
+    }
+
     // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {

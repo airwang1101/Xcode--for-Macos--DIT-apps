@@ -1284,14 +1284,14 @@ final class AppViewModel: ObservableObject {
                 updateProject(projectID) { item in
                     if item.hasBackup {
                         item.status = .blocked
-                        item.errorMessage = "主盘异常，备份已阻塞。请查看第一份主盘报告后重试。"
+                        item.errorMessage = "\(primaryResult.report.verificationSummary) 备份已阻塞，请查看第一份主盘报告后重试。"
                         item.backupCopyState.isBlocked = true
                         item.backupCopyState.detail = "主盘异常，备份已阻塞"
                         item.backupVerifyState.isBlocked = true
                         item.backupVerifyState.detail = "主盘异常，备份已阻塞"
                     } else {
                         item.status = .failed
-                        item.errorMessage = "主盘拷贝或校验异常。此项目未配置备份盘，请查看主盘报告后重试。"
+                        item.errorMessage = primaryResult.report.verificationSummary
                         item.backupCopyState.detail = "未配置备份盘"
                         item.backupVerifyState.detail = "未配置备份盘"
                     }
