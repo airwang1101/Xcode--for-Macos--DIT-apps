@@ -42,7 +42,6 @@ struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var isWindowResizing = false
     @State private var resizeSettlingTask: Task<Void, Never>?
-    @State private var hoveredActivityDay: CopyActivityDay?
     @State private var selectedActivityMode: StatisticsActivityMode = .daily
 
     var body: some View {
@@ -62,7 +61,7 @@ struct ContentView: View {
         .fontDesign(.serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
         .transaction { transaction in
-            if reduceMotionEffects {
+            if reduceMotionEffects || isWindowResizing {
                 transaction.animation = nil
             }
         }
@@ -208,18 +207,18 @@ struct ContentView: View {
                         .padding(.top, contentPadding)
                         .padding(.bottom, bottomReserve)
                         .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
-                        .animation(responsiveLayoutAnimation, value: compact)
-                        .animation(responsiveLayoutAnimation, value: heightCompact)
-                        .animation(responsiveLayoutAnimation, value: portraitOptimized)
+                        .animation(stableLayoutAnimation, value: compact)
+                        .animation(stableLayoutAnimation, value: heightCompact)
+                        .animation(stableLayoutAnimation, value: portraitOptimized)
                 }
                 .overlay(alignment: .bottom) {
                     bottomTabBar(availableWidth: availableWidth, heightCompact: heightCompact)
                         .padding(.horizontal, contentPadding)
                         .padding(.bottom, bottomInset)
                         .zIndex(2)
-                        .animation(responsiveLayoutAnimation, value: compact)
-                        .animation(responsiveLayoutAnimation, value: heightCompact)
-                        .animation(responsiveLayoutAnimation, value: portraitOptimized)
+                        .animation(stableLayoutAnimation, value: compact)
+                        .animation(stableLayoutAnimation, value: heightCompact)
+                        .animation(stableLayoutAnimation, value: portraitOptimized)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 .onChange(of: proxy.size) { _, _ in
@@ -244,13 +243,15 @@ struct ContentView: View {
                     dashboardWorkspace(availableWidth: availableWidth, portraitOptimized: portraitOptimized)
                 case .backup:
                     backupWorkspace(portraitOptimized: portraitOptimized)
+                case .organize:
+                    organizeWorkspace(availableWidth: availableWidth)
                 case .statistics:
                     statisticsWorkspace(availableWidth: availableWidth)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .transition(responsiveLayoutTransition)
-            .animation(responsiveLayoutAnimation, value: viewModel.selectedSection)
+            .animation(sectionSwitchAnimation, value: viewModel.selectedSection)
         }
     }
 
@@ -276,7 +277,7 @@ struct ContentView: View {
             }
         }
         .transition(responsiveLayoutTransition)
-        .animation(responsiveLayoutAnimation, value: tightHeader)
+        .animation(stableLayoutAnimation, value: tightHeader)
     }
 
     private func headerTitle(compact: Bool) -> some View {
@@ -362,8 +363,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .help(helpText)
         .accessibilityLabel(Text(helpText))
-        .animation(responsiveLayoutAnimation, value: isActive)
-        .animation(responsiveLayoutAnimation, value: systemImage)
+        .animation(controlAnimation, value: isActive)
+        .animation(controlAnimation, value: systemImage)
     }
 
     @ViewBuilder
@@ -539,6 +540,432 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private func organizeWorkspace(availableWidth: CGFloat) -> some View {
+        let stacked = availableWidth < 1040
+        let sideWidth = min(420, max(360, availableWidth * 0.34))
+
+        ScrollView {
+            if stacked {
+                VStack(spacing: 16) {
+                    organizerSetupCard
+                    organizerProgressCard
+                    organizerPreviewCard
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(spacing: 16) {
+                        organizerSetupCard
+                        organizerProgressCard
+                    }
+                    .frame(width: sideWidth, alignment: .top)
+
+                    organizerPreviewCard
+                        .frame(maxWidth: .infinity, minHeight: 520, alignment: .top)
+                }
+            }
+        }
+        .transition(responsiveLayoutTransition)
+        .animation(stableLayoutAnimation, value: stacked)
+    }
+
+    private var organizerSetupCard: some View {
+        let warnings = viewModel.organizerWarnings
+
+        return VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("规整工作台")
+                    .sectionTitle()
+                Text("规则结构：年 / 月 / 日 / 设备，例如 2020 / 6 / 20 / a7m3。")
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 12) {
+                organizerPathCard(
+                    title: "待规整文件夹",
+                    url: viewModel.organizerSourceURL,
+                    placeholder: "选择一个混乱素材文件夹",
+                    systemImage: "folder"
+                ) {
+                    viewModel.openFolderPicker(for: .organizerSource)
+                }
+
+                organizerPathCard(
+                    title: "规整目标文件夹",
+                    url: viewModel.organizerDestinationURL,
+                    placeholder: "选择输出位置",
+                    systemImage: "folder.badge.plus"
+                ) {
+                    viewModel.openFolderPicker(for: .organizerDestination)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                organizerPickerLabel("素材类型")
+                Picker("素材类型", selection: Binding(
+                    get: { viewModel.organizerScanFilter },
+                    set: { viewModel.setOrganizerScanFilter($0) }
+                )) {
+                    ForEach(ScanFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                organizerPickerLabel("执行方式")
+                Picker("执行方式", selection: Binding(
+                    get: { viewModel.organizerOperationMode },
+                    set: { viewModel.setOrganizerOperationMode($0) }
+                )) {
+                    ForEach(OrganizerOperationMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(viewModel.organizerOperationMode.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                organizerPickerLabel("同名处理")
+                Picker("同名处理", selection: Binding(
+                    get: { viewModel.organizerDuplicatePolicy },
+                    set: { viewModel.setOrganizerDuplicatePolicy($0) }
+                )) {
+                    ForEach(OrganizerDuplicatePolicy.allCases) { policy in
+                        Text(policy.title).tag(policy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(viewModel.organizerDuplicatePolicy.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(warnings, id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    viewModel.buildOrganizerPlan()
+                } label: {
+                    Label(viewModel.isBuildingOrganizerPlan ? "生成中" : "生成预览", systemImage: "list.bullet.rectangle")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accentColor)
+                .disabled(!viewModel.organizerCanBuildPlan)
+
+                Button {
+                    if viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer {
+                        viewModel.cancelOrganizerExecution()
+                    } else {
+                        viewModel.startOrganizerExecution()
+                    }
+                } label: {
+                    Label(
+                        viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer ? "取消" : "执行规整",
+                        systemImage: viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer ? "xmark" : "play.fill"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer ? .red : accentColor)
+                .disabled(!(viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer) && !viewModel.organizerCanRun)
+            }
+        }
+        .padding(22)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private var organizerProgressCard: some View {
+        let state = viewModel.organizerExecutionState
+
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("执行状态")
+                    .sectionTitle()
+                Spacer()
+                if viewModel.isBuildingOrganizerPlan || viewModel.isRunningOrganizer {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(viewModel.organizerStatusMessage ?? "等待生成规整预览")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !state.currentFile.isEmpty {
+                    Text(state.currentFile)
+                        .font(.caption)
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            ProgressView(value: state.fraction)
+                .tint(accentColor)
+
+            HStack(spacing: 10) {
+                organizerMetricBlock(value: "\(state.processedFiles)/\(state.totalFiles)", label: "文件")
+                organizerMetricBlock(value: ByteDisplayFormatter.string(fromByteCount: state.processedBytes), label: "已处理")
+                organizerMetricBlock(value: "\(state.skippedFiles)", label: "跳过")
+            }
+
+            if let summary = viewModel.organizerLastSummary {
+                Divider().opacity(0.18)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(summary.success ? "上次规整完成" : "上次规整有异常")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(summary.success ? .mint : .orange)
+                    Text("\(summary.completedFiles) 个已处理，\(summary.skippedFiles) 个跳过，\(ByteDisplayFormatter.string(fromByteCount: summary.totalBytes))。")
+                        .font(.caption)
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(22)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private var organizerPreviewCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("规整预览")
+                        .sectionTitle()
+                    Text("预览确认后再执行，执行时不会覆盖目标已有文件。")
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if let plan = viewModel.organizerPlan {
+                    Text("\(plan.executableFiles) / \(plan.totalFiles)")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(primaryTextColor)
+                }
+            }
+
+            if let plan = viewModel.organizerPlan {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(minimum: 110), spacing: 10),
+                    GridItem(.flexible(minimum: 110), spacing: 10),
+                    GridItem(.flexible(minimum: 110), spacing: 10),
+                    GridItem(.flexible(minimum: 110), spacing: 10)
+                ], spacing: 10) {
+                    organizerPlanMetric(value: "\(plan.dayCount)", label: "日期")
+                    organizerPlanMetric(value: "\(plan.deviceCount)", label: "设备")
+                    organizerPlanMetric(value: "\(plan.renamedFiles)", label: "改名")
+                    organizerPlanMetric(value: ByteDisplayFormatter.string(fromByteCount: plan.totalBytes), label: "容量")
+                }
+
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(plan.sampleItems) { item in
+                            organizerPreviewRow(item: item, plan: plan)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(minHeight: 320, maxHeight: 560)
+
+                if plan.totalFiles > plan.sampleItems.count {
+                    Text("已显示前 \(plan.sampleItems.count) 个文件，执行时会处理完整预览计划。")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                emptyState(
+                    title: "还没有规整预览",
+                    detail: "选择源文件夹和目标文件夹后，先生成预览，再执行规整。"
+                )
+                .frame(maxWidth: .infinity, minHeight: 320)
+            }
+        }
+        .padding(22)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+    }
+
+    private func organizerPickerLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(secondaryTextColor)
+    }
+
+    private func organizerPathCard(
+        title: String,
+        url: URL?,
+        placeholder: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        let name = url?.lastPathComponent.isEmpty == false ? url?.lastPathComponent : url?.path
+        let subtitle = url?.path
+
+        return Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(accentColor)
+                    .frame(width: 30, height: 30)
+                    .background(accentColor.opacity(0.10), in: Circle())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(secondaryTextColor)
+                    Text(name ?? placeholder)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                    Text(subtitle ?? "点击选择")
+                        .font(.caption2)
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+            .padding(14)
+            .background(glassSurface(cornerRadius: 18, tint: url == nil ? nil : accentColor, elevation: .tile))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func organizerMetricBlock(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.caption.monospacedDigit().weight(.bold))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.70)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .background(Color.white.opacity(viewModel.selectedTheme == .night ? 0.06 : 0.28), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func organizerPlanMetric(value: String, label: String) -> some View {
+        VStack(spacing: 5) {
+            Text(value)
+                .font(.subheadline.monospacedDigit().weight(.bold))
+                .foregroundStyle(primaryTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.70)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, minHeight: 54)
+        .background(Color.white.opacity(viewModel.selectedTheme == .night ? 0.06 : 0.30), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func organizerPreviewRow(item: OrganizerPlanItem, plan: OrganizerPlan) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: organizerMediaIcon(for: item.mediaKind))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(item.isExecutable ? accentColor : .orange)
+                .frame(width: 28, height: 28)
+                .background((item.isExecutable ? accentColor : Color.orange).opacity(0.10), in: Circle())
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(item.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    organizerConflictBadge(item.conflictResolution)
+                    Spacer(minLength: 0)
+                }
+
+                Text(organizerRelativeDestination(item, plan: plan))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(primaryTextColor.opacity(0.82))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 8) {
+                    Text(organizerDateText(item.capturedAt))
+                    Text(item.deviceFolderName)
+                    Text(ByteDisplayFormatter.string(fromByteCount: item.size))
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .lineLimit(1)
+            }
+        }
+        .padding(13)
+        .background(glassSurface(cornerRadius: 18, tint: item.isExecutable ? nil : .orange, elevation: .tile))
+    }
+
+    @ViewBuilder
+    private func organizerConflictBadge(_ resolution: OrganizerConflictResolution) -> some View {
+        switch resolution {
+        case .none:
+            EmptyView()
+        case .renamed:
+            Text("改名")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.orange.opacity(0.12), in: Capsule())
+        case .skipped:
+            Text("跳过")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.red)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.red.opacity(0.12), in: Capsule())
+        }
+    }
+
+    private func organizerRelativeDestination(_ item: OrganizerPlanItem, plan: OrganizerPlan) -> String {
+        (try? PathSafety.relativePath(for: item.destinationURL, under: plan.destinationURL)) ?? item.destinationURL.path
+    }
+
+    private func organizerDateText(_ date: Date) -> String {
+        CachedDateFormatters
+            .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier, fixedFormat: "yyyy/M/d")
+            .string(from: date)
+    }
+
+    private func organizerMediaIcon(for mediaKind: ScanFilter) -> String {
+        switch mediaKind {
+        case .video:
+            return "film.fill"
+        case .photo:
+            return "photo.fill"
+        case .audio:
+            return "waveform"
+        case .all:
+            return "doc.fill"
+        }
+    }
+
+    @ViewBuilder
     private func statisticsWorkspace(availableWidth: CGFloat) -> some View {
         let summary = viewModel.copyStatistics
         let stackedInsights = availableWidth < 900
@@ -571,7 +998,7 @@ struct ContentView: View {
             .padding(.bottom, 4)
         }
         .transition(responsiveLayoutTransition)
-        .animation(responsiveLayoutAnimation, value: stackedInsights)
+        .animation(stableLayoutAnimation, value: stackedInsights)
     }
 
     private func statisticsProfileCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
@@ -590,7 +1017,7 @@ struct ContentView: View {
         .padding(.horizontal, compact ? 14 : 20)
         .padding(.vertical, compact ? 12 : 16)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
-        .animation(responsiveLayoutAnimation, value: compact)
+        .animation(stableLayoutAnimation, value: compact)
     }
 
     private func profileStatBlock(value: String, label: String, compact: Bool) -> some View {
@@ -706,277 +1133,16 @@ struct ContentView: View {
     }
 
     private func activityHeatmapCard(_ summary: CopyStatisticsSummary, availableWidth: CGFloat) -> some View {
-        let heatmap = viewModel.copyStatisticsHeatmaps.heatmap(for: selectedActivityMode)
-        let narrowLayout = availableWidth < MainWindowLayoutPolicy.portraitWidthBreakpoint
-        let heatmapWidth = narrowLayout ? max(620, availableWidth - 56) : heatmapGridAvailableWidth(from: availableWidth)
-        let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmap.weeks.count)
-        let cellGap = heatmapCellGap(availableWidth: heatmapWidth)
-
-        return VStack(alignment: .leading, spacing: 18) {
-            Group {
-                if narrowLayout {
-                    VStack(alignment: .leading, spacing: 14) {
-                        heatmapTitleBlock
-                        HStack(spacing: 8) {
-                            activityModePicker
-                            statisticsRefreshButton
-                            Spacer()
-                        }
-                        heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: true)
-                    }
-                } else {
-                    HStack(alignment: .top) {
-                        heatmapTitleBlock
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 10) {
-                            HStack(spacing: 8) {
-                                activityModePicker
-                                statisticsRefreshButton
-                            }
-                            heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: false)
-                        }
-                    }
-                }
-            }
-
-            if narrowLayout {
-                HStack(alignment: .top, spacing: 12) {
-                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
-                    ScrollView(.horizontal) {
-                        heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
-                            .frame(width: heatmapWidth, alignment: .leading)
-                    }
-                    .scrollIndicators(.visible)
-                }
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
-                    heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
-                }
-            }
-
-            heatmapLegend(summary, compact: narrowLayout)
-
-            if !summary.hasReportActivity {
-                Text(viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(minHeight: 320, alignment: .topLeading)
-        .padding(narrowLayout ? 18 : 30)
-        .background(glassSurface(cornerRadius: 24, elevation: .panel))
-        // hover 不再驱动整张卡片动画——高亮动画已下沉到单个格子（见 heatmapCell）。
-        .animation(responsiveLayoutAnimation, value: selectedActivityMode)
-        .animation(responsiveLayoutAnimation, value: narrowLayout)
-    }
-
-    private var heatmapTitleBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(viewModel.localized("拷贝活动"))
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(primaryTextColor)
-            Text(viewModel.localized("颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。"))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var statisticsRefreshButton: some View {
-        Button {
-            viewModel.refreshCopyStatistics()
-        } label: {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(primaryTextColor)
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.white.opacity(viewModel.selectedTheme == .night ? 0.10 : 0.26))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color.white.opacity(viewModel.selectedTheme == .night ? 0.14 : 0.42), lineWidth: 0.7)
-                )
-        }
-        .buttonStyle(.plain)
-        .help(viewModel.localized("刷新统计"))
-        .accessibilityLabel(Text(viewModel.localized("刷新统计")))
-    }
-
-    private var activityModePicker: some View {
-        Picker(viewModel.localized("拷贝活动"), selection: $selectedActivityMode) {
-            ForEach(StatisticsActivityMode.allCases) { mode in
-                Text(viewModel.localized(mode.title)).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 186)
-        .onChange(of: selectedActivityMode) { _, _ in
-            hoveredActivityDay = nil
-        }
-    }
-
-    private func heatmapFocusSummary(fallbackDay: CopyActivityDay?, compact: Bool) -> some View {
-        let focusedDay = hoveredActivityDay ?? fallbackDay
-        let label = hoveredActivityDay == nil ? heatmapFallbackLabel : heatmapFocusedLabel
-
-        return Group {
-            let content = VStack(alignment: compact ? .leading : .trailing, spacing: 5) {
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-
-                if let focusedDay {
-                    Text("\(shortDateText(focusedDay.date)) · \(ByteDisplayFormatter.string(fromByteCount: focusedDay.bytes))")
-                        .font(.subheadline.monospacedDigit().weight(.bold))
-                        .foregroundStyle(primaryTextColor)
-                        .lineLimit(1)
-                    Text(heatmapDayDetailText(focusedDay))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(secondaryTextColor)
-                        .lineLimit(1)
-                } else {
-                    Text(viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(primaryTextColor)
-                }
-            }
-
-            if compact {
-                content.frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                content.frame(minWidth: 168, alignment: .trailing)
-            }
-        }
-    }
-
-    private var heatmapFallbackLabel: String {
-        switch selectedActivityMode {
-        case .daily:
-            return viewModel.localized("峰值日")
-        case .weekly:
-            return viewModel.selectedLanguage == .english ? "Peak Week" : "峰值周"
-        case .cumulative:
-            return viewModel.localized("累计")
-        }
-    }
-
-    private var heatmapFocusedLabel: String {
-        switch selectedActivityMode {
-        case .daily:
-            return viewModel.selectedLanguage == .english ? "Selected Day" : "选中日期"
-        case .weekly:
-            return viewModel.selectedLanguage == .english ? "Selected Week" : "选中周"
-        case .cumulative:
-            return viewModel.selectedLanguage == .english ? "Cumulative To Date" : "截至当天"
-        }
-    }
-
-    private func heatmapGrid(heatmap: CopyStatisticsHeatmap, availableWidth: CGFloat) -> some View {
-        let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: heatmap.weeks.count)
-        let cellGap = heatmapCellGap(availableWidth: availableWidth)
-        // 提前算一次"今天"，避免在 371 个格子里各调一次 Calendar.startOfDay。
-        let todayStart = Calendar.current.startOfDay(for: Date())
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: cellGap) {
-                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { _, week in
-                    VStack(spacing: cellGap) {
-                        ForEach(0..<week.count, id: \.self) { dayIndex in
-                            if let day = week[dayIndex] {
-                                heatmapCell(day, maxBytes: heatmap.maxBytes, size: cellSize, todayStart: todayStart)
-                            } else {
-                                heatmapEmptyCell(size: cellSize)
-                            }
-                        }
-                    }
-                }
-            }
-            // 用单个连续 hover 检测器代替每格的 onHover，避免几百个 NSTrackingArea 拖垮滚动。
-            .contentShape(Rectangle())
-            .onContinuousHover(coordinateSpace: .local) { phase in
-                switch phase {
-                case .active(let point):
-                    if let day = heatmapDay(at: point, in: heatmap, cellSize: cellSize, cellGap: cellGap),
-                       hoveredActivityDay?.id != day.id {
-                        hoveredActivityDay = day
-                    }
-                case .ended:
-                    if hoveredActivityDay != nil {
-                        hoveredActivityDay = nil
-                    }
-                }
-            }
-
-            HStack(alignment: .top, spacing: cellGap) {
-                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { index, week in
-                    Text(heatmapMonthLabel(for: week, index: index, weeks: heatmap.weeks))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(secondaryTextColor)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.70)
-                        .frame(width: cellSize, alignment: .leading)
-                }
-            }
-            .frame(height: 16, alignment: .leading)
-        }
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func weekdayRail(cellSize: CGFloat, cellGap: CGFloat) -> some View {
-        VStack(alignment: .trailing, spacing: cellGap) {
-            ForEach(0..<7, id: \.self) { index in
-                Text(weekdayShortName(index))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(index == 1 || index == 3 || index == 5 ? secondaryTextColor : Color.clear)
-                    .frame(width: 18, height: cellSize, alignment: .trailing)
-            }
-        }
-        .padding(.vertical, 3)
-    }
-
-    @ViewBuilder
-    private func heatmapLegend(_ summary: CopyStatisticsSummary, compact: Bool) -> some View {
-        if compact {
-            VStack(alignment: .leading, spacing: 10) {
-                heatmapLegendScale
-                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-        } else {
-            HStack(spacing: 8) {
-                heatmapLegendScale
-                Spacer()
-                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-        }
-    }
-
-    private var heatmapLegendScale: some View {
-        HStack(spacing: 8) {
-            Text(viewModel.selectedLanguage == .english ? "Less" : "少")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-            ForEach(0..<9, id: \.self) { level in
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(heatmapColor(level: level))
-                    .frame(width: 16, height: 16)
-            }
-            Text(viewModel.selectedLanguage == .english ? "More" : "多")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(secondaryTextColor)
-        }
+        StatisticsActivityHeatmapCard(
+            selectedActivityMode: $selectedActivityMode,
+            summary: summary,
+            heatmaps: viewModel.copyStatisticsHeatmaps,
+            availableWidth: availableWidth,
+            stableLayoutAnimation: stableLayoutAnimation,
+            controlAnimation: controlAnimation,
+            reduceMotionEffects: reduceMotionEffects,
+            reduceGlassEffects: reduceGlassEffects
+        )
     }
 
     private var statisticsRecentReportsCard: some View {
@@ -1039,7 +1205,7 @@ struct ContentView: View {
     }
 
     private func bottomTabBar(availableWidth: CGFloat, heightCompact: Bool) -> some View {
-        let compact = availableWidth < 520 || heightCompact
+        let compact = availableWidth < 680 || heightCompact
         let sectionCount = CGFloat(MainSection.allCases.count)
         let horizontalPadding: CGFloat = compact ? 16 : 20
         let totalSpacing = max(sectionCount - 1, 0) * (compact ? 7 : 10)
@@ -1089,12 +1255,12 @@ struct ContentView: View {
         .airwangSoftShadow(theme: viewModel.selectedTheme, tint: accentColor, tintStrength: 0.18, elevation: .floating, enabled: !reduceVisualEffects)
         .frame(height: buttonHeight + verticalPadding * 2)
         .frame(maxWidth: .infinity)
-        .animation(responsiveLayoutAnimation, value: compact)
-        .animation(responsiveLayoutAnimation, value: viewModel.selectedSection)
+        .animation(stableLayoutAnimation, value: compact)
+        .animation(sectionSwitchAnimation, value: viewModel.selectedSection)
     }
 
     private func bottomTabBarHeight(availableWidth: CGFloat, heightCompact: Bool) -> CGFloat {
-        let compact = availableWidth < 520 || heightCompact
+        let compact = availableWidth < 680 || heightCompact
         let buttonHeight: CGFloat = compact ? 48 : 58
         let verticalPadding: CGFloat = compact ? 7 : 10
         return buttonHeight + verticalPadding * 2
@@ -1165,9 +1331,9 @@ struct ContentView: View {
         }
         .padding(24)
         .background(glassSurface(cornerRadius: 24, elevation: .panel))
-        .animation(responsiveLayoutAnimation, value: useCompactHeader)
-        .animation(responsiveLayoutAnimation, value: useStackedTargets)
-        .animation(responsiveLayoutAnimation, value: useStackedStats)
+        .animation(stableLayoutAnimation, value: useCompactHeader)
+        .animation(stableLayoutAnimation, value: useStackedTargets)
+        .animation(stableLayoutAnimation, value: useStackedStats)
     }
 
     private func executionModePicker(width: CGFloat) -> some View {
@@ -1266,7 +1432,7 @@ struct ContentView: View {
         .padding(18)
         .background(glassSurface(cornerRadius: 22, elevation: .card))
         .transition(responsiveLayoutTransition)
-        .animation(responsiveLayoutAnimation, value: useStackedLayout)
+        .animation(stableLayoutAnimation, value: useStackedLayout)
     }
 
     private var projectQueueCard: some View {
@@ -2025,155 +2191,6 @@ struct ContentView: View {
         return "\(report.selectedFileCount) 个文件  ·  \(ByteDisplayFormatter.string(fromByteCount: report.totalBytes))  ·  总耗时 \(stopwatchText(report.duration))"
     }
 
-    private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat, todayStart: Date) -> some View {
-        let level = heatmapLevel(bytes: day.bytes, maxBytes: maxBytes)
-        let isHovered = hoveredActivityDay?.id == day.id
-        let isToday = day.date == todayStart
-
-        return RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(heatmapColor(level: level))
-            .overlay(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(
-                        isHovered ? primaryTextColor.opacity(0.72) : (isToday ? primaryTextColor.opacity(0.38) : Color.clear),
-                        lineWidth: isHovered ? 1.4 : 1
-                    )
-            )
-            .frame(width: size, height: size)
-            .scaleEffect(isHovered ? 1.10 : 1)
-            .zIndex(isHovered ? 1 : 0)
-            // 高亮动画只作用于当前格子，避免整张卡片随 hover 跑弹簧。
-            .animation(reduceMotionEffects ? nil : .easeOut(duration: 0.12), value: isHovered)
-    }
-
-    /// 把网格本地坐标映射回某一天。每列恒为 7 格、列宽/行高为固定步长，可直接整除定位。
-    private func heatmapDay(at point: CGPoint, in heatmap: CopyStatisticsHeatmap, cellSize: CGFloat, cellGap: CGFloat) -> CopyActivityDay? {
-        let stride = cellSize + cellGap
-        guard stride > 0, point.x >= 0, point.y >= 0 else { return nil }
-
-        let column = Int(point.x / stride)
-        let row = Int(point.y / stride)
-        guard column >= 0, column < heatmap.weeks.count, row >= 0, row < 7 else { return nil }
-
-        // 落在格间空隙里时返回 nil，由调用方保持上一次高亮，避免抖动。
-        guard point.x - CGFloat(column) * stride <= cellSize,
-              point.y - CGFloat(row) * stride <= cellSize else { return nil }
-
-        let week = heatmap.weeks[column]
-        guard row < week.count else { return nil }
-        return week[row]
-    }
-
-    private func heatmapEmptyCell(size: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(Color.clear)
-            .frame(width: size, height: size)
-    }
-
-    private func heatmapLevel(bytes: Int64, maxBytes: Int64) -> Int {
-        guard bytes > 0, maxBytes > 0 else { return 0 }
-        let fraction = Double(bytes) / Double(maxBytes)
-        if fraction < 0.08 { return 1 }
-        if fraction < 0.18 { return 2 }
-        if fraction < 0.30 { return 3 }
-        if fraction < 0.44 { return 4 }
-        if fraction < 0.58 { return 5 }
-        if fraction < 0.72 { return 6 }
-        if fraction < 0.88 { return 7 }
-        return 8
-    }
-
-    private func heatmapColor(level: Int) -> Color {
-        let baseColor = Color(red: 0.23, green: 0.57, blue: 1.00)
-        let nightOpacity: [Double] = [0.18, 0.28, 0.38, 0.48, 0.60, 0.72, 0.84, 0.92, 1.00]
-        let dayOpacity: [Double] = [0.12, 0.20, 0.30, 0.40, 0.52, 0.64, 0.76, 0.86, 0.96]
-        let index = min(max(level, 0), 8)
-
-        switch level {
-        case 0:
-            return secondaryTextColor.opacity(viewModel.selectedTheme == .night ? 0.18 : 0.12)
-        default:
-            return baseColor.opacity(viewModel.selectedTheme == .night ? nightOpacity[index] : dayOpacity[index])
-        }
-    }
-
-    private func heatmapGridAvailableWidth(from availableWidth: CGFloat) -> CGFloat {
-        max(180, availableWidth - 90)
-    }
-
-    private func heatmapCellSize(availableWidth: CGFloat, weekCount: Int) -> CGFloat {
-        let columns = CGFloat(max(weekCount, 1))
-        let gap = heatmapCellGap(availableWidth: availableWidth)
-        let gapWidth = gap * max(columns - 1, 0)
-        let fitted = (availableWidth - gapWidth) / columns
-        let clamped = min(20, max(3.0, fitted))
-        return (clamped * 2).rounded(.down) / 2
-    }
-
-    private func heatmapCellGap(availableWidth: CGFloat) -> CGFloat {
-        if availableWidth < 420 { return 1.5 }
-        if availableWidth < 700 { return 2.5 }
-        return 4
-    }
-
-    private func weekdayShortName(_ index: Int) -> String {
-        if viewModel.selectedLanguage == .english {
-            return ["S", "M", "T", "W", "T", "F", "S"][index]
-        }
-        return ["日", "一", "二", "三", "四", "五", "六"][index]
-    }
-
-    private func heatmapMonthLabel(for week: [CopyActivityDay?], index: Int, weeks: [[CopyActivityDay?]]) -> String {
-        guard let firstDate = week.compactMap({ $0?.date }).first else { return "" }
-        let calendar = Calendar.current
-        let month = calendar.component(.month, from: firstDate)
-
-        if index > 0,
-           let previousDate = weeks[index - 1].compactMap({ $0?.date }).first,
-           calendar.component(.month, from: previousDate) == month {
-            return ""
-        }
-
-        if viewModel.selectedLanguage == .english {
-            return CachedDateFormatters
-                .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier, template: "MMM")
-                .string(from: firstDate)
-        }
-
-        return "\(month)月"
-    }
-
-    private func heatmapDayDetailText(_ day: CopyActivityDay) -> String {
-        if viewModel.selectedLanguage == .english {
-            return "\(day.reportCount) reports · \(day.files) files"
-        }
-        return "\(day.reportCount) 份报告 · \(day.files) 个文件"
-    }
-
-    private func equivalentStorageText(_ bytes: Int64) -> String {
-        guard bytes > 0 else {
-            return viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据"
-        }
-        let cardBytes = Double(128_000_000_000)
-        let cardCount = Double(bytes) / cardBytes
-        let formattedCount = cardCount >= 10
-            ? String(format: "%.0f", cardCount)
-            : String(format: "%.1f", max(cardCount, 0.1))
-        if viewModel.selectedLanguage == .english {
-            return "About \(formattedCount) x 128GB cards"
-        }
-        return "约 \(formattedCount) 张 128GB 卡"
-    }
-
-    private func shortDateText(_ date: Date) -> String {
-        let isEnglish = viewModel.selectedLanguage == .english
-        return CachedDateFormatters
-            .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier,
-                       template: isEnglish ? "MMM d" : nil,
-                       fixedFormat: isEnglish ? nil : "M月d日")
-            .string(from: date)
-    }
-
     private func shortDateTimeText(_ date: Date) -> String {
         let isEnglish = viewModel.selectedLanguage == .english
         return CachedDateFormatters
@@ -2397,15 +2414,27 @@ struct ContentView: View {
     }
 
     private var responsiveLayoutAnimation: Animation {
-        .spring(response: 0.38, dampingFraction: 0.82, blendDuration: 0.12)
+        .easeOut(duration: 0.16)
+    }
+
+    private var stableLayoutAnimation: Animation? {
+        isWindowResizing || reduceMotionEffects ? nil : responsiveLayoutAnimation
+    }
+
+    private var sectionSwitchAnimation: Animation? {
+        isWindowResizing || reduceMotionEffects ? nil : .easeInOut(duration: 0.14)
+    }
+
+    private var controlAnimation: Animation? {
+        reduceMotionEffects ? nil : .easeOut(duration: 0.12)
     }
 
     private var responsiveLayoutTransition: AnyTransition {
-        .opacity.combined(with: .scale(scale: 0.985, anchor: .top))
+        .opacity
     }
 
     private func withResponsiveAnimation(_ action: () -> Void) {
-        if accessibilityReduceMotion {
+        if accessibilityReduceMotion || isWindowResizing {
             action()
         } else {
             withAnimation(responsiveLayoutAnimation) {
@@ -2430,7 +2459,9 @@ struct ContentView: View {
 
     private func markWindowResizing() {
         if !isWindowResizing {
-            withResponsiveAnimation {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
                 isWindowResizing = true
             }
         }
@@ -2439,7 +2470,9 @@ struct ContentView: View {
         resizeSettlingTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 180_000_000)
             guard !Task.isCancelled else { return }
-            withResponsiveAnimation {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
                 isWindowResizing = false
             }
         }
@@ -2452,6 +2485,455 @@ struct ContentView: View {
     private var accentColor: Color { viewModel.selectedTheme.accentColor }
     private var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
 
+}
+
+private struct StatisticsActivityHeatmapCard: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @Binding var selectedActivityMode: StatisticsActivityMode
+    let summary: CopyStatisticsSummary
+    let heatmaps: CopyStatisticsHeatmaps
+    let availableWidth: CGFloat
+    let stableLayoutAnimation: Animation?
+    let controlAnimation: Animation?
+    let reduceMotionEffects: Bool
+    let reduceGlassEffects: Bool
+
+    @State private var hoveredActivityDay: CopyActivityDay?
+
+    var body: some View {
+        let heatmap = heatmaps.heatmap(for: selectedActivityMode)
+        let narrowLayout = availableWidth < MainWindowLayoutPolicy.portraitWidthBreakpoint
+        let heatmapWidth = narrowLayout ? max(620, availableWidth - 56) : heatmapGridAvailableWidth(from: availableWidth)
+        let cellSize = heatmapCellSize(availableWidth: heatmapWidth, weekCount: heatmap.weeks.count)
+        let cellGap = heatmapCellGap(availableWidth: heatmapWidth)
+
+        return VStack(alignment: .leading, spacing: 18) {
+            Group {
+                if narrowLayout {
+                    VStack(alignment: .leading, spacing: 14) {
+                        heatmapTitleBlock
+                        HStack(spacing: 8) {
+                            activityModePicker
+                            statisticsRefreshButton
+                            Spacer()
+                        }
+                        heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: true)
+                    }
+                } else {
+                    HStack(alignment: .top) {
+                        heatmapTitleBlock
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 10) {
+                            HStack(spacing: 8) {
+                                activityModePicker
+                                statisticsRefreshButton
+                            }
+                            heatmapFocusSummary(fallbackDay: heatmap.peakDay, compact: false)
+                        }
+                    }
+                }
+            }
+
+            if narrowLayout {
+                HStack(alignment: .top, spacing: 12) {
+                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
+                    ScrollView(.horizontal) {
+                        heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
+                            .frame(width: heatmapWidth, alignment: .leading)
+                    }
+                    .scrollIndicators(.visible)
+                }
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    weekdayRail(cellSize: cellSize, cellGap: cellGap)
+                    heatmapGrid(heatmap: heatmap, availableWidth: heatmapWidth)
+                }
+            }
+
+            heatmapLegend(summary, compact: narrowLayout)
+
+            if !summary.hasReportActivity {
+                Text(viewModel.localized("完成一次拷贝后，这里会显示每日写入热力图、最近数据量和报告数量。"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(minHeight: 320, alignment: .topLeading)
+        .padding(narrowLayout ? 18 : 30)
+        .background(glassSurface(cornerRadius: 24, elevation: .panel))
+        .animation(controlAnimation, value: selectedActivityMode)
+        .animation(stableLayoutAnimation, value: narrowLayout)
+    }
+
+    private var heatmapTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(viewModel.localized("拷贝活动"))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+            Text(viewModel.localized("颜色越深，当天写入量越大。统计来自 App 本地任务报告，主盘与备份阶段都会计入写入总量。"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var statisticsRefreshButton: some View {
+        Button {
+            viewModel.refreshCopyStatistics()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(primaryTextColor)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.white.opacity(viewModel.selectedTheme == .night ? 0.10 : 0.26))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(viewModel.selectedTheme == .night ? 0.14 : 0.42), lineWidth: 0.7)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(viewModel.localized("刷新统计"))
+        .accessibilityLabel(Text(viewModel.localized("刷新统计")))
+    }
+
+    private var activityModePicker: some View {
+        Picker(viewModel.localized("拷贝活动"), selection: $selectedActivityMode) {
+            ForEach(StatisticsActivityMode.allCases) { mode in
+                Text(viewModel.localized(mode.title)).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 186)
+        .onChange(of: selectedActivityMode) { _, _ in
+            hoveredActivityDay = nil
+        }
+    }
+
+    private func heatmapFocusSummary(fallbackDay: CopyActivityDay?, compact: Bool) -> some View {
+        let focusedDay = hoveredActivityDay ?? fallbackDay
+        let label = hoveredActivityDay == nil ? heatmapFallbackLabel : heatmapFocusedLabel
+
+        return Group {
+            let content = VStack(alignment: compact ? .leading : .trailing, spacing: 5) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+
+                if let focusedDay {
+                    Text("\(shortDateText(focusedDay.date)) · \(ByteDisplayFormatter.string(fromByteCount: focusedDay.bytes))")
+                        .font(.subheadline.monospacedDigit().weight(.bold))
+                        .foregroundStyle(primaryTextColor)
+                        .lineLimit(1)
+                    Text(heatmapDayDetailText(focusedDay))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                } else {
+                    Text(viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(primaryTextColor)
+                }
+            }
+
+            if compact {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                content.frame(minWidth: 168, alignment: .trailing)
+            }
+        }
+    }
+
+    private var heatmapFallbackLabel: String {
+        switch selectedActivityMode {
+        case .daily:
+            return viewModel.localized("峰值日")
+        case .weekly:
+            return viewModel.selectedLanguage == .english ? "Peak Week" : "峰值周"
+        case .cumulative:
+            return viewModel.localized("累计")
+        }
+    }
+
+    private var heatmapFocusedLabel: String {
+        switch selectedActivityMode {
+        case .daily:
+            return viewModel.selectedLanguage == .english ? "Selected Day" : "选中日期"
+        case .weekly:
+            return viewModel.selectedLanguage == .english ? "Selected Week" : "选中周"
+        case .cumulative:
+            return viewModel.selectedLanguage == .english ? "Cumulative To Date" : "截至当天"
+        }
+    }
+
+    private func heatmapGrid(heatmap: CopyStatisticsHeatmap, availableWidth: CGFloat) -> some View {
+        let cellSize = heatmapCellSize(availableWidth: availableWidth, weekCount: heatmap.weeks.count)
+        let cellGap = heatmapCellGap(availableWidth: availableWidth)
+        let todayStart = Calendar.current.startOfDay(for: Date())
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: cellGap) {
+                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: cellGap) {
+                        ForEach(0..<week.count, id: \.self) { dayIndex in
+                            if let day = week[dayIndex] {
+                                heatmapCell(day, maxBytes: heatmap.maxBytes, size: cellSize, todayStart: todayStart)
+                            } else {
+                                heatmapEmptyCell(size: cellSize)
+                            }
+                        }
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let point):
+                    if let day = heatmapDay(at: point, in: heatmap, cellSize: cellSize, cellGap: cellGap),
+                       hoveredActivityDay?.id != day.id {
+                        hoveredActivityDay = day
+                    }
+                case .ended:
+                    if hoveredActivityDay != nil {
+                        hoveredActivityDay = nil
+                    }
+                }
+            }
+
+            HStack(alignment: .top, spacing: cellGap) {
+                ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { index, week in
+                    Text(heatmapMonthLabel(for: week, index: index, weeks: heatmap.weeks))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.70)
+                        .frame(width: cellSize, alignment: .leading)
+                }
+            }
+            .frame(height: 16, alignment: .leading)
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func weekdayRail(cellSize: CGFloat, cellGap: CGFloat) -> some View {
+        VStack(alignment: .trailing, spacing: cellGap) {
+            ForEach(0..<7, id: \.self) { index in
+                Text(weekdayShortName(index))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(index == 1 || index == 3 || index == 5 ? secondaryTextColor : Color.clear)
+                    .frame(width: 18, height: cellSize, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private func heatmapLegend(_ summary: CopyStatisticsSummary, compact: Bool) -> some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 10) {
+                heatmapLegendScale
+                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+            }
+        } else {
+            HStack(spacing: 8) {
+                heatmapLegendScale
+                Spacer()
+                Text(viewModel.localized("等效容量") + ": " + equivalentStorageText(summary.totalBytes))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+            }
+        }
+    }
+
+    private var heatmapLegendScale: some View {
+        HStack(spacing: 8) {
+            Text(viewModel.selectedLanguage == .english ? "Less" : "少")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+            ForEach(0..<9, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(heatmapColor(level: level))
+                    .frame(width: 16, height: 16)
+            }
+            Text(viewModel.selectedLanguage == .english ? "More" : "多")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(secondaryTextColor)
+        }
+    }
+
+    private func heatmapCell(_ day: CopyActivityDay, maxBytes: Int64, size: CGFloat, todayStart: Date) -> some View {
+        let level = heatmapLevel(bytes: day.bytes, maxBytes: maxBytes)
+        let isHovered = hoveredActivityDay?.id == day.id
+        let isToday = day.date == todayStart
+
+        return RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(heatmapColor(level: level))
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(
+                        isHovered ? primaryTextColor.opacity(0.72) : (isToday ? primaryTextColor.opacity(0.38) : Color.clear),
+                        lineWidth: isHovered ? 1.4 : 1
+                    )
+            )
+            .frame(width: size, height: size)
+            .scaleEffect(isHovered ? 1.10 : 1)
+            .zIndex(isHovered ? 1 : 0)
+            .animation(reduceMotionEffects ? nil : .easeOut(duration: 0.12), value: isHovered)
+    }
+
+    private func heatmapDay(at point: CGPoint, in heatmap: CopyStatisticsHeatmap, cellSize: CGFloat, cellGap: CGFloat) -> CopyActivityDay? {
+        let stride = cellSize + cellGap
+        guard stride > 0, point.x >= 0, point.y >= 0 else { return nil }
+
+        let column = Int(point.x / stride)
+        let row = Int(point.y / stride)
+        guard column >= 0, column < heatmap.weeks.count, row >= 0, row < 7 else { return nil }
+        guard point.x - CGFloat(column) * stride <= cellSize,
+              point.y - CGFloat(row) * stride <= cellSize else { return nil }
+
+        let week = heatmap.weeks[column]
+        guard row < week.count else { return nil }
+        return week[row]
+    }
+
+    private func heatmapEmptyCell(size: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.clear)
+            .frame(width: size, height: size)
+    }
+
+    private func heatmapLevel(bytes: Int64, maxBytes: Int64) -> Int {
+        guard bytes > 0, maxBytes > 0 else { return 0 }
+        let fraction = Double(bytes) / Double(maxBytes)
+        if fraction < 0.08 { return 1 }
+        if fraction < 0.18 { return 2 }
+        if fraction < 0.30 { return 3 }
+        if fraction < 0.44 { return 4 }
+        if fraction < 0.58 { return 5 }
+        if fraction < 0.72 { return 6 }
+        if fraction < 0.88 { return 7 }
+        return 8
+    }
+
+    private func heatmapColor(level: Int) -> Color {
+        let baseColor = Color(red: 0.23, green: 0.57, blue: 1.00)
+        let nightOpacity: [Double] = [0.18, 0.28, 0.38, 0.48, 0.60, 0.72, 0.84, 0.92, 1.00]
+        let dayOpacity: [Double] = [0.12, 0.20, 0.30, 0.40, 0.52, 0.64, 0.76, 0.86, 0.96]
+        let index = min(max(level, 0), 8)
+
+        switch level {
+        case 0:
+            return secondaryTextColor.opacity(viewModel.selectedTheme == .night ? 0.18 : 0.12)
+        default:
+            return baseColor.opacity(viewModel.selectedTheme == .night ? nightOpacity[index] : dayOpacity[index])
+        }
+    }
+
+    private func heatmapGridAvailableWidth(from availableWidth: CGFloat) -> CGFloat {
+        max(180, availableWidth - 90)
+    }
+
+    private func heatmapCellSize(availableWidth: CGFloat, weekCount: Int) -> CGFloat {
+        let columns = CGFloat(max(weekCount, 1))
+        let gap = heatmapCellGap(availableWidth: availableWidth)
+        let gapWidth = gap * max(columns - 1, 0)
+        let fitted = (availableWidth - gapWidth) / columns
+        let clamped = min(20, max(3.0, fitted))
+        return (clamped * 2).rounded(.down) / 2
+    }
+
+    private func heatmapCellGap(availableWidth: CGFloat) -> CGFloat {
+        if availableWidth < 420 { return 1.5 }
+        if availableWidth < 700 { return 2.5 }
+        return 4
+    }
+
+    private func weekdayShortName(_ index: Int) -> String {
+        if viewModel.selectedLanguage == .english {
+            return ["S", "M", "T", "W", "T", "F", "S"][index]
+        }
+        return ["日", "一", "二", "三", "四", "五", "六"][index]
+    }
+
+    private func heatmapMonthLabel(for week: [CopyActivityDay?], index: Int, weeks: [[CopyActivityDay?]]) -> String {
+        guard let firstDate = week.compactMap({ $0?.date }).first else { return "" }
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: firstDate)
+
+        if index > 0,
+           let previousDate = weeks[index - 1].compactMap({ $0?.date }).first,
+           calendar.component(.month, from: previousDate) == month {
+            return ""
+        }
+
+        if viewModel.selectedLanguage == .english {
+            return CachedDateFormatters
+                .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier, template: "MMM")
+                .string(from: firstDate)
+        }
+
+        return "\(month)月"
+    }
+
+    private func heatmapDayDetailText(_ day: CopyActivityDay) -> String {
+        if viewModel.selectedLanguage == .english {
+            return "\(day.reportCount) reports · \(day.files) files"
+        }
+        return "\(day.reportCount) 份报告 · \(day.files) 个文件"
+    }
+
+    private func equivalentStorageText(_ bytes: Int64) -> String {
+        guard bytes > 0 else {
+            return viewModel.selectedLanguage == .english ? "No data yet" : "暂无数据"
+        }
+        let cardBytes = Double(128_000_000_000)
+        let cardCount = Double(bytes) / cardBytes
+        let formattedCount = cardCount >= 10
+            ? String(format: "%.0f", cardCount)
+            : String(format: "%.1f", max(cardCount, 0.1))
+        if viewModel.selectedLanguage == .english {
+            return "About \(formattedCount) x 128GB cards"
+        }
+        return "约 \(formattedCount) 张 128GB 卡"
+    }
+
+    private func shortDateText(_ date: Date) -> String {
+        let isEnglish = viewModel.selectedLanguage == .english
+        return CachedDateFormatters
+            .formatter(localeIdentifier: viewModel.selectedLanguage.localeIdentifier,
+                       template: isEnglish ? "MMM d" : nil,
+                       fixedFormat: isEnglish ? nil : "M月d日")
+            .string(from: date)
+    }
+
+    private func glassSurface(
+        cornerRadius: CGFloat,
+        tint: Color? = nil,
+        elevation: AirwangGlassElevation = .panel
+    ) -> some View {
+        AirwangGlassSurface(
+            cornerRadius: cornerRadius,
+            theme: viewModel.selectedTheme,
+            tint: tint ?? accentColor,
+            tintStrength: tint == nil ? 0.0 : 1.0,
+            elevation: elevation,
+            reduceEffects: reduceGlassEffects
+        )
+    }
+
+    private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
+    private var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
+    private var accentColor: Color { viewModel.selectedTheme.accentColor }
 }
 
 /// 全工程统一的投影标尺:每个海拔等级只有两层阴影 ——
@@ -3383,7 +3865,11 @@ private struct ImportSheet: View {
     }
 
     private func mediaIcon(for item: MediaItem) -> String {
-        switch item.mediaKind {
+        mediaIcon(for: item.mediaKind)
+    }
+
+    private func mediaIcon(for mediaKind: ScanFilter) -> String {
+        switch mediaKind {
         case .video:
             return "film.fill"
         case .photo:
@@ -3932,6 +4418,13 @@ private struct FolderPickerSheet: View {
     let purpose: FolderPickerPurpose
     @EnvironmentObject private var viewModel: AppViewModel
 
+    private enum FolderBrowserDisplayMode: String {
+        case grid
+        case list
+    }
+
+    @State private var displayMode: FolderBrowserDisplayMode = .grid
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -4067,62 +4560,170 @@ private struct FolderPickerSheet: View {
                         .foregroundStyle(themeSecondaryTextColor)
                 }
                 Spacer()
+                displayModeToggle
             }
 
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    if viewModel.isLoadingFolderChildren {
-                        ProgressView("正在读取文件夹...")
-                            .frame(maxWidth: .infinity)
-                            .padding(24)
-                    }
+                if viewModel.isLoadingFolderChildren {
+                    ProgressView("正在读取文件夹...")
+                        .frame(maxWidth: .infinity)
+                        .padding(24)
+                } else if viewModel.folderChildren.isEmpty {
+                    Text("此目录下没有子文件夹，可直接在右侧确认选择当前目录。")
+                        .font(.callout)
+                        .foregroundStyle(themeSecondaryTextColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 24)
+                }
 
-                    ForEach(viewModel.folderChildren) { item in
-                        HStack(spacing: 12) {
-                            Button {
-                                viewModel.selectFolder(item.url)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "folder.fill")
-                                        .foregroundStyle(.orange)
-                                        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.20, elevation: .tile)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.name)
-                                            .font(.headline)
-                                            .foregroundStyle(themePrimaryTextColor)
-                                        Text(item.subtitle)
-                                            .font(.caption2)
-                                            .foregroundStyle(themeSecondaryTextColor)
-                                            .lineLimit(1)
-                                        Text(item.capacityLine)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(themeSecondaryTextColor)
-                                        CapacityMeter(
-                                            totalCapacity: item.totalCapacity,
-                                            availableCapacity: item.availableCapacity,
-                                            tint: themeAccentColor,
-                                            backgroundColor: themeSecondaryTextColor.opacity(0.16)
-                                        )
-                                    }
-                                    Spacer()
-                                }
-                            }
-                            .buttonStyle(.plain)
-
-                            Button("进入") {
-                                viewModel.navigate(to: item.url)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(themeAccentColor)
-                        }
-                        .padding(12)
-                        .background(themeGlassPanel(cornerRadius: 16, tint: isSelected(item.url) ? themeAccentColor : nil))
-                    }
+                switch displayMode {
+                case .list:
+                    folderList
+                case .grid:
+                    folderGrid
                 }
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var displayModeToggle: some View {
+        HStack(spacing: 4) {
+            displayModeButton(.grid, systemImage: "square.grid.2x2", help: "网格视图")
+            displayModeButton(.list, systemImage: "list.bullet", help: "列表视图")
+        }
+        .padding(4)
+        .background(themeGlassPanel(cornerRadius: 12))
+    }
+
+    private func displayModeButton(_ mode: FolderBrowserDisplayMode, systemImage: String, help: String) -> some View {
+        Button {
+            displayMode = mode
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(displayMode == mode ? Color.white : themeSecondaryTextColor)
+                .frame(width: 32, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(displayMode == mode ? themeAccentColor : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(Text(help))
+    }
+
+    private var folderList: some View {
+        LazyVStack(spacing: 8) {
+            ForEach(viewModel.folderChildren) { item in
+                folderListRow(item: item)
+            }
+        }
+    }
+
+    private func folderListRow(item: FolderBrowserItem) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                viewModel.selectFolder(item.url)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.orange)
+                        .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.20, elevation: .tile)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.name)
+                            .font(.headline)
+                            .foregroundStyle(themePrimaryTextColor)
+                        Text(item.subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(themeSecondaryTextColor)
+                            .lineLimit(1)
+                        Text(item.capacityLine)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(themeSecondaryTextColor)
+                        CapacityMeter(
+                            totalCapacity: item.totalCapacity,
+                            availableCapacity: item.availableCapacity,
+                            tint: themeAccentColor,
+                            backgroundColor: themeSecondaryTextColor.opacity(0.16)
+                        )
+                    }
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button("进入") {
+                viewModel.navigate(to: item.url)
+            }
+            .buttonStyle(.bordered)
+            .tint(themeAccentColor)
+        }
+        .padding(12)
+        .background(themeGlassPanel(cornerRadius: 16, tint: isSelected(item.url) ? themeAccentColor : nil))
+    }
+
+    private var folderGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 132, maximum: 168), spacing: 14)],
+            alignment: .leading,
+            spacing: 16
+        ) {
+            ForEach(viewModel.folderChildren) { item in
+                folderGridCell(item: item)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func folderGridCell(item: FolderBrowserItem) -> some View {
+        // 单击选中（右侧检查器实时联动），双击进入下一级，贴近 Finder / Bridge 的习惯。
+        Button {
+            viewModel.selectFolder(item.url)
+        } label: {
+            VStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 46))
+                    .foregroundStyle(.orange)
+                    .airwangSoftShadow(theme: viewModel.selectedTheme, tint: .orange, tintStrength: 0.22, elevation: .tile)
+                    .frame(height: 54)
+
+                Text(item.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(themePrimaryTextColor)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let available = item.availableCapacity {
+                    Text("剩余 \(byteText(available))")
+                        .font(.caption2)
+                        .foregroundStyle(themeSecondaryTextColor)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 132)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 10)
+            .background(themeGlassPanel(cornerRadius: 18, tint: isSelected(item.url) ? themeAccentColor : nil))
+            .overlay(alignment: .topTrailing) {
+                if isSelected(item.url) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(themeAccentColor)
+                        .padding(8)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            viewModel.navigate(to: item.url)
+        })
+        .help(item.subtitle)
     }
 
     private var selectionInspector: some View {

@@ -45,6 +45,17 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: [])
     @Published private(set) var statisticsRecentReports: [TransferReport] = []
     @Published private(set) var statisticsRefreshedAt = Date.distantPast
+    @Published var organizerSourceURL: URL?
+    @Published var organizerDestinationURL: URL?
+    @Published var organizerScanFilter: ScanFilter = .all
+    @Published var organizerOperationMode: OrganizerOperationMode = .copy
+    @Published var organizerDuplicatePolicy: OrganizerDuplicatePolicy = .rename
+    @Published private(set) var organizerPlan: OrganizerPlan?
+    @Published private(set) var organizerExecutionState = OrganizerExecutionState()
+    @Published private(set) var organizerLastSummary: OrganizerRunSummary?
+    @Published private(set) var isBuildingOrganizerPlan = false
+    @Published private(set) var isRunningOrganizer = false
+    @Published var organizerStatusMessage: String?
     @Published var importError: String?
     @Published var hasUnsavedChanges = false
     @Published var activeFolderPicker: FolderPickerPurpose?
@@ -63,6 +74,7 @@ final class AppViewModel: ObservableObject {
     private let volumeMonitor = VolumeMonitor()
     private let scanner = MediaScanner()
     private let transferService = TransferService()
+    private let organizerService = OrganizerService()
     private let interruptionToken = ImportInterruptionToken()
     private static let projectAutoStartDelay: TimeInterval = 300
     private static let statisticsRefreshInterval: TimeInterval = 600
@@ -75,6 +87,8 @@ final class AppViewModel: ObservableObject {
     private var pendingDeleteProjectIDs: Set<UUID> = []
     private var autoStartTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private var organizerPlanTask: Task<Void, Never>?
+    private var organizerExecutionTask: Task<Void, Never>?
     private var folderChildrenTask: Task<Void, Never>?
     private var sourceFolderChildrenTask: Task<Void, Never>?
     private var statisticsRefreshTask: Task<Void, Never>?
@@ -105,6 +119,7 @@ final class AppViewModel: ObservableObject {
         reports = reportLoad.items
         let statisticsIndexLoad = Self.loadStatisticsIndex(from: statisticsIndexURL)
         copyStatisticsIndex = statisticsIndexLoad.value
+        organizerDestinationURL = preferences.targetURL
         let projectLoad = Self.loadProjects(from: projectURL)
         let storedProjects = projectLoad.items
         let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
@@ -140,6 +155,8 @@ final class AppViewModel: ObservableObject {
         statisticsRefreshTask?.cancel()
         autoStartTask?.cancel()
         scanTask?.cancel()
+        organizerPlanTask?.cancel()
+        organizerExecutionTask?.cancel()
         folderChildrenTask?.cancel()
         sourceFolderChildrenTask?.cancel()
     }
@@ -360,6 +377,45 @@ final class AppViewModel: ObservableObject {
         return DiskCapacityResolver.capacity(for: backupURL)
     }
 
+    var organizerRule: OrganizerRule {
+        OrganizerRule(
+            scanFilter: organizerScanFilter,
+            operationMode: organizerOperationMode,
+            duplicatePolicy: organizerDuplicatePolicy
+        )
+    }
+
+    var organizerWarnings: [String] {
+        var warnings: [String] = []
+        guard let sourceURL = organizerSourceURL,
+              let destinationURL = organizerDestinationURL else {
+            return warnings
+        }
+        if PathSafety.pathsOverlap(sourceURL, destinationURL) {
+            warnings.append("源文件夹和目标文件夹不能相同，也不能互相包含。")
+        }
+        if hasActiveTransfers {
+            warnings.append("当前有导入或备份任务运行，请等任务完成后再执行规整，避免同时抢占磁盘。")
+        }
+        return warnings
+    }
+
+    var organizerCanBuildPlan: Bool {
+        organizerSourceURL != nil
+            && organizerDestinationURL != nil
+            && organizerWarnings.filter { !$0.contains("导入或备份任务") }.isEmpty
+            && !isBuildingOrganizerPlan
+            && !isRunningOrganizer
+    }
+
+    var organizerCanRun: Bool {
+        guard let organizerPlan else { return false }
+        return organizerPlan.executableFiles > 0
+            && organizerWarnings.isEmpty
+            && !isBuildingOrganizerPlan
+            && !isRunningOrganizer
+    }
+
     var targetSpacePreflight: DestinationSpacePreflight? {
         guard let summary = selectionSummary else { return nil }
         return SpacePreflightPolicy.evaluate(
@@ -395,6 +451,10 @@ final class AppViewModel: ObservableObject {
         case let .projectBackup(projectID):
             existingURL = copyProjects.first(where: { $0.id == projectID })?.backupRootURL
                 ?? preferences.backupURL
+        case .organizerSource:
+            existingURL = organizerSourceURL
+        case .organizerDestination:
+            existingURL = organizerDestinationURL ?? preferences.targetURL
         }
 
         let initial = existingURL ?? folderRoots.first?.url
@@ -434,6 +494,9 @@ final class AppViewModel: ObservableObject {
         switch purpose {
         case .target:
             preferences.targetPath = selectedFolderURL.path
+            if organizerDestinationURL == nil {
+                organizerDestinationURL = selectedFolderURL
+            }
             savePreferences()
         case .backup:
             preferences.backupEnabled = true
@@ -459,6 +522,12 @@ final class AppViewModel: ObservableObject {
             guard applyProjectBackup(projectID: projectID, backupURL: selectedFolderURL) else {
                 return
             }
+        case .organizerSource:
+            organizerSourceURL = selectedFolderURL
+            resetOrganizerPlan()
+        case .organizerDestination:
+            organizerDestinationURL = selectedFolderURL
+            resetOrganizerPlan()
         }
         closeFolderPicker()
     }
@@ -510,8 +579,10 @@ final class AppViewModel: ObservableObject {
         let values = try? url.resourceValues(forKeys: [.isWritableKey, .volumeIsReadOnlyKey])
         let requiresWritableDestination: Bool
         switch purpose {
-        case .target, .backup, .projectBackup:
+        case .target, .backup, .projectBackup, .organizerDestination:
             requiresWritableDestination = true
+        case .organizerSource:
+            requiresWritableDestination = false
         }
         if requiresWritableDestination,
            (values?.volumeIsReadOnly == true || values?.isWritable == false || !FileManager.default.isWritableFile(atPath: url.path)) {
@@ -853,6 +924,160 @@ final class AppViewModel: ObservableObject {
     func refreshCopyStatistics() {
         reconcileStatisticsIndexIfNeeded()
         rebuildCopyStatistics()
+    }
+
+    func setOrganizerScanFilter(_ filter: ScanFilter) {
+        guard organizerScanFilter != filter else { return }
+        organizerScanFilter = filter
+        resetOrganizerPlan()
+    }
+
+    func setOrganizerOperationMode(_ mode: OrganizerOperationMode) {
+        guard organizerOperationMode != mode else { return }
+        organizerOperationMode = mode
+        resetOrganizerPlan()
+    }
+
+    func setOrganizerDuplicatePolicy(_ policy: OrganizerDuplicatePolicy) {
+        guard organizerDuplicatePolicy != policy else { return }
+        organizerDuplicatePolicy = policy
+        resetOrganizerPlan()
+    }
+
+    func buildOrganizerPlan() {
+        guard let sourceURL = organizerSourceURL,
+              let destinationURL = organizerDestinationURL else {
+            importError = "请先选择待规整文件夹和规整目标文件夹。"
+            return
+        }
+        let blockingWarnings = organizerWarnings.filter { !$0.contains("导入或备份任务") }
+        guard blockingWarnings.isEmpty else {
+            importError = blockingWarnings.joined(separator: "\n")
+            return
+        }
+
+        organizerPlanTask?.cancel()
+        isBuildingOrganizerPlan = true
+        organizerStatusMessage = "正在扫描并生成规整预览..."
+        organizerPlan = nil
+        organizerLastSummary = nil
+        organizerExecutionState = OrganizerExecutionState()
+        let rule = organizerRule
+
+        organizerPlanTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let plan = try await organizerService.makePlan(
+                    sourceURL: sourceURL,
+                    destinationURL: destinationURL,
+                    rule: rule
+                )
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.organizerPlan = plan
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    self.organizerStatusMessage = "已生成预览：\(plan.executableFiles) 个可执行文件，\(ByteDisplayFormatter.string(fromByteCount: plan.totalBytes))。"
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    self.organizerStatusMessage = "已取消生成预览。"
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    self.organizerStatusMessage = nil
+                    self.importError = "生成规整预览失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func startOrganizerExecution() {
+        guard let plan = organizerPlan else {
+            importError = "请先生成规整预览。"
+            return
+        }
+        guard organizerWarnings.isEmpty else {
+            importError = organizerWarnings.joined(separator: "\n")
+            return
+        }
+        guard plan.executableFiles > 0 else {
+            importError = "当前预览没有可执行文件。"
+            return
+        }
+
+        organizerExecutionTask?.cancel()
+        isRunningOrganizer = true
+        organizerLastSummary = nil
+        organizerStatusMessage = plan.rule.operationMode == .copy ? "正在复制规整..." : "正在移动规整..."
+
+        organizerExecutionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await organizerService.execute(plan: plan) { [weak self] state in
+                    await MainActor.run { [weak self] in
+                        self?.organizerExecutionState = state
+                    }
+                }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerLastSummary = summary
+                    self.organizerStatusMessage = summary.success
+                        ? "规整完成：\(summary.completedFiles) 个文件已处理。"
+                        : "规整完成：\(summary.completedFiles) 个文件已处理，\(summary.failedFiles.count) 个失败。"
+                    self.organizerPlan = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerExecutionState.isActive = false
+                    self.organizerExecutionState.phaseTitle = "已取消规整"
+                    self.organizerStatusMessage = "已取消规整。"
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerExecutionState.isActive = false
+                    self.organizerStatusMessage = nil
+                    self.importError = "规整执行失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func cancelOrganizerExecution() {
+        if isBuildingOrganizerPlan {
+            organizerPlanTask?.cancel()
+        }
+        if isRunningOrganizer {
+            organizerExecutionTask?.cancel()
+        }
+    }
+
+    private func resetOrganizerPlan() {
+        organizerPlanTask?.cancel()
+        organizerPlanTask = nil
+        organizerPlan = nil
+        organizerLastSummary = nil
+        organizerStatusMessage = nil
+        if isBuildingOrganizerPlan {
+            isBuildingOrganizerPlan = false
+        }
+        if !isRunningOrganizer {
+            organizerExecutionState = OrganizerExecutionState()
+        }
     }
 
     private func startStatisticsRefreshTimer() {

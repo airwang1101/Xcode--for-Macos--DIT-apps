@@ -61,6 +61,7 @@ enum MainSection: String, CaseIterable, Identifiable {
     case copy
     case dashboard
     case backup
+    case organize
     case statistics
 
     var id: String { rawValue }
@@ -70,6 +71,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "拷贝"
         case .dashboard: "仪表盘"
         case .backup: "备份"
+        case .organize: "规整"
         case .statistics: "统计"
         }
     }
@@ -79,6 +81,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "square.and.arrow.down.on.square"
         case .dashboard: "gauge.with.dots.needle.67percent"
         case .backup: "externaldrive.badge.timemachine"
+        case .organize: "folder.badge.gearshape"
         case .statistics: "chart.xyaxis.line"
         }
     }
@@ -165,6 +168,7 @@ enum AppLocalization {
         "拷贝": "Copy",
         "仪表盘": "Dashboard",
         "备份": "Backup",
+        "规整": "Organize",
         "统计": "Stats",
         "多项目拷贝队列、主盘校验、串行备份与可追溯报告": "Multi-project copy queue, primary verification, serial backup, and traceable reports",
         "选择主目标盘": "Choose Primary Target",
@@ -366,7 +370,7 @@ enum ByteDisplayFormatter {
     }
 }
 
-enum ScanFilter: String, CaseIterable, Identifiable {
+enum ScanFilter: String, CaseIterable, Identifiable, Sendable {
     case video
     case photo
     case audio
@@ -516,6 +520,8 @@ enum FolderPickerPurpose: Identifiable {
     case target
     case backup
     case projectBackup(UUID)
+    case organizerSource
+    case organizerDestination
 
     var id: String {
         switch self {
@@ -525,6 +531,10 @@ enum FolderPickerPurpose: Identifiable {
             return "backup"
         case let .projectBackup(id):
             return "projectBackup-\(id.uuidString)"
+        case .organizerSource:
+            return "organizerSource"
+        case .organizerDestination:
+            return "organizerDestination"
         }
     }
 
@@ -533,6 +543,8 @@ enum FolderPickerPurpose: Identifiable {
         case .target: "选择主目标盘"
         case .backup: "选择备份盘"
         case .projectBackup: "选择项目备份盘"
+        case .organizerSource: "选择待规整文件夹"
+        case .organizerDestination: "选择规整目标文件夹"
         }
     }
 
@@ -541,6 +553,8 @@ enum FolderPickerPurpose: Identifiable {
         case .target: "设为主目标盘"
         case .backup: "设为备份盘"
         case .projectBackup: "应用到此项目"
+        case .organizerSource: "设为规整源"
+        case .organizerDestination: "设为规整目标"
         }
     }
 }

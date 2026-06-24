@@ -23,6 +23,9 @@
 		A20000000000000000000004 /* MediaScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* MediaScannerTests.swift */; };
 		A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* PersistenceCompatibilityTests.swift */; };
 		A20000000000000000000006 /* TransferServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* TransferServiceTests.swift */; };
+		C30000000000000000000001 /* OrganizerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000011 /* OrganizerModels.swift */; };
+		C30000000000000000000002 /* OrganizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000012 /* OrganizerService.swift */; };
+		C30000000000000000000003 /* OrganizerServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000013 /* OrganizerServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +57,9 @@
 		A20000000000000000000014 /* MediaScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaScannerTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000015 /* PersistenceCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceCompatibilityTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000016 /* TransferServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferServiceTests.swift; sourceTree = "<group>"; };
+		C30000000000000000000011 /* OrganizerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganizerModels.swift; sourceTree = "<group>"; };
+		C30000000000000000000012 /* OrganizerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganizerService.swift; sourceTree = "<group>"; };
+		C30000000000000000000013 /* OrganizerServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganizerServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -109,6 +115,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000012 /* Models.swift */,
+				C30000000000000000000011 /* OrganizerModels.swift */,
 				A20000000000000000000012 /* StoreFiles.swift */,
 			);
 			path = Models;
@@ -120,6 +127,7 @@
 				A10000000000000000000013 /* SettingsStore.swift */,
 				A10000000000000000000014 /* VolumeMonitor.swift */,
 				A10000000000000000000015 /* MediaScanner.swift */,
+				C30000000000000000000012 /* OrganizerService.swift */,
 				A10000000000000000000016 /* TransferService.swift */,
 				A20000000000000000000011 /* PathSafety.swift */,
 			);
@@ -148,6 +156,7 @@
 			children = (
 				A20000000000000000000013 /* PathSafetyTests.swift */,
 				A20000000000000000000014 /* MediaScannerTests.swift */,
+				C30000000000000000000013 /* OrganizerServiceTests.swift */,
 				A20000000000000000000015 /* PersistenceCompatibilityTests.swift */,
 				A20000000000000000000016 /* TransferServiceTests.swift */,
 			);
@@ -267,6 +276,8 @@
 				A10000000000000000000003 /* SettingsStore.swift in Sources */,
 				A10000000000000000000004 /* VolumeMonitor.swift in Sources */,
 				A10000000000000000000005 /* MediaScanner.swift in Sources */,
+				C30000000000000000000001 /* OrganizerModels.swift in Sources */,
+				C30000000000000000000002 /* OrganizerService.swift in Sources */,
 				A10000000000000000000006 /* TransferService.swift in Sources */,
 				A20000000000000000000001 /* PathSafety.swift in Sources */,
 				A10000000000000000000007 /* AppViewModel.swift in Sources */,
@@ -282,6 +293,7 @@
 			files = (
 				A20000000000000000000003 /* PathSafetyTests.swift in Sources */,
 				A20000000000000000000004 /* MediaScannerTests.swift in Sources */,
+				C30000000000000000000003 /* OrganizerServiceTests.swift in Sources */,
 				A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */,
 				A20000000000000000000006 /* TransferServiceTests.swift in Sources */,
 			);
