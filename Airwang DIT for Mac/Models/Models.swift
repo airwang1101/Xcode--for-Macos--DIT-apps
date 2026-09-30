@@ -454,7 +454,7 @@ enum AppStorageScope {
     static var applicationSupportURL: URL {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        if environment["AIRWANG_DIT_UI_TESTING"] == "1",
+        if (environment["AIRWANG_DIT_UI_TESTING"] == "1" || environment["AIRWANG_DIT_UNIT_TESTING"] == "1"),
            let overridePath = environment["AIRWANG_DIT_APP_SUPPORT_DIR"],
            !overridePath.isEmpty {
             return URL(fileURLWithPath: overridePath, isDirectory: true)
@@ -1187,6 +1187,10 @@ struct CopyProject: Codable, Identifiable {
     var autoStartEnabled: Bool
     var autoStartDeadline: Date?
     var errorMessage: String?
+    var resumeExistingFiles: Bool
+    var sourceVolumeIdentifier: String?
+    var targetVolumeIdentifier: String?
+    var backupVolumeIdentifier: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1214,6 +1218,10 @@ struct CopyProject: Codable, Identifiable {
         case autoStartEnabled
         case autoStartDeadline
         case errorMessage
+        case resumeExistingFiles
+        case sourceVolumeIdentifier
+        case targetVolumeIdentifier
+        case backupVolumeIdentifier
     }
 
     init(
@@ -1233,7 +1241,11 @@ struct CopyProject: Codable, Identifiable {
         status: CopyProjectStatus = .queued,
         orderIndex: Int,
         autoStartEnabled: Bool = false,
-        autoStartDeadline: Date? = nil
+        autoStartDeadline: Date? = nil,
+        resumeExistingFiles: Bool = false,
+        sourceVolumeIdentifier: String? = nil,
+        targetVolumeIdentifier: String? = nil,
+        backupVolumeIdentifier: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -1260,6 +1272,13 @@ struct CopyProject: Codable, Identifiable {
         self.autoStartEnabled = autoStartEnabled
         self.autoStartDeadline = autoStartDeadline
         errorMessage = nil
+        self.resumeExistingFiles = resumeExistingFiles
+        self.sourceVolumeIdentifier = sourceVolumeIdentifier
+            ?? (try? URL(fileURLWithPath: sourceRootPath).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        self.targetVolumeIdentifier = targetVolumeIdentifier
+            ?? (try? URL(fileURLWithPath: targetRootPath).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        self.backupVolumeIdentifier = backupVolumeIdentifier
+            ?? backupRootPath.flatMap { (try? URL(fileURLWithPath: $0).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString }
     }
 
     init(from decoder: any Decoder) throws {
@@ -1319,6 +1338,10 @@ struct CopyProject: Codable, Identifiable {
         autoStartEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoStartEnabled) ?? false
         autoStartDeadline = try container.decodeIfPresent(Date.self, forKey: .autoStartDeadline)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        resumeExistingFiles = try container.decodeIfPresent(Bool.self, forKey: .resumeExistingFiles) ?? false
+        sourceVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .sourceVolumeIdentifier)
+        targetVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .targetVolumeIdentifier)
+        backupVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .backupVolumeIdentifier)
     }
 
     var sourceRootURL: URL {
@@ -1343,6 +1366,31 @@ struct CopyProject: Codable, Identifiable {
 
     var hasBackup: Bool {
         backupRootPath != nil
+    }
+
+    mutating func prepareForRetry() {
+        status = .queued
+        errorMessage = nil
+        skipVerificationConfirmations = 0
+        resumeExistingFiles = true
+        primaryCopyState = ProjectStageState(title: ProjectStageKind.primaryCopy.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
+        primaryVerifyState = ProjectStageState(title: ProjectStageKind.primaryVerify.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
+        backupCopyState = ProjectStageState(
+            title: ProjectStageKind.backupCopy.title,
+            detail: hasBackup ? "等待主盘完成" : "未配置备份盘",
+            totalBytes: hasBackup ? totalBytes : 0,
+            totalFiles: hasBackup ? selectedItems.count : 0
+        )
+        backupVerifyState = ProjectStageState(
+            title: ProjectStageKind.backupVerify.title,
+            detail: hasBackup ? "等待备份完成" : "未配置备份盘",
+            totalBytes: hasBackup ? totalBytes : 0,
+            totalFiles: hasBackup ? selectedItems.count : 0
+        )
+        primaryReportID = nil
+        backupReportID = nil
+        autoStartEnabled = false
+        autoStartDeadline = nil
     }
 
     func isAutoStartReady(at now: Date) -> Bool {
@@ -1538,6 +1586,7 @@ struct TransferReport: Identifiable, Codable {
     let reportDocumentWriteFailed: Bool
     let importedItems: [String]
     let fileRecords: [FileVerificationRecord]
+    let resumedFiles: [String]
 
     var title: String {
         if cancelled {
@@ -1579,6 +1628,7 @@ struct TransferReport: Identifiable, Codable {
         case reportDocumentWriteFailed
         case importedItems
         case fileRecords
+        case resumedFiles
     }
 
     init(
@@ -1607,7 +1657,8 @@ struct TransferReport: Identifiable, Codable {
         localReportDocumentPath: String?,
         reportDocumentWriteFailed: Bool = false,
         importedItems: [String],
-        fileRecords: [FileVerificationRecord]
+        fileRecords: [FileVerificationRecord],
+        resumedFiles: [String] = []
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -1635,6 +1686,7 @@ struct TransferReport: Identifiable, Codable {
         self.reportDocumentWriteFailed = reportDocumentWriteFailed
         self.importedItems = importedItems
         self.fileRecords = fileRecords
+        self.resumedFiles = resumedFiles
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -1665,6 +1717,7 @@ struct TransferReport: Identifiable, Codable {
         try container.encode(reportDocumentWriteFailed, forKey: .reportDocumentWriteFailed)
         try container.encode([String](), forKey: .importedItems)
         try container.encode(fileRecords.filter { $0.status != "通过" }, forKey: .fileRecords)
+        try container.encode(resumedFiles, forKey: .resumedFiles)
     }
 
     init(from decoder: any Decoder) throws {
@@ -1697,6 +1750,7 @@ struct TransferReport: Identifiable, Codable {
         reportDocumentWriteFailed = try container.decodeIfPresent(Bool.self, forKey: .reportDocumentWriteFailed) ?? false
         importedItems = try container.decodeIfPresent([String].self, forKey: .importedItems) ?? []
         fileRecords = try container.decodeIfPresent([FileVerificationRecord].self, forKey: .fileRecords) ?? []
+        resumedFiles = try container.decodeIfPresent([String].self, forKey: .resumedFiles) ?? []
     }
 
     private static func inferredLocalReportPath(reportDocumentPath: String?, targetPath: String) -> String? {

@@ -134,9 +134,23 @@ When JSON persistence files are corrupt, the app backs them up with a `.corrupt-
 
 ## Verification Modes
 
-- `sha256`: hashes source data during copy, then verifies destination data.
-- `size`: compares copied file size against the source file size.
-- `skip`: records the skipped verification state in the task flow and report.
+- `sha256`: independently reads source and destination data and compares full SHA-256 checksums.
+- `fastFingerprint`: compares size and samples the beginning, middle, and end of a file. It cannot detect every content change.
+- `sizeOnly`: compares copied file size against the source file size.
+- `skipped`: records the skipped verification state in the task flow and report.
+
+## Retry and Recovery
+
+- A fresh project continues to reject existing destination files.
+- Manually retrying a project preserves its paths and enables recovery by file. Existing regular files are read back and compared to the original using full SHA-256, including when a faster verification mode was selected.
+- Missing files are copied using the selected verification policy. The skip-verification option remains available for these newly copied files.
+- Files with different content, symbolic links, and directory collisions are preserved and reported as failures. Recovery does not replace or remove them.
+- New projects record available source, primary, and backup volume identifiers. Transfer and report writes stop if a recorded destination is disconnected or replaced, even when its old mountpoint directory still exists.
+- Each attempt produces a separate report. Reports list files reused after successful full verification and the number of files newly copied in that attempt.
+- Recovery repeats the primary stage before running backup. The original source must remain available. Resuming inside a partially copied file and restoring backup independently of the original source are not implemented.
+- Legacy project and report JSON remains readable. Missing recovery fields default to a fresh execution policy and unrecorded volume identifiers.
+
+The Debug test scheme places application data in `/tmp/airwang-dit-unit-tests`. The two UI tests remain excluded from the default scheme. See [the recovery verification record](RECOVERY_VERIFICATION_2026-09-30.md) for current test coverage and release limitations.
 
 ## Safety Notes
 

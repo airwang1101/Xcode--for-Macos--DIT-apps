@@ -18,6 +18,8 @@ struct TransferService {
         case sourceFileMissing(path: String)
         case sourceReadFailed(path: String, reason: String)
         case destinationWriteFailed(path: String, reason: String)
+        case sourceVolumeChanged(path: String)
+        case resumeFileChanged(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -43,6 +45,10 @@ struct TransferService {
                 return "源文件读取失败，已记为单文件失败并跳过：\(path)。\(reason)"
             case let .destinationWriteFailed(path, reason):
                 return "目标盘写入失败，已停止当前阶段：\(path)。\(reason)"
+            case let .sourceVolumeChanged(path):
+                return "源设备标识与创建项目时不一致，已阻止恢复。请重新连接原始源设备：\(path)"
+            case let .resumeFileChanged(path):
+                return "恢复期间文件发生变化，已停止当前阶段并保留现有文件：\(path)"
             }
         }
     }
@@ -50,6 +56,41 @@ struct TransferService {
     struct Destination {
         let rootURL: URL
         let label: String
+        let volumeIdentifier: String?
+
+        init(rootURL: URL, label: String, volumeIdentifier: String? = nil) {
+            self.rootURL = rootURL
+            self.label = label
+            self.volumeIdentifier = volumeIdentifier
+                ?? (try? rootURL.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        }
+    }
+
+    private struct ResumeFileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+
+        static func capture(_ url: URL) throws -> Self {
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG else {
+                throw TransferError.destinationAlreadyExists(url.path)
+            }
+            return Self(
+                device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                modifiedSeconds: info.st_mtimespec.tv_sec,
+                modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                changedSeconds: info.st_ctimespec.tv_sec,
+                changedNanoseconds: info.st_ctimespec.tv_nsec
+            )
+        }
     }
 
     struct TransferResult {
@@ -183,7 +224,12 @@ struct TransferService {
             destinationFolderURL = backupImportURL
         }
 
-        let destination = Destination(rootURL: destinationRootURL, label: stage.destinationLabel)
+        let destination = Destination(
+            rootURL: destinationRootURL, label: stage.destinationLabel,
+            volumeIdentifier: stage == .primary ? project.targetVolumeIdentifier : project.backupVolumeIdentifier
+        )
+        let sourceVolumeIdentifier = (stage == .primary ? project.sourceVolumeIdentifier : project.targetVolumeIdentifier)
+            ?? (try? sourceBaseURL.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         // SHA-256 校验阶段独立重读源与目标各一遍(不复用拷贝时的内联哈希),
         // 因此工作量按两遍(源+目标)预估,prehashedPaths 留空。
         let verificationTotalWorkBytes = verificationWorkBytes(
@@ -229,21 +275,34 @@ struct TransferService {
         var preflightReportDetails: PreflightReportDetails?
         var stageVerificationMode = project.verificationMode
         var spacePreflightResults: [DestinationSpacePreflight] = []
+        var existingDestinations: [String: ResumeFileIdentity] = [:]
+        var resumedFiles: [String] = []
+        var newlyCopiedFiles = 0
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
             try validateRelativePaths(sources)
             try ensureAvailable(sourceBaseURL, role: sourceLabel)
-            let spacePreflightPayloadBytes = try livePayloadBytes(
-                sources.map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
-                under: sourceBaseURL
-            )
-            try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
-            try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
-            try ensureDestinationFilesDoNotExist(
-                relativePaths: sources.map(\.relativePath),
+            if stage == .primary, let expectedID = project.sourceVolumeIdentifier {
+                let actualID = try sourceBaseURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+                guard actualID == expectedID else {
+                    throw TransferError.sourceVolumeChanged(path: sourceBaseURL.path)
+                }
+            }
+            existingDestinations = try existingProjectDestinations(
+                project: project,
                 destinationFolderURL: destinationFolderURL,
                 destinationRootURL: destinationRootURL
+            )
+            let spacePreflightPayloadBytes = try livePayloadBytes(
+                sources.filter { existingDestinations[$0.relativePath] == nil }
+                    .map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
+                under: sourceBaseURL
+            )
+            try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
+            try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
+            state.verificationTotalBytes = projectVerificationWorkBytes(
+                for: sources, mode: project.verificationMode, existingPaths: Set(existingDestinations.keys)
             )
             spacePreflightResults = makeSpacePreflightResults(
                 destinations: [destination],
@@ -290,25 +349,38 @@ struct TransferService {
 
                 do {
                     try checkInterruption(interruptionToken)
-                    try ensureAvailable(sourceBaseURL, role: sourceLabel)
-                    try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
+                    try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                    try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                     let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                     let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
                     // SHA-256 校验阶段会独立重读源文件,拷贝时不再内联计算源哈希
                     // (内联哈希无法捕获读卡路径上的瞬时损坏,见校验阶段说明)。
-                    _ = try await copySourceFile(
-                        sourceURL: sourceFileURL,
-                        relativePath: item.relativePath,
-                        expectedSize: item.size,
-                        to: targetFileURL,
-                        destination: destination,
-                        sourceRoot: sourceBaseURL,
-                        sourceRole: sourceLabel,
-                        computeSourceHash: false,
-                        interruptionToken: interruptionToken,
-                        state: &state,
-                        progress: progress
-                    )
+                    if let existingIdentity = existingDestinations[item.relativePath] {
+                        try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                        guard try ResumeFileIdentity.capture(targetFileURL) == existingIdentity else {
+                            throw TransferError.resumeFileChanged(path: targetFileURL.path)
+                        }
+                        // This is provisional until full SHA-256 verification below succeeds.
+                        // Existing files are never opened for writing, replaced, or removed.
+                        state.processedBytes += existingIdentity.size
+                        state.phaseTitle = "已保留现有文件，等待 SHA-256 恢复复核"
+                        state.currentSpeedBytesPerSecond = 0
+                    } else {
+                        _ = try await copySourceFile(
+                            sourceURL: sourceFileURL,
+                            relativePath: item.relativePath,
+                            expectedSize: item.size,
+                            to: targetFileURL,
+                            destination: destination,
+                            sourceRoot: sourceBaseURL,
+                            sourceRole: sourceLabel,
+                            computeSourceHash: false,
+                            interruptionToken: interruptionToken,
+                            state: &state,
+                            progress: progress
+                        )
+                        newlyCopiedFiles += 1
+                    }
 
                     copiedItemPaths.insert(item.relativePath)
                     state.copiedFiles += 1
@@ -392,7 +464,9 @@ struct TransferService {
                 state.currentFile = "正在校验 \(stage.destinationLabel)"
                 state.currentSpeedBytesPerSecond = 0
                 state.verificationStartedAt = Date()
-                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                state.verificationTotalBytes = projectVerificationWorkBytes(
+                    for: sources, mode: stageVerificationMode, existingPaths: Set(existingDestinations.keys)
+                )
                 state.verificationProcessedBytes = 0
                 state.currentVerificationSpeedBytesPerSecond = 0
                 await progress(state)
@@ -402,14 +476,19 @@ struct TransferService {
                     if effectiveVerificationMode != stageVerificationMode {
                         stageVerificationMode = effectiveVerificationMode
                         let remainingWorkBytes = sources.dropFirst(index).reduce(Int64(0)) {
-                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                            $0 + verificationWorkBytes(
+                                for: $1,
+                                mode: existingDestinations[$1.relativePath] == nil ? stageVerificationMode : .sha256,
+                                destinationCount: 1, prehashedPaths: []
+                            )
                         }
                         state.verificationTotalBytes = max(state.verificationProcessedBytes + remainingWorkBytes, state.verificationProcessedBytes)
                         state.verificationStatus = stageVerificationMode == .skipped ? "用户已跳过校验" : "校验中"
                         await progress(state)
                     }
 
-                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                    let itemVerificationMode: VerificationMode = existingDestinations[item.relativePath] == nil ? stageVerificationMode : .sha256
+                    let itemWorkBytes = verificationWorkBytes(for: item, mode: itemVerificationMode, destinationCount: 1, prehashedPaths: [])
                     let itemStartBytes = state.verificationProcessedBytes
 
                     if copyFailedFiles.contains(item.relativePath) {
@@ -426,18 +505,32 @@ struct TransferService {
                     }
 
                     state.currentFile = item.relativePath
+                    state.verificationStatus = existingDestinations[item.relativePath] == nil
+                        ? (itemVerificationMode == .skipped ? "用户已跳过校验" : "校验中")
+                        : "恢复文件 SHA-256 全量核验"
                     await progress(state)
                     do {
                         try checkInterruption(interruptionToken)
+                        try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                        try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                         let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                         let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+                        var resumeSourceIdentity: ResumeFileIdentity?
+                        if let expectedIdentity = existingDestinations[item.relativePath] {
+                            try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                            try PathSafety.ensureSafeExistingFileTarget(for: sourceFileURL, under: sourceBaseURL)
+                            guard try ResumeFileIdentity.capture(targetFileURL) == expectedIdentity else {
+                                throw TransferError.resumeFileChanged(path: targetFileURL.path)
+                            }
+                            resumeSourceIdentity = try ResumeFileIdentity.capture(sourceFileURL)
+                        }
                         let record = try await verifyProjectFile(
                             item: item,
                             sourceURL: sourceFileURL,
                             targetURL: targetFileURL,
                             sourceRoot: sourceBaseURL,
                             destinationRoot: destination.rootURL,
-                            mode: stageVerificationMode,
+                            mode: itemVerificationMode,
                             stage: stage,
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
@@ -445,13 +538,24 @@ struct TransferService {
                             state: &state,
                             progress: progress
                         )
+                        try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                        try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
+                        if let expectedIdentity = existingDestinations[item.relativePath], let resumeSourceIdentity {
+                            try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                            try PathSafety.ensureSafeExistingFileTarget(for: sourceFileURL, under: sourceBaseURL)
+                            guard try ResumeFileIdentity.capture(targetFileURL) == expectedIdentity,
+                                  try ResumeFileIdentity.capture(sourceFileURL) == resumeSourceIdentity else {
+                                throw TransferError.resumeFileChanged(path: item.relativePath)
+                            }
+                            resumedFiles.append(item.relativePath)
+                        }
                         fileRecords.append(record)
                         completeVerificationProgress(
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
                             state: &state
                         )
-                        if stageVerificationMode == .skipped {
+                        if itemVerificationMode == .skipped {
                             appendUnique(item.relativePath, to: &skippedFiles)
                             state.skippedFiles = skippedFiles
                         } else {
@@ -529,7 +633,7 @@ struct TransferService {
 
         let finishedAt = Date()
         let wasCancelled = fatalStopReason == Self.userCancellationReason
-        let verificationSummary = makeProjectVerificationSummary(
+        var verificationSummary = makeProjectVerificationSummary(
             stage: stage,
             mode: stageVerificationMode,
             totalFiles: totalFiles,
@@ -537,6 +641,12 @@ struct TransferService {
             preflightFailureMessage: preflightFailureMessage,
             fatalStopReason: fatalStopReason
         )
+        if project.resumeExistingFiles {
+            let resumeSummary = language == .english
+                ? "Resume: \(resumedFiles.count) existing files passed full SHA-256 verification; \(newlyCopiedFiles) files copied this attempt. Existing files were preserved."
+                : "恢复复核：\(resumedFiles.count) 个已有文件通过 SHA-256 全量核验，本次新增拷贝 \(newlyCopiedFiles) 个文件。现有文件均已保留。"
+            verificationSummary += " " + resumeSummary
+        }
         var reportProject = project
         reportProject.verificationMode = stageVerificationMode
         let reportDocumentWriteResult = writeProjectReportDocument(
@@ -554,6 +664,7 @@ struct TransferService {
             verificationFailedFiles: verificationFailedFiles,
             skippedFiles: skippedFiles,
             fileRecords: fileRecords,
+            resumedFiles: resumedFiles,
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
@@ -608,7 +719,8 @@ struct TransferService {
             localReportDocumentPath: reportDocumentWriteResult.localURL?.path,
             reportDocumentWriteFailed: reportWriteFailed,
             importedItems: sources.map(\.relativePath),
-            fileRecords: fileRecords
+            fileRecords: fileRecords,
+            resumedFiles: resumedFiles
         )
 
         return ProjectStageResult(report: report, finalState: state)
@@ -1376,14 +1488,22 @@ struct TransferService {
     private func ensureRequiredLocations(summary: ImportSelectionSummary, destinations: [Destination]) throws {
         try ensureAvailable(summary.sourceVolume.url, role: "源设备")
         for destination in destinations {
-            try ensureAvailable(destination.rootURL, role: destination.label)
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
             try ensureWritableDestination(destination.rootURL, role: destination.label)
         }
     }
 
-    private func ensureAvailable(_ url: URL, role: String) throws {
+    private func ensureAvailable(_ url: URL, role: String, expectedVolumeIdentifier: String? = nil) throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw TransferError.deviceUnavailable(role: role, path: url.path)
+        }
+        if let expectedVolumeIdentifier {
+            // Use a fresh URL so cached resource values cannot hide an unmounted/replaced volume.
+            let currentURL = URL(fileURLWithPath: url.path)
+            let currentID = try? currentURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+            guard currentID == expectedVolumeIdentifier else {
+                throw TransferError.deviceUnavailable(role: role, path: url.path)
+            }
         }
     }
 
@@ -1402,6 +1522,35 @@ struct TransferService {
         let values = try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey, .isWritableKey])
         if values?.volumeIsReadOnly == true || values?.isWritable == false || !FileManager.default.isWritableFile(atPath: url.path) {
             throw TransferError.destinationNotWritable(role: role, path: url.path)
+        }
+    }
+
+    private func existingProjectDestinations(
+        project: CopyProject,
+        destinationFolderURL: URL,
+        destinationRootURL: URL
+    ) throws -> [String: ResumeFileIdentity] {
+        var existing: [String: ResumeFileIdentity] = [:]
+        for item in project.selectedItems {
+            let url = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+            try PathSafety.ensureSafeWritableFileTarget(for: url, under: destinationRootURL)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard project.resumeExistingFiles else { throw TransferError.destinationAlreadyExists(url.path) }
+            existing[item.relativePath] = try ResumeFileIdentity.capture(url)
+        }
+        return existing
+    }
+
+    private func projectVerificationWorkBytes(
+        for items: [ProjectMediaItem],
+        mode: VerificationMode,
+        existingPaths: Set<String>
+    ) -> Int64 {
+        items.reduce(Int64(0)) {
+            $0 + verificationWorkBytes(
+                for: $1, mode: existingPaths.contains($1.relativePath) ? .sha256 : mode,
+                destinationCount: 1, prehashedPaths: []
+            )
         }
     }
 
@@ -1447,6 +1596,8 @@ struct TransferService {
                  .destinationNotWritable,
                  .pathOverlap,
                  .destinationAlreadyExists,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
                  .destinationWriteFailed:
                 return transferError.localizedDescription
             case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
@@ -1483,6 +1634,8 @@ struct TransferService {
                  .destinationNotWritable,
                  .pathOverlap,
                  .destinationAlreadyExists,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
                  .destinationWriteFailed:
                 return transferError.localizedDescription
             case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
@@ -1587,9 +1740,10 @@ struct TransferService {
             ?? SpacePreflightPolicy.minimumSafetyMarginBytes
 
         try checkInterruption(interruptionToken)
+        let sourceRootVolumeIdentifier = (try? sourceRoot.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         try ensureAvailable(sourceRoot, role: sourceRole)
         try ensureSourceFileExists(sourceURL, root: sourceRoot, sourceRole: sourceRole)
-        try ensureAvailable(destination.rootURL, role: destination.label)
+        try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
         try ensureWritableDestination(destination.rootURL, role: destination.label)
         try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRoot)
         try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
@@ -1661,8 +1815,8 @@ struct TransferService {
                 try checkInterruption(interruptionToken)
                 let availabilityCheckAt = Date()
                 if availabilityCheckAt.timeIntervalSince(lastAvailabilityCheckAt) >= availabilityCheckInterval {
-                    try ensureAvailable(sourceRoot, role: sourceRole)
-                    try ensureAvailable(destination.rootURL, role: destination.label)
+                    try ensureAvailable(sourceRoot, role: sourceRole, expectedVolumeIdentifier: sourceRootVolumeIdentifier)
+                    try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
                     let currentSourceSize = fileSize(at: sourceURL) ?? max(expectedSize, bytesCopiedForFile)
                     let remainingBytes = max(currentSourceSize - bytesCopiedForFile, 0)
                     let (requiredWithMargin, overflowed) = remainingBytes.addingReportingOverflow(safetyMarginBytes)
@@ -1722,6 +1876,7 @@ struct TransferService {
 
             state.phaseTitle = "正在确认写入到\(destination.label)"
             await progress(state)
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
             do {
                 try destinationHandle?.synchronize()
             } catch {
@@ -1744,6 +1899,7 @@ struct TransferService {
                 throw TransferError.copySizeMismatch(file: relativePath, expected: bytesCopiedForFile, actual: actualSize)
             }
 
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
             try installCopiedFile(from: temporaryURL, to: destinationURL, under: destination.rootURL)
             await progress(state)
             return sourceHasher.map { hasher in
@@ -2093,7 +2249,10 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        return writeReportContent(targetURL: url, targetRootURL: targetRootURL, localURL: fallbackURL) { writer in
+        return writeReportContent(
+            targetURL: url, targetRootURL: targetRootURL,
+            targetVolumeIdentifier: destinations.first?.volumeIdentifier, localURL: fallbackURL
+        ) { writer in
             if isEnglish {
                 try writer.write("""
                 Airwang DIT for Mac Copy Report
@@ -2253,6 +2412,7 @@ struct TransferService {
         verificationFailedFiles: [String],
         skippedFiles: [String],
         fileRecords: [FileVerificationRecord],
+        resumedFiles: [String],
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
@@ -2273,7 +2433,10 @@ struct TransferService {
             routeLine = isEnglish ? "Stage Route: primary target path -> backup path. Backup reads from the primary target." : "本阶段路径: 主目标地址 -> 备份地址（备份来源为主目标盘）"
         }
 
-        return writeReportContent(targetURL: url, targetRootURL: targetRootURL, localURL: fallbackURL) { writer in
+        return writeReportContent(
+            targetURL: url, targetRootURL: targetRootURL,
+            targetVolumeIdentifier: destination.volumeIdentifier, localURL: fallbackURL
+        ) { writer in
             if isEnglish {
                 try writer.write("""
                 \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
@@ -2313,6 +2476,7 @@ struct TransferService {
                 Copy Failures: \(copyFailedFiles.count)
                 Verification Failures: \(verificationFailedFiles.count)
                 Skipped Verification: \(skippedFiles.count)
+                Existing Files Reused After SHA-256: \(resumedFiles.count)
 
                 [Media List]
 
@@ -2340,6 +2504,8 @@ struct TransferService {
                     emptyText: "No verification details",
                     to: writer
                 )
+                try writer.writeLine("[Files Reused After Full SHA-256 Verification]")
+                try writeNumberedSection(resumedFiles, emptyText: "No reused files", to: writer)
                 try writer.writeLine("[Issue Files]")
                 try writeNumberedSection(failedFiles, emptyText: "No issue files", to: writer)
                 try writer.write("""
@@ -2388,6 +2554,7 @@ struct TransferService {
                 拷贝失败: \(copyFailedFiles.count)
                 校验失败: \(verificationFailedFiles.count)
                 跳过校验: \(skippedFiles.count)
+                SHA-256 复核后复用: \(resumedFiles.count)
 
                 [素材清单]
 
@@ -2415,6 +2582,8 @@ struct TransferService {
                     emptyText: "无校验明细",
                     to: writer
                 )
+                try writer.writeLine("[SHA-256 全量复核后复用文件]")
+                try writeNumberedSection(resumedFiles, emptyText: "无复用文件", to: writer)
                 try writer.writeLine("[异常文件]")
                 try writeNumberedSection(failedFiles, emptyText: "无异常文件", to: writer)
                 try writer.write("""
@@ -2541,6 +2710,8 @@ struct TransferService {
                     englishRecommendation: "Reconnect the device and confirm the path is accessible before retrying"
                 )
             case .transferInterrupted,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
                  .copySizeMismatch,
                  .sourceFileMissing,
                  .sourceReadFailed:
@@ -2632,6 +2803,7 @@ struct TransferService {
         _ content: String,
         targetURL: URL?,
         targetRootURL: URL?,
+        targetVolumeIdentifier: String? = nil,
         localURL: URL
     ) -> ReportDocumentWriteResult {
         var writtenTargetURL: URL?
@@ -2641,6 +2813,7 @@ struct TransferService {
         if let targetURL {
             if let targetRootURL {
                 do {
+                    try ensureAvailable(targetRootURL, role: "报告目标盘", expectedVolumeIdentifier: targetVolumeIdentifier)
                     let outputURL = nonCollidingReportURL(for: targetURL)
                     try writeText(content, to: outputURL, under: targetRootURL)
                     writtenTargetURL = outputURL
@@ -2674,6 +2847,7 @@ struct TransferService {
     private func writeReportContent(
         targetURL: URL?,
         targetRootURL: URL?,
+        targetVolumeIdentifier: String? = nil,
         localURL: URL,
         body: (ReportTextWriter) throws -> Void
     ) -> ReportDocumentWriteResult {
@@ -2684,6 +2858,7 @@ struct TransferService {
         if let targetURL {
             if let targetRootURL {
                 do {
+                    try ensureAvailable(targetRootURL, role: "报告目标盘", expectedVolumeIdentifier: targetVolumeIdentifier)
                     let outputURL = nonCollidingReportURL(for: targetURL)
                     try writeText(to: outputURL, under: targetRootURL, body: body)
                     writtenTargetURL = outputURL

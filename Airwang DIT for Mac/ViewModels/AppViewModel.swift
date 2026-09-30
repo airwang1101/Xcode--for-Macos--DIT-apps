@@ -1319,39 +1319,11 @@ final class AppViewModel: ObservableObject {
         }
 
         updateProject(project.id) { item in
-            item.status = .queued
-            item.errorMessage = nil
-            item.skipVerificationConfirmations = 0
-            item.primaryCopyState = ProjectStageState(
-                title: ProjectStageKind.primaryCopy.title,
-                totalBytes: item.totalBytes,
-                totalFiles: item.selectedItems.count
-            )
-            item.primaryVerifyState = ProjectStageState(
-                title: ProjectStageKind.primaryVerify.title,
-                totalBytes: item.totalBytes,
-                totalFiles: item.selectedItems.count
-            )
-            item.backupCopyState = ProjectStageState(
-                title: ProjectStageKind.backupCopy.title,
-                detail: item.hasBackup ? "等待主盘完成" : "未配置备份盘",
-                totalBytes: item.hasBackup ? item.totalBytes : 0,
-                totalFiles: item.hasBackup ? item.selectedItems.count : 0
-            )
-            item.backupVerifyState = ProjectStageState(
-                title: ProjectStageKind.backupVerify.title,
-                detail: item.hasBackup ? "等待备份完成" : "未配置备份盘",
-                totalBytes: item.hasBackup ? item.totalBytes : 0,
-                totalFiles: item.hasBackup ? item.selectedItems.count : 0
-            )
-            item.primaryReportID = nil
-            item.backupReportID = nil
-            item.autoStartEnabled = false
-            item.autoStartDeadline = nil
+            item.prepareForRetry()
         }
         scheduleNextAutoStartCheck()
         selectedSection = .copy
-        importError = "已将项目“\(project.name)”重新加入任务队列。需要手动点击“执行任务队列”才会开始写盘。"
+        importError = "已将项目“\(project.name)”重新加入任务队列。已有文件会完整复核 SHA-256，缺失文件会补拷，内容不一致的文件将保留并报告异常。需要手动点击“执行任务队列”才会开始。"
     }
 
     func cancelAutoStart(for project: CopyProject) {
@@ -2108,6 +2080,9 @@ final class AppViewModel: ObservableObject {
 
         updateProject(projectID) { item in
             item.backupRootPath = backupURL?.path
+            item.backupVolumeIdentifier = backupURL.flatMap {
+                (try? $0.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+            }
             item.backupReportID = nil
             if backupURL == nil {
                 item.backupCopyState = ProjectStageState(

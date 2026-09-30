@@ -33,6 +33,63 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertEqual(project.skipVerificationConfirmations, 0)
         XCTAssertFalse(project.autoStartEnabled)
         XCTAssertNil(project.autoStartDeadline)
+        XCTAssertFalse(project.resumeExistingFiles)
+        XCTAssertNil(project.sourceVolumeIdentifier)
+        XCTAssertNil(project.targetVolumeIdentifier)
+        XCTAssertNil(project.backupVolumeIdentifier)
+    }
+
+    func testRetryStateRoundTripsWithoutChangingPathsOrVerificationPolicy() throws {
+        var project = makeProject(autoStartEnabled: true, autoStartDeadline: Date(timeIntervalSince1970: 300))
+        project.status = .failed
+        project.verificationMode = .fastFingerprint
+        project.sourceVolumeIdentifier = "original-volume-id"
+        project.targetVolumeIdentifier = "original-primary-volume-id"
+        project.backupVolumeIdentifier = "original-backup-volume-id"
+        project.primaryReportID = UUID()
+        project.primaryCopyState.isComplete = true
+        project.primaryVerifyState.isActive = true
+        project.skipVerificationConfirmations = 2
+        project.errorMessage = "interrupted"
+        let projectID = project.id
+        let outputURL = project.primaryImportURL
+
+        project.prepareForRetry()
+        let restored = try JSONDecoder().decode(CopyProject.self, from: JSONEncoder().encode(project))
+
+        XCTAssertEqual(restored.id, projectID)
+        XCTAssertEqual(restored.primaryImportURL, outputURL)
+        XCTAssertEqual(restored.sourceRootPath, project.sourceRootPath)
+        XCTAssertEqual(restored.verificationMode, .fastFingerprint)
+        XCTAssertEqual(restored.sourceVolumeIdentifier, "original-volume-id")
+        XCTAssertEqual(restored.targetVolumeIdentifier, "original-primary-volume-id")
+        XCTAssertEqual(restored.backupVolumeIdentifier, "original-backup-volume-id")
+        XCTAssertTrue(restored.resumeExistingFiles)
+        XCTAssertEqual(restored.status, .queued)
+        XCTAssertFalse(restored.autoStartEnabled)
+        XCTAssertNil(restored.autoStartDeadline)
+        XCTAssertNil(restored.primaryReportID)
+        XCTAssertNil(restored.errorMessage)
+        XCTAssertFalse(restored.primaryCopyState.isComplete)
+        XCTAssertFalse(restored.primaryVerifyState.isActive)
+        XCTAssertEqual(restored.skipVerificationConfirmations, 0)
+        XCTAssertEqual(restored.backupCopyState.detail, "未配置备份盘")
+    }
+
+    func testRetryRetainsBackupConfigurationAndResetsAllStageProgress() {
+        var project = makeProject()
+        project.backupRootPath = "/Volumes/Backup"
+        project.backupReportID = UUID()
+        project.backupCopyState.completedFiles = 4
+        project.backupVerifyState.isComplete = true
+
+        project.prepareForRetry()
+
+        XCTAssertEqual(project.backupRootPath, "/Volumes/Backup")
+        XCTAssertNil(project.backupReportID)
+        XCTAssertEqual(project.backupCopyState.completedFiles, 0)
+        XCTAssertFalse(project.backupVerifyState.isComplete)
+        XCTAssertEqual(project.backupCopyState.detail, "等待主盘完成")
     }
 
     func testDefaultUISettingsDisableAutoStart() {
