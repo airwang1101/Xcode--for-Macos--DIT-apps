@@ -1,10 +1,11 @@
 import XCTest
 
+@MainActor
 final class StatisticsUITests: XCTestCase {
     private var app: XCUIApplication!
     private var appSupportURL: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         continueAfterFailure = false
 
         appSupportURL = FileManager.default.temporaryDirectory
@@ -19,7 +20,7 @@ final class StatisticsUITests: XCTestCase {
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5), app.debugDescription)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         if app?.state == .runningForeground || app?.state == .runningBackground {
             app.terminate()
         }

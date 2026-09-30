@@ -14,6 +14,8 @@ Repository: [wngair/Xcode--for-Macos--DIT-apps](https://github.com/wngair/Xcode-
 - Main scheme: `Airwang DIT for Mac`
 - Test target: `Airwang DIT for MacTests`
 
+Commercial release gates and current evidence are maintained in [DISTRIBUTION_READINESS.md](DISTRIBUTION_READINESS.md). The earlier GA plan remains a historical plan; its old code counts and defect statuses are not current validation results.
+
 ## Features
 
 - Detects external storage volumes and shows importable media sources.
@@ -132,6 +134,8 @@ Reports/Airwang_*_Report_*.txt
 
 When JSON persistence files are corrupt, the app backs them up with a `.corrupt-YYYYMMDD_HHMMSS` suffix and falls back to empty or default state.
 
+Corrupt backups now have an additional unique identifier, so repeated recovery attempts preserve each copy. Before saving, the app checks the existing data again. Unrecognized valid JSON and unsupported schema versions are preserved and saving reports an error. Compatible settings retain unknown additive fields, and valid legacy arrays are backed up before migration.
+
 ## Verification Modes
 
 - `sha256`: independently reads source and destination data and compares full SHA-256 checksums.
@@ -159,6 +163,12 @@ The Debug test scheme places application data in `/tmp/airwang-dit-unit-tests`. 
 - Symbolic link paths are rejected for writable and existing file targets.
 - Hidden system folders such as `.Trashes`, `.Spotlight-V100`, `.fseventsd`, and `__MACOSX` are skipped during scanning.
 - Build output, archives, local IDE metadata, and app distribution artifacts are ignored by Git.
+
+## Distribution Builds
+
+Run `bash script/build-release.sh preview --version 0.1.1 --build 20260930` to test, archive, package and inspect an unsigned internal DMG. Run `bash script/build-release.sh check` to inspect signing prerequisites. See [distribution/RELEASE.md](distribution/RELEASE.md) for the signed candidate procedure and saved-package verification.
+
+The GitHub validation workflow uses the same preview process. A local build does not prove remote CI or commercial acceptance. Developer ID credentials, Sparkle updates, licensing and the full product acceptance matrix remain required.
 
 ## GitHub
 
