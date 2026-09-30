@@ -5,13 +5,39 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var viewModel: AppViewModel?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        presentMainWindowForUITesting()
+        #endif
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        #if DEBUG
+        presentMainWindowForUITesting()
+        #endif
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard viewModel?.hasActiveTransfers == true else {
+        guard viewModel?.hasActiveFileOperations == true else {
             return .terminateNow
         }
-        viewModel?.importError = "仍有导入或校验任务正在执行。请先取消并等待报告生成完成后再退出。"
+        viewModel?.importError = "仍有导入、校验或规整任务正在执行。请先取消并等待文件操作收尾后再退出。"
         return .terminateCancel
     }
+
+    #if DEBUG
+    private func presentMainWindowForUITesting() {
+        guard ProcessInfo.processInfo.environment["AIRWANG_DIT_UI_TESTING"] == "1" else { return }
+
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            for window in NSApp.windows where window.isVisible && !window.isMiniaturized {
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+            }
+        }
+    }
+    #endif
 }
 
 @main
@@ -69,13 +95,26 @@ struct AirwangDITForMacApp: App {
 private struct MainWindowConfigurator: NSViewRepresentable {
     let minSize: NSSize
 
+    final class Coordinator {
+        weak var configuredWindow: NSWindow?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         NSView(frame: .zero)
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        // updateNSView 随每次 SwiftUI 渲染被调用(窗口缩放期间是每帧),
+        // 窗口属性只需设置一次:同一窗口重复配置直接跳过。
+        let coordinator = context.coordinator
         DispatchQueue.main.async {
             guard let window = nsView.window else { return }
+            guard coordinator.configuredWindow !== window else { return }
+            coordinator.configuredWindow = window
             window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
             window.collectionBehavior.insert(.fullScreenPrimary)
             window.minSize = minSize

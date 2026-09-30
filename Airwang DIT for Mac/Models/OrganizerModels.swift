@@ -43,8 +43,41 @@ enum OrganizerDuplicatePolicy: String, CaseIterable, Identifiable, Sendable {
 
     var subtitle: String {
         switch self {
-        case .rename: "同名文件保留两份，例如 A001 2.mov"
-        case .skip: "目标位置已有同名文件时不写入"
+        case .rename: "同名不同内容时保留两份，例如 A001 2.mov；内容相同自动跳过"
+        case .skip: "目标位置已有同名文件时不写入；内容相同标记为重复"
+        }
+    }
+}
+
+/// 规整预览列表的显示范围。
+enum OrganizerPreviewFilter: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case conflicts
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .conflicts: "仅冲突"
+        }
+    }
+}
+
+/// 生成规整预览时的阶段性进度，用于把长时间的扫描/查重过程反馈到界面。
+enum OrganizerPlanProgress: Equatable, Sendable {
+    case scanning(found: Int)
+    case readingMetadata(processed: Int, total: Int)
+    case resolving(processed: Int, total: Int)
+
+    var message: String {
+        switch self {
+        case let .scanning(found):
+            return "正在扫描：已发现 \(found) 个文件"
+        case let .readingMetadata(processed, total):
+            return "读取拍摄信息：\(processed)/\(total)"
+        case let .resolving(processed, total):
+            return "查重与冲突检查：\(processed)/\(total)"
         }
     }
 }
@@ -59,13 +92,23 @@ enum OrganizerConflictResolution: Hashable, Sendable {
     case none
     case renamed(originalPath: String)
     case skipped(existingPath: String)
+    /// 查重命中：目标位置（或同批更早的文件）已有一份内容完全相同的文件，
+    /// 无需再写一份副本。与 `skipped` 的区别是它经过了逐字节内容比对，
+    /// 跳过它不会丢失任何素材。
+    case duplicate(existingPath: String)
 
     var title: String {
         switch self {
         case .none: "直接写入"
         case .renamed: "已改名"
         case .skipped: "跳过"
+        case .duplicate: "内容重复"
         }
+    }
+
+    var isConflict: Bool {
+        if case .none = self { return false }
+        return true
     }
 }
 
@@ -83,10 +126,12 @@ struct OrganizerPlanItem: Identifiable, Hashable, Sendable {
     let conflictResolution: OrganizerConflictResolution
 
     var isExecutable: Bool {
-        if case .skipped = conflictResolution {
+        switch conflictResolution {
+        case .skipped, .duplicate:
             return false
+        case .none, .renamed:
+            return true
         }
-        return true
     }
 }
 
@@ -98,30 +143,81 @@ struct OrganizerPlan: Sendable {
     let createdAt: Date
     let items: [OrganizerPlanItem]
 
-    var totalFiles: Int { items.count }
-    var executableFiles: Int { items.filter(\.isExecutable).count }
-    var skippedFiles: Int { items.count - executableFiles }
-    var totalBytes: Int64 { items.filter(\.isExecutable).reduce(0) { $0 + $1.size } }
+    // 计数器在构造时单遍算好存下来。它们被规整预览卡和统计页在每次 body
+    // 求值时反复读取；若保持计算属性，万级条目的计划会在每次 @Published
+    // 发布时做几十万次迭代（dayCount 还带 startOfDay 日历调用）。
+    let totalFiles: Int
+    let executableFiles: Int
+    let totalBytes: Int64
+    let dayCount: Int
+    let deviceCount: Int
+    let renamedFiles: Int
+    /// 查重命中的文件数：目标或同批已有内容完全相同的副本。
+    let duplicateFiles: Int
+    let conflictFiles: Int
 
-    var dayCount: Int {
-        Set(items.map { Calendar.current.startOfDay(for: $0.capturedAt) }).count
-    }
+    var skippedFiles: Int { totalFiles - executableFiles }
 
-    var deviceCount: Int {
-        Set(items.map(\.deviceFolderName)).count
-    }
+    init(
+        id: UUID,
+        sourceURL: URL,
+        destinationURL: URL,
+        rule: OrganizerRule,
+        createdAt: Date,
+        items: [OrganizerPlanItem]
+    ) {
+        self.id = id
+        self.sourceURL = sourceURL
+        self.destinationURL = destinationURL
+        self.rule = rule
+        self.createdAt = createdAt
+        self.items = items
 
-    var renamedFiles: Int {
-        items.reduce(0) { count, item in
-            if case .renamed = item.conflictResolution {
-                return count + 1
+        var executable = 0
+        var bytes: Int64 = 0
+        var renamed = 0
+        var duplicates = 0
+        var conflicts = 0
+        var days = Set<Date>()
+        var devices = Set<String>()
+        let calendar = Calendar.current
+        for item in items {
+            if item.isExecutable {
+                executable += 1
+                bytes += item.size
             }
-            return count
+            switch item.conflictResolution {
+            case .none: break
+            case .renamed:
+                renamed += 1
+                conflicts += 1
+            case .duplicate:
+                duplicates += 1
+                conflicts += 1
+            case .skipped:
+                conflicts += 1
+            }
+            days.insert(calendar.startOfDay(for: item.capturedAt))
+            devices.insert(item.deviceFolderName)
         }
+        totalFiles = items.count
+        executableFiles = executable
+        totalBytes = bytes
+        renamedFiles = renamed
+        duplicateFiles = duplicates
+        conflictFiles = conflicts
+        dayCount = days.count
+        deviceCount = devices.count
     }
 
-    var sampleItems: [OrganizerPlanItem] {
-        Array(items.prefix(80))
+    /// 预览列表数据：全部时截取前 80 条；仅冲突时上限放宽，方便逐条核对查重结果。
+    func previewItems(filter: OrganizerPreviewFilter) -> [OrganizerPlanItem] {
+        switch filter {
+        case .all:
+            return Array(items.prefix(80))
+        case .conflicts:
+            return Array(items.lazy.filter { $0.conflictResolution.isConflict }.prefix(300))
+        }
     }
 }
 
@@ -131,6 +227,8 @@ struct OrganizerExecutionState: Equatable, Sendable {
     var totalFiles: Int = 0
     var processedFiles: Int = 0
     var skippedFiles: Int = 0
+    /// skippedFiles 的子集：因为内容与目标完全一致而跳过的文件。
+    var duplicateFiles: Int = 0
     var failedFiles: [String] = []
     var currentFile: String = ""
     var phaseTitle: String = "等待规整"
@@ -149,6 +247,8 @@ struct OrganizerRunSummary: Equatable, Sendable {
     let totalFiles: Int
     let completedFiles: Int
     let skippedFiles: Int
+    /// skippedFiles 的子集：内容查重命中而跳过的文件。
+    var duplicateFiles: Int = 0
     let failedFiles: [String]
     let totalBytes: Int64
     let startedAt: Date
@@ -156,5 +256,63 @@ struct OrganizerRunSummary: Equatable, Sendable {
 
     var success: Bool {
         failedFiles.isEmpty
+    }
+}
+
+struct OrganizerStatisticsSnapshot: Equatable, Sendable {
+    let plannedFiles: Int
+    let executableFiles: Int
+    let previewSkippedFiles: Int
+    let plannedBytes: Int64
+    let dayCount: Int
+    let deviceCount: Int
+    let renamedFiles: Int
+    /// 预览中查重命中的文件数。
+    var duplicateFiles: Int = 0
+    let lastOperationMode: OrganizerOperationMode?
+    let lastTotalFiles: Int
+    let lastCompletedFiles: Int
+    let lastSkippedFiles: Int
+    let lastFailedFiles: Int
+    let lastBytes: Int64
+    let lastDuration: TimeInterval
+
+    var hasPreviewData: Bool {
+        plannedFiles > 0
+    }
+
+    var hasLastRunData: Bool {
+        lastTotalFiles > 0
+    }
+
+    var hasAnyData: Bool {
+        hasPreviewData || hasLastRunData
+    }
+
+    static func make(plan: OrganizerPlan?, lastSummary: OrganizerRunSummary?) -> OrganizerStatisticsSnapshot {
+        let lastDuration: TimeInterval
+        if let lastSummary {
+            lastDuration = max(lastSummary.finishedAt.timeIntervalSince(lastSummary.startedAt), 0)
+        } else {
+            lastDuration = 0
+        }
+
+        return OrganizerStatisticsSnapshot(
+            plannedFiles: plan?.totalFiles ?? 0,
+            executableFiles: plan?.executableFiles ?? 0,
+            previewSkippedFiles: plan?.skippedFiles ?? 0,
+            plannedBytes: plan?.totalBytes ?? 0,
+            dayCount: plan?.dayCount ?? 0,
+            deviceCount: plan?.deviceCount ?? 0,
+            renamedFiles: plan?.renamedFiles ?? 0,
+            duplicateFiles: plan?.duplicateFiles ?? 0,
+            lastOperationMode: lastSummary?.operationMode,
+            lastTotalFiles: lastSummary?.totalFiles ?? 0,
+            lastCompletedFiles: lastSummary?.completedFiles ?? 0,
+            lastSkippedFiles: lastSummary?.skippedFiles ?? 0,
+            lastFailedFiles: lastSummary?.failedFiles.count ?? 0,
+            lastBytes: lastSummary?.totalBytes ?? 0,
+            lastDuration: lastDuration
+        )
     }
 }

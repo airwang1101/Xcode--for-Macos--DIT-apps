@@ -386,6 +386,16 @@ enum ScanFilter: String, CaseIterable, Identifiable, Sendable {
         case .all: "全部"
         }
     }
+
+    /// 全工程统一的媒体类型图标（导入表单与规整预览共用）。
+    var systemImageName: String {
+        switch self {
+        case .video: "film.fill"
+        case .photo: "photo.fill"
+        case .audio: "waveform"
+        case .all: "doc.fill"
+        }
+    }
 }
 
 struct AppPreferences: Codable {
@@ -442,6 +452,15 @@ enum AppStorageScope {
     }
 
     static var applicationSupportURL: URL {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if environment["AIRWANG_DIT_UI_TESTING"] == "1",
+           let overridePath = environment["AIRWANG_DIT_APP_SUPPORT_DIR"],
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath, isDirectory: true)
+        }
+        #endif
+
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         return base.appendingPathComponent(bundleIdentifier, isDirectory: true)
@@ -1992,9 +2011,36 @@ struct CopyStatisticsIndex: Codable, Equatable {
         now: Date = Date()
     ) -> CopyStatisticsIndex {
         var index = CopyStatisticsIndex(calendar: calendar)
-        for report in eligibleReports(reports, calendar: calendar, now: now) {
-            index.add(report, calendar: calendar, now: now)
+        var buckets: [Date: CopyStatisticsIndexDay] = [:]
+        var modes: [String: Int] = [:]
+        var sources: [String: Int] = [:]
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+
+        // 批量重建仅聚合一次，最后排序。逐条 add 会反复搜索日期并排序设备榜。
+        for report in reports where report.finishedAt < endDay {
+            guard index.indexedReportIDs.insert(report.id).inserted else { continue }
+            let day = calendar.startOfDay(for: report.finishedAt)
+            var bucket = buckets[day] ?? CopyStatisticsIndexDay(date: day)
+            bucket.bytes += max(report.totalBytes, 0)
+            bucket.files += max(report.selectedFileCount, 0)
+            bucket.reportCount += 1
+            bucket.successCount += report.success ? 1 : 0
+            buckets[day] = bucket
+            index.totalBytes += max(report.totalBytes, 0)
+            index.totalFiles += max(report.selectedFileCount, 0)
+            index.totalReports += 1
+            index.successfulReports += report.success ? 1 : 0
+            index.backupReportCount += report.backupPath == nil ? 0 : 1
+            index.longestReportDuration = max(index.longestReportDuration, report.duration)
+            let mode = report.verificationMode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let source = report.sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mode.isEmpty { modes[mode, default: 0] += 1 }
+            if !source.isEmpty { sources[source, default: 0] += 1 }
         }
+        index.dayBuckets = Array(buckets.values)
+        index.verificationModeCounts = modes.map { CopyStatisticsCountItem(title: $0.key, count: $0.value) }
+        index.sourceCounts = sources.map { CopyStatisticsCountItem(title: $0.key, count: $0.value) }
         index.normalize()
         return index
     }
@@ -2133,7 +2179,7 @@ struct CopyStatisticsIndex: Codable, Equatable {
             peakDay = day
             return
         }
-        if day.bytes > current.bytes || (day.bytes == current.bytes && day.date > current.date) {
+        if day.date == current.date || day.bytes > current.bytes || (day.bytes == current.bytes && day.date > current.date) {
             peakDay = day
         }
     }
@@ -2152,7 +2198,9 @@ struct CopyStatisticsIndex: Codable, Equatable {
         calendar: Calendar,
         now: Date
     ) -> [TransferReport] {
-        reports.filter { isEligible($0, calendar: calendar, now: now) }
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        return reports.filter { $0.finishedAt < endDay }
     }
 
     private static func isEligible(
@@ -2365,4 +2413,13 @@ private struct StatisticsDayAccumulator {
     var files: Int = 0
     var reportCount: Int = 0
     var successCount: Int = 0
+}
+
+/// 按内容可用宽度分栏，避免 680–730 pt 区间五列的最小宽度撑出窗口。
+enum StatisticsLayoutPolicy {
+    static func metricColumnCount(availableWidth: CGFloat) -> Int {
+        if availableWidth >= 800 { return 5 }
+        if availableWidth >= 560 { return 3 }
+        return 2
+    }
 }

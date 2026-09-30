@@ -1,5 +1,6 @@
 import CoreServices
 import Foundation
+import Darwin
 import ImageIO
 
 struct OrganizerService {
@@ -15,6 +16,8 @@ struct OrganizerService {
         case insufficientSpace(available: Int64, required: Int64)
         case destinationAlreadyExists(String)
         case copiedSizeMismatch(path: String, expected: Int64, actual: Int64)
+        case verificationFailed(String)
+        case sourceChanged(String)
 
         var errorDescription: String? {
             switch self {
@@ -38,6 +41,10 @@ struct OrganizerService {
                 return "目标剩余空间不足：最低需要 \(ByteDisplayFormatter.string(fromByteCount: required))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))。"
             case let .destinationAlreadyExists(path):
                 return "目标文件已存在，为避免覆盖素材，已停止写入：\(path)"
+            case let .verificationFailed(path):
+                return "规整内容校验失败，源文件已保留：\(path)"
+            case let .sourceChanged(path):
+                return "源文件在规整过程中发生变化，已停止删除源文件：\(path)"
             case let .copiedSizeMismatch(path, expected, actual):
                 return "\(path) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
             }
@@ -67,42 +74,65 @@ struct OrganizerService {
     func makePlan(
         sourceURL: URL,
         destinationURL: URL,
-        rule: OrganizerRule
+        rule: OrganizerRule,
+        progress: (@Sendable (OrganizerPlanProgress) -> Void)? = nil
     ) async throws -> OrganizerPlan {
-        try await Task.detached(priority: .userInitiated) {
-            try buildPlan(sourceURL: sourceURL, destinationURL: destinationURL, rule: rule)
-        }.value
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
+            try await buildPlan(sourceURL: sourceURL, destinationURL: destinationURL, rule: rule, progress: progress)
+        }
+        return try await withTaskCancellationHandler {
+            let plan = try await worker.value
+            try Task.checkCancellation()
+            return plan
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     func execute(
         plan: OrganizerPlan,
         progress: @escaping @Sendable (OrganizerExecutionState) async -> Void
     ) async throws -> OrganizerRunSummary {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
             try await executePlan(plan, progress: progress)
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 }
 
-private func buildPlan(sourceURL: URL, destinationURL: URL, rule: OrganizerRule) throws -> OrganizerPlan {
+private func buildPlan(
+    sourceURL: URL,
+    destinationURL: URL,
+    rule: OrganizerRule,
+    progress: (@Sendable (OrganizerPlanProgress) -> Void)?
+) async throws -> OrganizerPlan {
     let source = sourceURL.standardizedFileURL
     let destination = destinationURL.standardizedFileURL
     try validateOrganizerSource(source, requireWritable: rule.operationMode == .move)
     try validateOrganizerDestination(destination)
     try validateOrganizerTopology(source: source, destination: destination)
 
-    let files = try scanOrganizerFiles(sourceURL: source, filter: rule.scanFilter)
+    let throttle = OrganizerProgressThrottle(progress)
+    let files = try scanOrganizerFiles(sourceURL: source, filter: rule.scanFilter, throttle: throttle)
     guard !files.isEmpty else {
         throw OrganizerService.OrganizerError.noFiles
     }
 
-    var metadataByPairingKey: [String: OrganizerService.FileMetadata] = [:]
-    for file in files where !file.isSidecar {
-        metadataByPairingKey[file.pairingKey] = readMetadata(for: file)
-    }
+    // 元数据读取（ImageIO/Spotlight）是纯粹的独立 I/O，是生成预览最贵的一步；
+    // 之前串行逐个读，万级文件要等几分钟，现在按 CPU 核数并行。
+    let metadataByPairingKey = try await readMetadataInParallel(files: files, throttle: throttle)
 
-    var reservedDestinations = Set<String>()
+    // 目标端存在性判定改为每目录一次 readdir 的清单缓存，替代逐文件 stat。
+    var destinationIndex = OrganizerDestinationIndex()
+    var reservedDestinations: [String: URL] = [:]
     var items: [OrganizerPlanItem] = []
+    items.reserveCapacity(files.count)
     for file in files {
         try Task.checkCancellation()
         // 非 sidecar 已在上面预读并写入 metadataByPairingKey；sidecar 命中同 pairingKey
@@ -121,8 +151,10 @@ private func buildPlan(sourceURL: URL, destinationURL: URL, rule: OrganizerRule)
         )
         let resolved = resolveDestination(
             proposedDestination,
+            sourceURL: file.url,
             duplicatePolicy: rule.duplicatePolicy,
-            reservedDestinations: &reservedDestinations
+            reservedDestinations: &reservedDestinations,
+            destinationIndex: &destinationIndex
         )
 
         let item = OrganizerPlanItem(
@@ -139,6 +171,7 @@ private func buildPlan(sourceURL: URL, destinationURL: URL, rule: OrganizerRule)
             conflictResolution: resolved.resolution
         )
         items.append(item)
+        throttle.send(.resolving(processed: items.count, total: files.count))
     }
 
     return OrganizerPlan(
@@ -182,6 +215,9 @@ private func executePlan(
     await progress(state)
 
     var reservedDestinations = Set<String>()
+    // 进度按时间节流：小文件/sidecar 密集时逐文件回调会把 MainActor 刷爆，
+    // 失败与终态仍然强制送达。
+    var lastProgressAt = Date.distantPast
     for item in plan.items {
         try Task.checkCancellation()
         state.currentFile = item.displayName
@@ -189,26 +225,44 @@ private func executePlan(
         guard item.isExecutable else {
             state.skippedFiles += 1
             state.processedFiles += 1
-            await progress(state)
+            if case .duplicate = item.conflictResolution {
+                state.duplicateFiles += 1
+            }
+            if Date().timeIntervalSince(lastProgressAt) >= 0.1 {
+                lastProgressAt = Date()
+                await progress(state)
+            }
             continue
         }
 
+        var forceProgress = false
         do {
-            let runtimeDestination = try runtimeDestinationURL(
+            switch try runtimeDestination(
                 for: item,
                 plan: plan,
                 reservedDestinations: &reservedDestinations
-            )
-            try performOrganizerOperation(
-                item: item,
-                destinationURL: runtimeDestination,
-                mode: plan.rule.operationMode,
-                sourceRootURL: plan.sourceURL,
-                destinationRootURL: plan.destinationURL
-            )
-            state.processedBytes += item.size
-            state.processedFiles += 1
+            ) {
+            case .duplicate:
+                // 计划生成后、执行前目标端新落了一份相同内容（多见于重跑），
+                // 视为查重命中而不是失败。
+                state.skippedFiles += 1
+                state.duplicateFiles += 1
+                state.processedFiles += 1
+            case let .write(destinationURL):
+                try performOrganizerOperation(
+                    item: item,
+                    destinationURL: destinationURL,
+                    mode: plan.rule.operationMode,
+                    sourceRootURL: plan.sourceURL,
+                    destinationRootURL: plan.destinationURL
+                )
+                state.processedBytes += item.size
+                state.processedFiles += 1
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let organizerError as OrganizerService.OrganizerError {
+            forceProgress = true
             if case .destinationAlreadyExists = organizerError, plan.rule.duplicatePolicy == .skip {
                 state.skippedFiles += 1
                 state.processedFiles += 1
@@ -217,10 +271,14 @@ private func executePlan(
                 state.processedFiles += 1
             }
         } catch {
+            forceProgress = true
             state.failedFiles.append("\(item.relativePath)：\(error.localizedDescription)")
             state.processedFiles += 1
         }
-        await progress(state)
+        if forceProgress || Date().timeIntervalSince(lastProgressAt) >= 0.1 {
+            lastProgressAt = Date()
+            await progress(state)
+        }
     }
 
     state.currentFile = ""
@@ -234,6 +292,7 @@ private func executePlan(
         totalFiles: plan.totalFiles,
         completedFiles: max(0, state.processedFiles - state.skippedFiles - state.failedFiles.count),
         skippedFiles: state.skippedFiles,
+        duplicateFiles: state.duplicateFiles,
         failedFiles: state.failedFiles,
         totalBytes: state.processedBytes,
         startedAt: startedAt,
@@ -293,7 +352,104 @@ private func validateOrganizerCapacity(_ plan: OrganizerPlan) throws {
     }
 }
 
-private func scanOrganizerFiles(sourceURL: URL, filter: ScanFilter) throws -> [OrganizerService.SourceFile] {
+/// 生成预览的进度节流器：整个计划构建在单个后台任务里串行推进（并行元数据的
+/// 汇总也回到这个任务），所以这里不需要加锁；按时间间隔限流，避免几十 Hz 的
+/// MainActor 回调把界面刷卡。
+private final class OrganizerProgressThrottle {
+    private let handler: (@Sendable (OrganizerPlanProgress) -> Void)?
+    private var lastSentAt = Date.distantPast
+
+    init(_ handler: (@Sendable (OrganizerPlanProgress) -> Void)?) {
+        self.handler = handler
+    }
+
+    func send(_ value: OrganizerPlanProgress, force: Bool = false) {
+        guard let handler else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastSentAt) >= 0.12 else { return }
+        lastSentAt = now
+        handler(value)
+    }
+}
+
+/// 目标目录清单缓存：把逐文件的 fileExists(stat) 换成每目录一次 readdir。
+/// 精确同名直接判"存在"；只有大小写变体命中时才回退一次真实 fileExists
+/// 消歧 —— APFS 默认卷不区分大小写（应判存在），区分大小写的卷则不应
+/// 误判，否则 skip 策略会把本该写入的文件漏拷。消歧是罕见路径，
+/// 不影响整体 O(每目录一次 readdir) 的收益。
+private struct OrganizerDestinationIndex {
+    private struct DirectoryListing {
+        let exactNames: Set<String>
+        let lowercasedNames: Set<String>
+    }
+
+    private var listings: [String: DirectoryListing] = [:]
+
+    mutating func fileExists(at url: URL) -> Bool {
+        let directory = url.deletingLastPathComponent().path
+        let listing: DirectoryListing
+        if let cached = listings[directory] {
+            listing = cached
+        } else {
+            let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+            listing = DirectoryListing(
+                exactNames: Set(entries),
+                lowercasedNames: Set(entries.map { $0.lowercased() })
+            )
+            listings[directory] = listing
+        }
+
+        let name = url.lastPathComponent
+        if listing.exactNames.contains(name) { return true }
+        guard listing.lowercasedNames.contains(name.lowercased()) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+}
+
+/// 并行读取非 sidecar 文件的拍摄元数据。宽度取 CPU 核数（2...8）：ImageIO 与
+/// Spotlight 读取都是短促的独立 I/O，再宽只会互相争抢磁盘。
+private func readMetadataInParallel(
+    files: [OrganizerService.SourceFile],
+    throttle: OrganizerProgressThrottle
+) async throws -> [String: OrganizerService.FileMetadata] {
+    let mainFiles = files.filter { !$0.isSidecar }
+    guard !mainFiles.isEmpty else { return [:] }
+
+    let width = max(2, min(8, ProcessInfo.processInfo.activeProcessorCount))
+    var result = [String: OrganizerService.FileMetadata](minimumCapacity: mainFiles.count)
+    var processed = 0
+
+    try await withThrowingTaskGroup(of: (String, OrganizerService.FileMetadata).self) { group in
+        var iterator = mainFiles.makeIterator()
+
+        @discardableResult
+        func addNext() -> Bool {
+            guard let file = iterator.next() else { return false }
+            group.addTask {
+                try Task.checkCancellation()
+                return (file.pairingKey, readMetadata(for: file))
+            }
+            return true
+        }
+
+        for _ in 0..<width {
+            if !addNext() { break }
+        }
+        while let (key, metadata) = try await group.next() {
+            result[key] = metadata
+            processed += 1
+            throttle.send(.readingMetadata(processed: processed, total: mainFiles.count))
+            addNext()
+        }
+    }
+    return result
+}
+
+private func scanOrganizerFiles(
+    sourceURL: URL,
+    filter: ScanFilter,
+    throttle: OrganizerProgressThrottle
+) throws -> [OrganizerService.SourceFile] {
     let keys: Set<URLResourceKey> = [
         .isRegularFileKey,
         .creationDateKey,
@@ -343,6 +499,7 @@ private func scanOrganizerFiles(sourceURL: URL, filter: ScanFilter) throws -> [O
                 isSidecar: isSidecar
             )
         )
+        throttle.send(.scanning(found: files.count))
     }
 
     return files.sorted {
@@ -380,7 +537,14 @@ private func shouldSkipOrganizerURL(_ url: URL, values: URLResourceValues) -> Bo
 }
 
 private func readMetadata(for file: OrganizerService.SourceFile) -> OrganizerService.FileMetadata {
-    let imageMetadata = readImageMetadata(url: file.url)
+    // ImageIO 只认识图片。视频/音频每次都会创建失败再走 Spotlight，
+    // 白白付一次打开+嗅探的开销，所以按媒体类型直接分流。
+    let imageMetadata = file.mediaKind == .photo
+        ? readImageMetadata(url: file.url)
+        : OrganizerService.FileMetadata(capturedAt: nil, deviceName: nil)
+    if imageMetadata.capturedAt != nil, imageMetadata.deviceName != nil {
+        return imageMetadata
+    }
     let spotlightMetadata = readSpotlightMetadata(url: file.url)
     return OrganizerService.FileMetadata(
         capturedAt: imageMetadata.capturedAt ?? spotlightMetadata.capturedAt ?? file.createdAt,
@@ -444,21 +608,35 @@ private func readSpotlightMetadata(url: URL) -> OrganizerService.FileMetadata {
     )
 }
 
+// 每个文件解析日期都重建 DateFormatter 的开销比解析本身还大，改为常量复用。
+// DateFormatter / ISO8601DateFormatter 在 macOS 10.9+ 上只读使用是线程安全的，
+// 可被并行元数据任务共享。
+private let organizerExifDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+    return formatter
+}()
+
+// ISO8601DateFormatter 未标记 Sendable，但苹果文档明确其线程安全；
+// 这里初始化后不再修改，只读共享。
+nonisolated(unsafe) private let organizerISOFractionalDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+nonisolated(unsafe) private let organizerISODateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
+
 private func parseMetadataDate(_ rawValue: String) -> Date? {
     let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    let exifFormatter = DateFormatter()
-    exifFormatter.locale = Locale(identifier: "en_US_POSIX")
-    exifFormatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-    if let date = exifFormatter.date(from: trimmed) {
-        return date
-    }
-    let isoFormatter = ISO8601DateFormatter()
-    isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = isoFormatter.date(from: trimmed) {
-        return date
-    }
-    isoFormatter.formatOptions = [.withInternetDateTime]
-    return isoFormatter.date(from: trimmed)
+    return organizerExifDateFormatter.date(from: trimmed)
+        ?? organizerISOFractionalDateFormatter.date(from: trimmed)
+        ?? organizerISODateFormatter.date(from: trimmed)
 }
 
 private func makeOrganizerDestinationURL(rootURL: URL, capturedAt: Date, deviceFolderName: String, fileName: String) -> URL {
@@ -474,53 +652,126 @@ private func makeOrganizerDestinationURL(rootURL: URL, capturedAt: Date, deviceF
         .appendingPathComponent(fileName, isDirectory: false)
 }
 
+/// 逐字节流式比对两个文件的内容，任何一块不同立即返回。对"两个具体文件是否
+/// 一致"这种一对一判定，它比双方各算一次哈希更快：单遍读取、可提前退出。
+/// 任何读取错误都按"内容不同"处理 —— 查重只允许假阴性（多留一份），
+/// 绝不允许假阳性（把不一致的文件当重复跳过）。
+private func organizerFilesHaveIdenticalContent(_ lhs: URL, _ rhs: URL) -> Bool {
+    guard let lhsSize = try? lhs.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+          let rhsSize = try? rhs.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+          lhsSize == rhsSize else {
+        return false
+    }
+    if lhsSize == 0 { return true }
+    guard let lhsHandle = try? FileHandle(forReadingFrom: lhs),
+          let rhsHandle = try? FileHandle(forReadingFrom: rhs) else {
+        return false
+    }
+    defer {
+        try? lhsHandle.close()
+        try? rhsHandle.close()
+    }
+
+    let chunkSize = 1 << 20
+    while true {
+        // 取消时立即放弃比对，按"内容不同"返回：调用方循环顶部的
+        // checkCancellation 会随即终止整个计划，不会基于这个结果写盘。
+        if Task.isCancelled { return false }
+        let lhsChunk: Data
+        let rhsChunk: Data
+        do {
+            lhsChunk = try lhsHandle.read(upToCount: chunkSize) ?? Data()
+            rhsChunk = try rhsHandle.read(upToCount: chunkSize) ?? Data()
+        } catch {
+            return false
+        }
+        if lhsChunk != rhsChunk { return false }
+        if lhsChunk.isEmpty { return true }
+    }
+}
+
 private func resolveDestination(
     _ proposedURL: URL,
+    sourceURL: URL,
     duplicatePolicy: OrganizerDuplicatePolicy,
-    reservedDestinations: inout Set<String>
+    reservedDestinations: inout [String: URL],
+    destinationIndex: inout OrganizerDestinationIndex
 ) -> (url: URL, resolution: OrganizerConflictResolution) {
     let normalizedProposed = PathSafety.normalizedPath(proposedURL)
-    let exists = FileManager.default.fileExists(atPath: proposedURL.path)
-    let reserved = reservedDestinations.contains(normalizedProposed)
+    let existsOnDisk = destinationIndex.fileExists(at: proposedURL)
+    let reservedOwner = reservedDestinations[normalizedProposed]
 
-    guard exists || reserved else {
-        reservedDestinations.insert(normalizedProposed)
+    guard existsOnDisk || reservedOwner != nil else {
+        reservedDestinations[normalizedProposed] = sourceURL
         return (proposedURL, .none)
+    }
+
+    // 查重：同名先比内容。与目标现有文件一致，或与同批更早规划的源文件一致，
+    // 都标记为重复 —— 再写一份副本对素材管理没有价值。
+    if existsOnDisk, organizerFilesHaveIdenticalContent(sourceURL, proposedURL) {
+        return (proposedURL, .duplicate(existingPath: proposedURL.path))
+    }
+    if let reservedOwner, organizerFilesHaveIdenticalContent(sourceURL, reservedOwner) {
+        return (proposedURL, .duplicate(existingPath: reservedOwner.path))
     }
 
     if duplicatePolicy == .skip {
         return (proposedURL, .skipped(existingPath: proposedURL.path))
     }
 
-    let uniqueURL = uniqueOrganizerDestinationURL(for: proposedURL, reservedDestinations: reservedDestinations)
-    reservedDestinations.insert(PathSafety.normalizedPath(uniqueURL))
+    let uniqueURL = uniqueOrganizerDestinationURL(
+        for: proposedURL,
+        reservedDestinations: Set(reservedDestinations.keys),
+        destinationIndex: &destinationIndex
+    )
+    reservedDestinations[PathSafety.normalizedPath(uniqueURL)] = sourceURL
     return (uniqueURL, .renamed(originalPath: proposedURL.path))
 }
 
-private func runtimeDestinationURL(
+/// 执行期对单个文件的落点判定：目标可能在"生成预览"与"执行"之间被外部改动，
+/// 所以这里用实时 fileExists 复核，并对撞名文件再做一次内容比对。
+private enum OrganizerRuntimeDestination {
+    case write(URL)
+    case duplicate(existingPath: String)
+}
+
+private func runtimeDestination(
     for item: OrganizerPlanItem,
     plan: OrganizerPlan,
     reservedDestinations: inout Set<String>
-) throws -> URL {
+) throws -> OrganizerRuntimeDestination {
     let normalized = PathSafety.normalizedPath(item.destinationURL)
     let exists = FileManager.default.fileExists(atPath: item.destinationURL.path)
     let reserved = reservedDestinations.contains(normalized)
 
     guard exists || reserved else {
         reservedDestinations.insert(normalized)
-        return item.destinationURL
+        return .write(item.destinationURL)
+    }
+
+    if exists, organizerFilesHaveIdenticalContent(item.sourceURL, item.destinationURL) {
+        return .duplicate(existingPath: item.destinationURL.path)
     }
 
     if plan.rule.duplicatePolicy == .skip {
         throw OrganizerService.OrganizerError.destinationAlreadyExists(item.destinationURL.path)
     }
 
-    let uniqueURL = uniqueOrganizerDestinationURL(for: item.destinationURL, reservedDestinations: reservedDestinations)
+    var runtimeIndex = OrganizerDestinationIndex()
+    let uniqueURL = uniqueOrganizerDestinationURL(
+        for: item.destinationURL,
+        reservedDestinations: reservedDestinations,
+        destinationIndex: &runtimeIndex
+    )
     reservedDestinations.insert(PathSafety.normalizedPath(uniqueURL))
-    return uniqueURL
+    return .write(uniqueURL)
 }
 
-private func uniqueOrganizerDestinationURL(for proposedURL: URL, reservedDestinations: Set<String>) -> URL {
+private func uniqueOrganizerDestinationURL(
+    for proposedURL: URL,
+    reservedDestinations: Set<String>,
+    destinationIndex: inout OrganizerDestinationIndex
+) -> URL {
     let directory = proposedURL.deletingLastPathComponent()
     let baseName = proposedURL.deletingPathExtension().lastPathComponent
     let ext = proposedURL.pathExtension
@@ -529,7 +780,7 @@ private func uniqueOrganizerDestinationURL(for proposedURL: URL, reservedDestina
         let candidateName = ext.isEmpty ? "\(baseName) \(index)" : "\(baseName) \(index).\(ext)"
         let candidate = directory.appendingPathComponent(candidateName, isDirectory: false)
         let normalized = PathSafety.normalizedPath(candidate)
-        if !FileManager.default.fileExists(atPath: candidate.path),
+        if !destinationIndex.fileExists(at: candidate),
            !reservedDestinations.contains(normalized) {
             return candidate
         }
@@ -557,32 +808,106 @@ private func performOrganizerOperation(
         throw OrganizerService.OrganizerError.destinationAlreadyExists(destinationURL.path)
     }
 
-    // 以执行期源文件的真实大小做基准，而不是计划期可能已过时的 item.size：
-    // 文件在扫描后仍在落盘/被改动时，旧值会把一次字节完整的复制/移动误判为失败。
-    let expectedSize = (try? item.sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? item.size
-
+    try Task.checkCancellation()
     let parent = destinationURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
 
-    switch mode {
-    case .copy:
-        try FileManager.default.copyItem(at: item.sourceURL, to: destinationURL)
-    case .move:
-        try FileManager.default.moveItem(at: item.sourceURL, to: destinationURL)
+    if mode == .move && PathSafety.pathsShareVolume(item.sourceURL, destinationURL) {
+        // 同卷使用排他原子重命名，文件内容和扩展属性无需重写。
+        try installOrganizerFileExclusively(from: item.sourceURL, to: destinationURL)
+    } else {
+        try OrganizerVerifiedCopy.perform(
+            sourceURL: item.sourceURL,
+            destinationURL: destinationURL,
+            sourceRootURL: sourceRootURL,
+            destinationRootURL: destinationRootURL,
+            removeSource: mode == .move
+        )
+    }
+}
+
+/// 跨卷移动先复制、落盘和逐字节校验，再安装目标并删除源文件。
+/// Foundation copyItem 保留元数据；临时文件和最终文件都拒绝覆盖。
+enum OrganizerVerifiedCopy {
+    static func perform(
+        sourceURL: URL,
+        destinationURL: URL,
+        sourceRootURL: URL,
+        destinationRootURL: URL,
+        removeSource: Bool,
+        verifier: ((URL, URL) throws -> Bool)? = nil
+    ) throws {
+        try Task.checkCancellation()
+        try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRootURL)
+        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
+        let identity = try SourceIdentity(url: sourceURL)
+        let stagingURL = destinationURL.deletingLastPathComponent()
+            .appendingPathComponent(".airwang-organize-\(UUID().uuidString).partial", isDirectory: true)
+        try PathSafety.ensureSafeWritableFileTarget(for: stagingURL, under: destinationRootURL)
+        let manager = FileManager.default
+        guard mkdir(stagingURL.path, 0o700) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        // 专属目录即使复制中途抛错也能收回残留，已安装的目标不在其中。
+        defer { try? manager.removeItem(at: stagingURL) }
+        let temporaryURL = stagingURL.appendingPathComponent(sourceURL.lastPathComponent)
+        try manager.copyItem(at: sourceURL, to: temporaryURL)
+        try Task.checkCancellation()
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        do {
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        let identical = try verifier?(sourceURL, temporaryURL) ?? organizerFilesHaveIdenticalContent(sourceURL, temporaryURL)
+        try Task.checkCancellation()
+        guard identical else { throw OrganizerService.OrganizerError.verificationFailed(sourceURL.path) }
+        guard try SourceIdentity(url: sourceURL) == identity else {
+            throw OrganizerService.OrganizerError.sourceChanged(sourceURL.path)
+        }
+        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
+        try installOrganizerFileExclusively(from: temporaryURL, to: destinationURL)
+        if removeSource {
+            // 取消、源变更或删除失败时保留已验证的目标副本和仍在的源文件。
+            try Task.checkCancellation()
+            try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRootURL)
+            guard try SourceIdentity(url: sourceURL) == identity else {
+                throw OrganizerService.OrganizerError.sourceChanged(sourceURL.path)
+            }
+            try manager.removeItem(at: sourceURL)
+        }
     }
 
-    let actualSize = (try? destinationURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? -1
-    guard actualSize == expectedSize else {
-        // 复制模式下源仍在，删掉写坏的目标，避免残留半套文件污染重跑；
-        // 移动模式下源已被系统删除、无法回滚，只能如实上报。
-        if mode == .copy {
-            try? FileManager.default.removeItem(at: destinationURL)
+    private struct SourceIdentity: Equatable {
+        let inode: UInt64
+        let device: UInt64
+        let size: UInt64
+        let modifiedAt: Date
+
+        init(url: URL) throws {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let inode = attributes[.systemFileNumber] as? NSNumber,
+                  let device = attributes[.systemNumber] as? NSNumber,
+                  let size = attributes[.size] as? NSNumber,
+                  let modifiedAt = attributes[.modificationDate] as? Date else {
+                throw OrganizerService.OrganizerError.sourceUnavailable(url.path)
+            }
+            self.inode = inode.uint64Value
+            self.device = device.uint64Value
+            self.size = size.uint64Value
+            self.modifiedAt = modifiedAt
         }
-        throw OrganizerService.OrganizerError.copiedSizeMismatch(
-            path: destinationURL.path,
-            expected: expectedSize,
-            actual: actualSize
-        )
+    }
+}
+
+private func installOrganizerFileExclusively(from source: URL, to destination: URL) throws {
+    guard renamex_np(source.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+        let code = errno
+        if code == EEXIST { throw OrganizerService.OrganizerError.destinationAlreadyExists(destination.path) }
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: destination.path])
     }
 }
 

@@ -2,9 +2,68 @@ import AppKit
 import Foundation
 import SwiftUI
 
+/// 把高频进度状态合并到固定发布节奏:间隔内只保留最新一份,尾沿必定送达。
+///
+/// TransferService 只在单文件内部按时间节流 chunk 级进度,但每个文件边界
+/// (开始/写入确认/收尾/校验完成)都会无条件发布一次;小文件密集的素材卡
+/// (照片、RAW 帧序列)每秒能产生数百次发布,每次都让整棵主界面视图树
+/// 重算一遍。汇聚点统一按时间合并后,发布频率与文件大小和数量解耦。
+@MainActor
+final class TransferProgressCoalescer {
+    private let interval: TimeInterval
+    private let apply: (TransferState) -> Void
+    private var lastPublishAt = Date.distantPast
+    private var pending: TransferState?
+    private var flushTask: Task<Void, Never>?
+
+    init(interval: TimeInterval = 0.4, apply: @escaping (TransferState) -> Void) {
+        self.interval = interval
+        self.apply = apply
+    }
+
+    func ingest(_ state: TransferState) {
+        let now = Date()
+        if now.timeIntervalSince(lastPublishAt) >= interval {
+            deliver(state, at: now)
+            return
+        }
+
+        pending = state
+        guard flushTask == nil else { return }
+        let delay = max(interval - now.timeIntervalSince(lastPublishAt), 0.01)
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.flushTask = nil
+            if let pending = self.pending {
+                self.pending = nil
+                self.deliver(pending, at: Date())
+            }
+        }
+    }
+
+    /// 丢弃积压并停止尾沿投递。终态(完成/取消/失败)由调用方直接写入,
+    /// 写入前必须调用,避免迟到的进度覆盖终态。
+    func cancelPending() {
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
+    }
+
+    private func deliver(_ state: TransferState, at now: Date) {
+        lastPublishAt = now
+        pending = nil
+        flushTask?.cancel()
+        flushTask = nil
+        apply(state)
+    }
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
-    @Published var preferences: AppPreferences
+    @Published var preferences: AppPreferences {
+        didSet { rebuildDisplayVolumesCache() }
+    }
     @Published var selectedTheme: AppTheme = .day
     @Published var selectedLanguage: AppLanguage = .chinese
     @Published var autoStartQueuedProjects = false
@@ -24,7 +83,10 @@ final class AppViewModel: ObservableObject {
     @Published var projectNameMode: ProjectNameMode = .automatic
     @Published var draftProjectName = ""
     @Published var activeProjectIDs: Set<UUID> = []
-    @Published var mountedVolumes: [StorageVolume] = []
+    @Published var mountedVolumes: [StorageVolume] = [] {
+        didSet { rebuildDisplayVolumesCache() }
+    }
+    private(set) var displayVolumesCache: [StorageVolume] = []
     @Published var pendingImportVolume: StorageVolume?
     @Published var selectedImportMode: ImportMode = .time
     @Published var selectedAssetBrowserMode: AssetBrowserMode = .icon
@@ -45,6 +107,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: [])
     @Published private(set) var statisticsRecentReports: [TransferReport] = []
     @Published private(set) var statisticsRefreshedAt = Date.distantPast
+    @Published private(set) var isRefreshingStatistics = false
     @Published var organizerSourceURL: URL?
     @Published var organizerDestinationURL: URL?
     @Published var organizerScanFilter: ScanFilter = .all
@@ -56,6 +119,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isBuildingOrganizerPlan = false
     @Published private(set) var isRunningOrganizer = false
     @Published var organizerStatusMessage: String?
+    @Published var organizerPreviewFilter: OrganizerPreviewFilter = .all
     @Published var importError: String?
     @Published var hasUnsavedChanges = false
     @Published var activeFolderPicker: FolderPickerPurpose?
@@ -92,7 +156,11 @@ final class AppViewModel: ObservableObject {
     private var folderChildrenTask: Task<Void, Never>?
     private var sourceFolderChildrenTask: Task<Void, Never>?
     private var statisticsRefreshTask: Task<Void, Never>?
+    private var statisticsBuildTask: Task<Void, Never>?
+    private var statisticsRevision: UInt64 = 0
+    private var organizerPlanGeneration = UUID()
     private var activeImportSummary: ImportSelectionSummary?
+    private var importProgressCoalescer: TransferProgressCoalescer?
     private var retrySourceItems: [MediaItem] = []
     private var scanSessionID = UUID()
     private var folderNavigationID = UUID()
@@ -125,7 +193,6 @@ final class AppViewModel: ObservableObject {
         let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
         copyProjects = recoveredProjects
         orderedProjectsCache = Self.sortedProjects(recoveredProjects)
-        reconcileStatisticsIndexIfNeeded()
         rebuildCopyStatistics()
         importError = [settingsStore.lastLoadWarning, reportLoad.warning, statisticsIndexLoad.warning, projectLoad.warning]
             .compactMap { $0 }
@@ -144,6 +211,9 @@ final class AppViewModel: ObservableObject {
             self?.handleUnmountedVolume(url)
         }
         mountedVolumes = volumeMonitor.volumes
+        // init 内的赋值不触发属性观察器,缓存必须手动建一次,
+        // 否则冷启动时已挂载的设备不会出现在列表里。
+        rebuildDisplayVolumesCache()
         if storedProjects.contains(where: { $0.status == .running || $0.status == .cancelling }) {
             saveProjects()
         }
@@ -153,6 +223,7 @@ final class AppViewModel: ObservableObject {
 
     deinit {
         statisticsRefreshTask?.cancel()
+        statisticsBuildTask?.cancel()
         autoStartTask?.cancel()
         scanTask?.cancel()
         organizerPlanTask?.cancel()
@@ -193,8 +264,12 @@ final class AppViewModel: ObservableObject {
         scannedItems.reduce(0) { $0 + $1.size }
     }
 
-    var displayVolumes: [StorageVolume] {
-        mountedVolumes.filter { volume in
+    // shouldShowAsImportSource 要做卷标识符解析(文件系统调用),不能放在
+    // 每次视图 body 求值的路径上;缓存只在挂载列表或偏好变化时重建。
+    var displayVolumes: [StorageVolume] { displayVolumesCache }
+
+    private func rebuildDisplayVolumesCache() {
+        displayVolumesCache = mountedVolumes.filter { volume in
             shouldShowAsImportSource(volume)
         }
     }
@@ -317,6 +392,10 @@ final class AppViewModel: ObservableObject {
         return localized("当前无法执行队列")
     }
 
+    var hasActiveFileOperations: Bool {
+        hasActiveTransfers || isRunningOrganizer || organizerExecutionTask != nil
+    }
+
     var hasActiveTransfers: Bool {
         isImporting || !activeProjectIDs.isEmpty || importTask != nil || !projectTasks.isEmpty
     }
@@ -383,6 +462,10 @@ final class AppViewModel: ObservableObject {
             operationMode: organizerOperationMode,
             duplicatePolicy: organizerDuplicatePolicy
         )
+    }
+
+    var organizerStatistics: OrganizerStatisticsSnapshot {
+        OrganizerStatisticsSnapshot.make(plan: organizerPlan, lastSummary: organizerLastSummary)
     }
 
     var organizerWarnings: [String] {
@@ -922,7 +1005,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshCopyStatistics() {
-        reconcileStatisticsIndexIfNeeded()
         rebuildCopyStatistics()
     }
 
@@ -957,6 +1039,8 @@ final class AppViewModel: ObservableObject {
         }
 
         organizerPlanTask?.cancel()
+        let generation = UUID()
+        organizerPlanGeneration = generation
         isBuildingOrganizerPlan = true
         organizerStatusMessage = "正在扫描并生成规整预览..."
         organizerPlan = nil
@@ -970,25 +1054,36 @@ final class AppViewModel: ObservableObject {
                 let plan = try await organizerService.makePlan(
                     sourceURL: sourceURL,
                     destinationURL: destinationURL,
-                    rule: rule
+                    rule: rule,
+                    progress: { [weak self] progress in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.organizerPlanGeneration == generation, self.isBuildingOrganizerPlan else { return }
+                            self.organizerStatusMessage = progress.message
+                        }
+                    }
                 )
+                try Task.checkCancellation()
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.organizerPlanGeneration == generation else { return }
                     self.organizerPlan = plan
                     self.isBuildingOrganizerPlan = false
                     self.organizerPlanTask = nil
-                    self.organizerStatusMessage = "已生成预览：\(plan.executableFiles) 个可执行文件，\(ByteDisplayFormatter.string(fromByteCount: plan.totalBytes))。"
+                    var message = "已生成预览：\(plan.executableFiles) 个可执行文件，\(ByteDisplayFormatter.string(fromByteCount: plan.totalBytes))。"
+                    if plan.duplicateFiles > 0 {
+                        message += "查重命中 \(plan.duplicateFiles) 个内容重复文件，将跳过。"
+                    }
+                    self.organizerStatusMessage = message
                 }
             } catch is CancellationError {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.organizerPlanGeneration == generation else { return }
                     self.isBuildingOrganizerPlan = false
                     self.organizerPlanTask = nil
                     self.organizerStatusMessage = "已取消生成预览。"
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.organizerPlanGeneration == generation else { return }
                     self.isBuildingOrganizerPlan = false
                     self.organizerPlanTask = nil
                     self.organizerStatusMessage = nil
@@ -999,6 +1094,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func startOrganizerExecution() {
+        guard !isRunningOrganizer else { return }
         guard let plan = organizerPlan else {
             importError = "请先生成规整预览。"
             return
@@ -1030,9 +1126,13 @@ final class AppViewModel: ObservableObject {
                     self.isRunningOrganizer = false
                     self.organizerExecutionTask = nil
                     self.organizerLastSummary = summary
-                    self.organizerStatusMessage = summary.success
+                    var message = summary.success
                         ? "规整完成：\(summary.completedFiles) 个文件已处理。"
                         : "规整完成：\(summary.completedFiles) 个文件已处理，\(summary.failedFiles.count) 个失败。"
+                    if summary.duplicateFiles > 0 {
+                        message += "查重跳过 \(summary.duplicateFiles) 个内容重复文件。"
+                    }
+                    self.organizerStatusMessage = message
                     self.organizerPlan = nil
                 }
             } catch is CancellationError {
@@ -1067,11 +1167,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func resetOrganizerPlan() {
+        organizerPlanGeneration = UUID()
         organizerPlanTask?.cancel()
         organizerPlanTask = nil
         organizerPlan = nil
         organizerLastSummary = nil
         organizerStatusMessage = nil
+        organizerPreviewFilter = .all
         if isBuildingOrganizerPlan {
             isBuildingOrganizerPlan = false
         }
@@ -1097,17 +1199,45 @@ final class AppViewModel: ObservableObject {
     }
 
     private func rebuildCopyStatistics(now: Date = Date()) {
-        let summary = copyStatisticsIndex.summary(projects: orderedProjects, now: now)
-        copyStatistics = summary
-        copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: summary.days)
-        statisticsRecentReports = Array(reports.prefix(8))
-        statisticsRefreshedAt = now
-    }
-
-    private func reconcileStatisticsIndexIfNeeded() {
-        guard !copyStatisticsIndex.matches(reports: reports) else { return }
-        copyStatisticsIndex = CopyStatisticsIndex.make(reports: reports)
-        saveStatisticsIndex()
+        statisticsRevision &+= 1
+        // 同一时间只运行一份统计计算；期间的新报告合并为下一次请求。
+        guard statisticsBuildTask == nil else { return }
+        let revision = statisticsRevision
+        let reportsSnapshot = reports
+        let projectsSnapshot = orderedProjects
+        let indexSnapshot = copyStatisticsIndex
+        let calendar = Calendar.current
+        isRefreshingStatistics = true
+        statisticsBuildTask = Task { [weak self] in
+            let worker = Task.detached(priority: .utility) {
+                let needsRebuild = !indexSnapshot.matches(reports: reportsSnapshot, calendar: calendar, now: now)
+                let index = needsRebuild
+                    ? CopyStatisticsIndex.make(reports: reportsSnapshot, calendar: calendar, now: now)
+                    : indexSnapshot
+                let summary = index.summary(projects: projectsSnapshot, calendar: calendar, now: now)
+                let heatmaps = CopyStatisticsHeatmaps.make(days: summary.days, calendar: calendar)
+                return (index, summary, heatmaps, needsRebuild)
+            }
+            let (index, summary, heatmaps, needsRebuild) = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.statisticsBuildTask = nil
+            guard self.statisticsRevision == revision else {
+                self.rebuildCopyStatistics()
+                return
+            }
+            self.copyStatisticsIndex = index
+            if needsRebuild { self.saveStatisticsIndex() }
+            if self.copyStatistics != summary { self.copyStatistics = summary }
+            if self.copyStatisticsHeatmaps != heatmaps { self.copyStatisticsHeatmaps = heatmaps }
+            // 同 ID 的报告内容也可能变化，不能仅通过 ID 判断是否刷新。
+            self.statisticsRecentReports = Array(reportsSnapshot.prefix(8))
+            self.statisticsRefreshedAt = now
+            self.isRefreshingStatistics = false
+        }
     }
 
     private func recordFinishedReport(_ report: TransferReport) {
@@ -1122,6 +1252,7 @@ final class AppViewModel: ObservableObject {
     func cancelImport() {
         interruptionToken.stop(reason: "用户取消了导入任务")
         importTask?.cancel()
+        importProgressCoalescer?.cancelPending()
         transferState.phaseTitle = "正在取消"
         transferState.verificationStatus = "等待当前文件操作结束"
     }
@@ -1425,6 +1556,11 @@ final class AppViewModel: ObservableObject {
         activeImportSummary = summary
         retrySourceItems = summary.selectedItems
 
+        let progressCoalescer = TransferProgressCoalescer { [weak self] state in
+            self?.transferState = state
+        }
+        importProgressCoalescer = progressCoalescer
+
         let transferService = self.transferService
         importTask = Task { [weak self, summary, interruptionToken, transferService] in
             guard let self else { return }
@@ -1433,23 +1569,27 @@ final class AppViewModel: ObservableObject {
                     summary: summary,
                     interruptionToken: interruptionToken,
                     language: self.selectedLanguage
-                ) { [weak self] state in
-                    await MainActor.run { [weak self] in
-                        self?.transferState = state
+                ) { state in
+                    await MainActor.run {
+                        progressCoalescer.ingest(state)
                     }
                 }
+                progressCoalescer.cancelPending()
                 self.recordFinishedReport(result.report)
             } catch is CancellationError {
+                progressCoalescer.cancelPending()
                 self.transferState.phaseTitle = "任务已取消"
                 self.transferState.verificationStatus = "用户已取消"
                 self.transferState.isCancelled = true
             } catch {
+                progressCoalescer.cancelPending()
                 self.importError = "导入任务失败：\(error.localizedDescription)"
             }
 
             self.isImporting = false
             self.importTask = nil
             self.activeImportSummary = nil
+            self.importProgressCoalescer = nil
         }
     }
 
@@ -1510,16 +1650,24 @@ final class AppViewModel: ObservableObject {
     private func runQueuedProject(projectID: UUID, token: ImportInterruptionToken) async {
         guard let primaryProject = copyProjects.first(where: { $0.id == projectID }) else { return }
 
+        // 每阶段一个合并器:文件边界的进度发布不经节流直达这里,
+        // 小文件批次下必须在汇聚点按时间合并(见 TransferProgressCoalescer)。
+        let primaryProgress = TransferProgressCoalescer { [weak self] state in
+            self?.applyProgress(state, to: projectID, stage: .primary)
+        }
+        var backupProgress: TransferProgressCoalescer?
+
         do {
             let primaryResult = try await transferService.runPrimaryStage(
                 project: primaryProject,
                 interruptionToken: token,
                 language: selectedLanguage
-            ) { [weak self] state in
-                await MainActor.run { [weak self] in
-                    self?.applyProgress(state, to: projectID, stage: .primary)
+            ) { state in
+                await MainActor.run {
+                    primaryProgress.ingest(state)
                 }
             }
+            primaryProgress.cancelPending()
             finishPrimaryStage(projectID: projectID, result: primaryResult)
 
             guard let currentProject = copyProjects.first(where: { $0.id == projectID }) else {
@@ -1568,25 +1716,35 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
+            let backupCoalescer = TransferProgressCoalescer { [weak self] state in
+                self?.applyProgress(state, to: projectID, stage: .backup)
+            }
+            backupProgress = backupCoalescer
+
             let backupResult = try await transferService.runBackupStage(
                 project: currentProject,
                 interruptionToken: token,
                 language: selectedLanguage
-            ) { [weak self] state in
-                await MainActor.run { [weak self] in
-                    self?.applyProgress(state, to: projectID, stage: .backup)
+            ) { state in
+                await MainActor.run {
+                    backupCoalescer.ingest(state)
                 }
             }
+            backupCoalescer.cancelPending()
             finishBackupStage(projectID: projectID, result: backupResult)
         } catch is CancellationError {
             // Use the token's stop reason when available (e.g. device disconnect),
             // otherwise fall back to the generic user-cancel message.
+            primaryProgress.cancelPending()
+            backupProgress?.cancelPending()
             let cancelReason = projectTokens[projectID]?.reason ?? "用户取消了导入任务"
             updateProject(projectID) { item in
                 item.status = .cancelled
                 item.errorMessage = cancelReason
             }
         } catch {
+            primaryProgress.cancelPending()
+            backupProgress?.cancelPending()
             updateProject(projectID) { item in
                 item.status = .failed
                 item.errorMessage = error.localizedDescription

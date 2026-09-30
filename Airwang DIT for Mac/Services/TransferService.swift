@@ -1825,7 +1825,9 @@ struct TransferService {
         var hasher = SHA256()
         // 8MB 块:1MB 块在快速 SSD 上 syscall 频率过高,拖低校验吞吐。
         let chunkSize = 8 * 1024 * 1024
-        let minimumUpdateInterval: TimeInterval = 0.15
+        // 每次进度发布都会让主界面整棵视图树重算一遍;0.15s(≈6.7Hz)在校验
+        // 期间足以让滚动和交互发闷。0.4s(2.5Hz)的进度条肉眼依然连续。
+        let minimumUpdateInterval: TimeInterval = 0.4
         var lastUpdateAt = Date()
         while true {
             try checkInterruption(interruptionToken)
@@ -1980,7 +1982,8 @@ struct TransferService {
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        let minimumUpdateInterval: TimeInterval = 0.15
+        // 与 SHA-256 全量校验同一理由:进度发布节流到 2.5Hz,降低主线程视图重算压力。
+        let minimumUpdateInterval: TimeInterval = 0.4
         let chunkSize = 1_048_576
         var lastUpdateAt = Date()
 
