@@ -464,6 +464,118 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertEqual(backups.count, 1)
     }
 
+    func testFutureProjectSchemaIsProtectedOnLoadAndSave() throws {
+        try withStoreFile("{\"schemaVersion\":999,\"projects\":[]}") { url, original in
+            XCTAssertNotNil(JSONPersistence.loadProjects(from: url).warning)
+            XCTAssertThrowsError(try JSONPersistence.writeProjects([makeProject()], to: url))
+            XCTAssertEqual(try Data(contentsOf: url), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingPathExtension().appendingPathExtension("bak.json").path))
+        }
+    }
+
+    func testFutureReportSchemaIsProtectedOnLoadAndSave() throws {
+        try withStoreFile("{\"schemaVersion\":999,\"reports\":[]}") { url, original in
+            XCTAssertNotNil(JSONPersistence.loadReports(from: url).warning)
+            XCTAssertThrowsError(try JSONPersistence.writeReports([], to: url))
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
+    func testUnrecognizedValidProjectJSONIsNotOverwritten() throws {
+        for json in ["{\"unrecognized\":[1,2]}", "{\"schemaVersion\":1}", "{\"schemaVersion\":1,\"projects\":null}", "null", "42"] {
+            try withStoreFile(json) { url, original in
+                XCTAssertNotNil(JSONPersistence.loadProjects(from: url).warning)
+                XCTAssertThrowsError(try JSONPersistence.writeProjects([], to: url))
+                XCTAssertEqual(try Data(contentsOf: url), original)
+            }
+        }
+    }
+
+    func testLegacyProjectStoreCanBeMigratedAndPreservesBackup() throws {
+        try withStoreFile("[]") { url, original in
+            try JSONPersistence.writeProjects([makeProject()], to: url)
+            XCTAssertEqual(JSONPersistence.loadProjects(from: url).value.count, 1)
+            let backup = url.deletingPathExtension().appendingPathExtension("bak.json")
+            XCTAssertEqual(try Data(contentsOf: backup), original)
+        }
+    }
+
+    func testRepeatedCorruptLoadsKeepEachBackup() throws {
+        try withStoreFile("{") { url, original in
+            _ = JSONPersistence.loadProjects(from: url)
+            _ = JSONPersistence.loadProjects(from: url)
+            let backups = try FileManager.default.contentsOfDirectory(
+                at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+            ).filter { $0.lastPathComponent.contains(".corrupt-") }
+            XCTAssertEqual(backups.count, 2)
+            for backup in backups { XCTAssertEqual(try Data(contentsOf: backup), original) }
+        }
+    }
+
+    func testCorruptProjectCanBeSavedAfterPreservingOriginalBytes() throws {
+        try withStoreFile("{") { url, original in
+            try JSONPersistence.writeProjects([makeProject()], to: url)
+            XCTAssertEqual(JSONPersistence.loadProjects(from: url).value.count, 1)
+            let backups = try FileManager.default.contentsOfDirectory(
+                at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+            ).filter { $0.lastPathComponent.contains(".corrupt-") }
+            XCTAssertFalse(backups.isEmpty)
+            for backup in backups { XCTAssertEqual(try Data(contentsOf: backup), original) }
+        }
+    }
+
+    func testFutureStatisticsSchemaIsProtectedOnSave() throws {
+        try withStoreFile("{\"schemaVersion\":999,\"indexedReportIDs\":[]}") { url, original in
+            XCTAssertNotNil(JSONPersistence.loadStatisticsIndex(from: url).warning)
+            XCTAssertThrowsError(try JSONPersistence.writeStatisticsIndex(CopyStatisticsIndex(), to: url))
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
+    func testUnrecognizedSettingsAreProtectedOnSave() throws {
+        for json in ["{\"theme\":\"future-theme\"}", "{\"schemaVersion\":999,\"theme\":\"day\"}"] {
+            try withStoreFile(json) { url, original in
+                let store = SettingsStore(preferencesURL: url, uiSettingsURL: url)
+                _ = store.loadUISettings()
+                XCTAssertNotNil(store.lastLoadWarning)
+                XCTAssertThrowsError(try store.saveUISettings(.default))
+                XCTAssertEqual(try Data(contentsOf: url), original)
+            }
+        }
+    }
+
+    func testSettingsSavePreservesUnknownKeysAndClearsKnownOptionalValues() throws {
+        try withStoreFile("{\"targetPath\":\"/Volumes/Old\",\"backupEnabled\":false,\"futureOption\":{\"value\":42}}") { url, original in
+            let store = SettingsStore(preferencesURL: url, uiSettingsURL: url)
+            try store.save(.default)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            XCTAssertEqual((object["futureOption"] as? [String: Int])?["value"], 42)
+            XCTAssertNil(store.load().targetPath)
+            XCTAssertEqual(try Data(contentsOf: url.deletingPathExtension().appendingPathExtension("bak.json")), original)
+        }
+    }
+
+    func testSaveRechecksFileReplacedByNewerAppSinceLoad() throws {
+        try withStoreFile("[]") { url, _ in
+            XCTAssertNil(JSONPersistence.loadProjects(from: url).warning)
+            let replacement = Data("{\"schemaVersion\":999,\"projects\":[]}".utf8)
+            try replacement.write(to: url, options: .atomic)
+            XCTAssertThrowsError(try JSONPersistence.writeProjects([makeProject()], to: url))
+            XCTAssertEqual(try Data(contentsOf: url), replacement)
+        }
+    }
+
+    private func withStoreFile(_ json: String, body: (URL, Data) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AirwangUpgrade-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("store.json")
+        let original = Data(json.utf8)
+        try original.write(to: url)
+        try body(url, original)
+    }
+
     private func makeProject(
         autoStartEnabled: Bool = false,
         autoStartDeadline: Date? = nil

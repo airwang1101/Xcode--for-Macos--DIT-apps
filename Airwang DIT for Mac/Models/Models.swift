@@ -2041,6 +2041,7 @@ struct CopyStatisticsIndex: Codable, Equatable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        try PersistentSchema.validate(schemaVersion, supported: Self.currentSchemaVersion, decoder: decoder)
         calendarIdentifier = try container.decodeIfPresent(String.self, forKey: .calendarIdentifier) ?? ""
         timeZoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timeZoneIdentifier) ?? ""
         indexedReportIDs = try container.decodeIfPresent(Set<UUID>.self, forKey: .indexedReportIDs) ?? []
