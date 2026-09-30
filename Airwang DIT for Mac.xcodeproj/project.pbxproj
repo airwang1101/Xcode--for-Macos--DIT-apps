@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D40000000000000000000001 /* SupportDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000011 /* SupportDiagnostics.swift */; };
+		D40000000000000000000002 /* SupportDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000012 /* SupportDiagnosticsTests.swift */; };
 		A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* AirwangDITForMacApp.swift */; };
 		A10000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* Models.swift */; };
 		A10000000000000000000003 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* SettingsStore.swift */; };
@@ -55,6 +57,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D40000000000000000000011 /* SupportDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportDiagnostics.swift; sourceTree = "<group>"; };
+		D40000000000000000000012 /* SupportDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportDiagnosticsTests.swift; sourceTree = "<group>"; };
 		A1000000000000000000000A /* Airwang DIT for Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Airwang DIT for Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000011 /* AirwangDITForMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwangDITForMacApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000012 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -159,6 +163,7 @@
 		A1000000000000000000001B /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				D40000000000000000000011 /* SupportDiagnostics.swift */,
 				A10000000000000000000013 /* SettingsStore.swift */,
 				A10000000000000000000014 /* VolumeMonitor.swift */,
 				A10000000000000000000015 /* MediaScanner.swift */,
@@ -195,6 +200,7 @@
 		A2000000000000000000000D /* Airwang DIT for MacTests */ = {
 			isa = PBXGroup;
 			children = (
+				D40000000000000000000012 /* SupportDiagnosticsTests.swift */,
 				A20000000000000000000013 /* PathSafetyTests.swift */,
 				D10000000000000000000017 /* ModelPolicyTests.swift */,
 				A20000000000000000000014 /* MediaScannerTests.swift */,
@@ -356,6 +362,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D40000000000000000000001 /* SupportDiagnostics.swift in Sources */,
 				A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */,
 				A10000000000000000000002 /* Models.swift in Sources */,
 				A10000000000000000000003 /* SettingsStore.swift in Sources */,
@@ -382,6 +389,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D40000000000000000000002 /* SupportDiagnosticsTests.swift in Sources */,
 				A20000000000000000000003 /* PathSafetyTests.swift in Sources */,
 				D10000000000000000000007 /* ModelPolicyTests.swift in Sources */,
 				A20000000000000000000004 /* MediaScannerTests.swift in Sources */,

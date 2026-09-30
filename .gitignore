@@ -21,6 +21,7 @@ AppArtifactArchive/
 *.ipa
 *.xcarchive
 *.xcresult
+*.profraw
 *.zip
 *.app
 

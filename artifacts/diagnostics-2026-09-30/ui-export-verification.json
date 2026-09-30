@@ -1,0 +1,24 @@
+{
+  "exportedFiles": [
+    {
+      "file": "diagnostics-ui.json",
+      "sha256": "3f5361f628b1b140126c7bc720b7a4c0c3940dcf9728862209fc8f42910dfb53",
+      "bytes": 2130,
+      "sentinelExcluded": true,
+      "permissions": "0600",
+      "language": "english"
+    },
+    {
+      "file": "diagnostics-ui-zh.json",
+      "sha256": "12a8c49d99f5b761af9198887f16ed517948c6967d6f37c1ecc8cddb285a6546",
+      "bytes": 2130,
+      "sentinelExcluded": true,
+      "permissions": "0600",
+      "language": "chinese"
+    }
+  ],
+  "saveDialogCancellationVerified": true,
+  "replacementConfirmationPreservedExistingFile": true,
+  "uiAutomationSuiteExecuted": false,
+  "allDataSynthetic": true
+}

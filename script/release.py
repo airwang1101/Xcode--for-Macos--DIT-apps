@@ -137,13 +137,27 @@ def summarize_coverage(report):
     return {"applicationLineCoverage": target["lineCoverage"], "groups": groups}
 
 
-def validate_app_metadata(info, version, build):
+def provenance_metadata(source):
+    if not isinstance(source, dict) or not isinstance(source.get("revision"), str) or not re.fullmatch(r"[0-9a-f]{40}", source["revision"]):
+        raise ReleaseError("Source provenance must contain a full Git revision.")
+    if not isinstance(source.get("inputSha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", source["inputSha256"]) or type(source.get("dirty")) is not bool:
+        raise ReleaseError("Source provenance must contain an input SHA-256 and a working-tree state.")
+    return {
+        "AirwangSourceRevision": source["revision"],
+        "AirwangBuildInputSHA256": source["inputSha256"],
+        "AirwangSourceState": "working-tree" if source["dirty"] else "committed",
+    }
+
+
+def validate_app_metadata(info, version, build, source=None):
     expected = {
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleShortVersionString": version,
         "CFBundleVersion": build,
         "LSMinimumSystemVersion": "14.0",
     }
+    if source is not None:
+        expected.update(provenance_metadata(source))
     for key, value in expected.items():
         if info.get(key) != value:
             raise ReleaseError(f"Unexpected app metadata: {key} must equal {value}.")
@@ -191,6 +205,7 @@ def build(args):
         "build": args.build,
         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source": state,
+        "embeddedProvenance": True,
         "status": "in-progress",
         "commercialAcceptance": "unverified",
         "uiTests": "excluded-by-scheme",
@@ -223,12 +238,17 @@ def build(args):
         manifest["coverage"] = summarize_coverage(coverage)
 
         archive = output / "Airwang-DIT.xcarchive"
+        # Xcode only generates its recognized INFOPLIST_KEY_* settings. Merge
+        # custom provenance through a source plist before signing the product.
+        provenance_plist = evidence / "BuildProvenance.plist"
+        provenance_plist.write_bytes(plistlib.dumps(provenance_metadata(state)))
         archive_arguments = [
             "xcodebuild", "archive", "-project", str(PROJECT), "-scheme", SCHEME,
             "-configuration", "Release", "-destination", "generic/platform=macOS",
             "-derivedDataPath", str(derived), "-archivePath", str(archive),
             "ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO",
             f"MARKETING_VERSION={args.version}", f"CURRENT_PROJECT_VERSION={args.build}",
+            f"INFOPLIST_FILE={provenance_plist}", "GENERATE_INFOPLIST_FILE=YES",
             "SWIFT_TREAT_WARNINGS_AS_ERRORS=YES", "GCC_TREAT_WARNINGS_AS_ERRORS=YES", "SWIFT_STRICT_CONCURRENCY=complete",
         ]
         if args.command == "release":
@@ -261,7 +281,7 @@ def build(args):
             run(["ditto", str(archived_app), str(app)])
 
         info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-        executable = validate_app_metadata(info, args.version, args.build)
+        executable = validate_app_metadata(info, args.version, args.build, source=state)
         architectures = sorted(run(["lipo", "-archs", str(app / "Contents" / "MacOS" / executable)]).split())
         if architectures != ["arm64", "x86_64"]:
             raise ReleaseError("The release app must contain both arm64 and x86_64.")
@@ -364,7 +384,11 @@ def inspect_disk_image(dmg, manifest):
         if app.is_symlink() or not app.is_dir():
             raise ReleaseError("DMG is missing its application payload.")
         info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-        executable = validate_app_metadata(info, manifest["version"], manifest["build"])
+        source = None
+        if manifest.get("embeddedProvenance") is True:
+            source = manifest.get("source")
+            provenance_metadata(source)
+        executable = validate_app_metadata(info, manifest["version"], manifest["build"], source=source)
         architectures = sorted(run(["lipo", "-archs", str(app / "Contents" / "MacOS" / executable)]).split())
         if architectures != ["arm64", "x86_64"]:
             raise ReleaseError("DMG application payload is missing a supported architecture.")

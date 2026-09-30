@@ -73,6 +73,28 @@ class ReleaseGateTests(unittest.TestCase):
         release.write_json(path, manifest)
         return path, dmg, manifest
 
+    def test_app_metadata_requires_exact_embedded_source_provenance(self):
+        source = {"revision": "a" * 40, "inputSha256": "b" * 64, "dirty": True}
+        info = {"CFBundleIdentifier": release.BUNDLE_ID, "CFBundleShortVersionString": "0.1.1",
+                "CFBundleVersion": "42", "LSMinimumSystemVersion": "14.0", "CFBundleExecutable": release.SCHEME,
+                "NSHumanReadableCopyright": "Copyright 2026 Airwang", **release.provenance_metadata(source)}
+        self.assertEqual(release.validate_app_metadata(info, "0.1.1", "42", source), release.SCHEME)
+        for key in release.provenance_metadata(source):
+            with self.subTest(key=key), self.assertRaises(release.ReleaseError):
+                release.validate_app_metadata(dict(info, **{key: "tampered"}), "0.1.1", "42", source)
+            incomplete = dict(info)
+            incomplete.pop(key)
+            with self.assertRaises(release.ReleaseError):
+                release.validate_app_metadata(incomplete, "0.1.1", "42", source)
+        self.assertEqual(release.provenance_metadata(dict(source, dirty=False))["AirwangSourceState"], "committed")
+
+    def test_missing_or_invalid_provenance_cannot_be_embedded(self):
+        for source in [None, {}, {"revision": "../path", "inputSha256": "b" * 64, "dirty": False},
+                       {"revision": "a" * 40, "inputSha256": "b" * 64, "dirty": "false"},
+                       {"revision": "a" * 40, "inputSha256": "b" * 63, "dirty": False}]:
+            with self.subTest(source=source), self.assertRaises(release.ReleaseError):
+                release.provenance_metadata(source)
+
     def test_altered_disk_image_does_not_verify(self):
         with tempfile.TemporaryDirectory() as directory:
             path, dmg, _ = self.manifest_fixture(Path(directory))

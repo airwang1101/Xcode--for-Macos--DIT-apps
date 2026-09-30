@@ -10,6 +10,8 @@ bash script/build-release.sh preview --version 0.1.1 --build 20260930
 
 This runs the isolated Debug unit suite, creates a universal Release archive, packages a DMG with an Applications shortcut, verifies its checksum and actual app payload, and records the source commit plus a hash of build inputs. Source changes during validation stop the build. The filename contains `UNSIGNED-PREVIEW`.
 
+New builds also embed the full Git revision, input SHA-256 and working-tree state in the app's information property list before signing. Payload inspection checks these values against the build manifest. Local support diagnostics can then identify the exact build without collecting paths. Earlier saved packages without embedded provenance remain verifiable with their original manifests.
+
 Default output is the ignored `Dist/` directory. The app requires macOS 14.0. UI tests remain excluded by the current scheme and are reported as such. Preview generation does not prove customer installation or commercial readiness.
 
 ## Signing prerequisite check
@@ -51,3 +53,5 @@ Every attempt keeps `manifest.json`, test summary, `.xcresult`, build logs, a `.
 The GitHub Actions workflow runs script gates and this same preview procedure on a macOS runner. It uploads only installation previews and evidence, uses read-only repository permissions, and never receives signing secrets or publishes a release. Remote CI success must be recorded separately from local validation.
 
 Authoritative implementation references: [Apple notarization](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow), [Sparkle distribution](https://sparkle-project.org/documentation/), [GitHub workflow artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts).
+
+Custom application metadata follows [Apple's information property list guidance](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/AboutInformationPropertyListFiles.html). A generated source plist contributes the custom provenance keys while the existing Xcode settings continue to supply the app's metadata.

@@ -2,6 +2,8 @@
 
 日期：2026-09-30。完整商业验收仍以 [分销验收台账](DISTRIBUTION_READINESS.md) 为准。
 
+本文件保留 Build `20260930` 的历史验证结果。后续诊断导出、构建来源和 Build `2026093002` 的 118 项测试结果见 [诊断验证记录](SUPPORT_DIAGNOSTICS_VERIFICATION_2026-09-30.md)。
+
 ## 本轮结果
 
 | 项目 | 结果 |

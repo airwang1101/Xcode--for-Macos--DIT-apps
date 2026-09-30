@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 把高频进度状态合并到固定发布节奏:间隔内只保留最新一份,尾沿必定送达。
 ///
@@ -122,6 +123,9 @@ final class AppViewModel: ObservableObject {
     @Published var organizerPreviewFilter: OrganizerPreviewFilter = .all
     @Published var importError: String?
     @Published var hasUnsavedChanges = false
+    @Published private(set) var isExportingDiagnostics = false
+    @Published private(set) var isChoosingDiagnosticsDestination = false
+    @Published private(set) var diagnosticsExportStatus: String?
     @Published var activeFolderPicker: FolderPickerPurpose?
     @Published var folderRoots: [FolderBrowserItem] = []
     @Published var folderChildren: [FolderBrowserItem] = []
@@ -173,6 +177,7 @@ final class AppViewModel: ObservableObject {
     private var statisticsIndexNeedSave = false
     private var copyStatisticsIndex = CopyStatisticsIndex()
     private var manualQueueRunActive = false
+    private var diagnosticsExportTask: Task<Void, Never>?
 
     init() {
         preferences = settingsStore.load()
@@ -222,6 +227,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        diagnosticsExportTask?.cancel()
         statisticsRefreshTask?.cancel()
         statisticsBuildTask?.cancel()
         autoStartTask?.cancel()
@@ -763,6 +769,89 @@ final class AppViewModel: ObservableObject {
             NSWorkspace.shared.open(documentURL)
         } else {
             importError = "找不到拷贝报告。目标报告和 App 本地备份报告都不存在，可能已被手动删除。"
+        }
+    }
+
+    func exportDiagnostics() {
+        guard !isExportingDiagnostics, !isChoosingDiagnosticsDestination else { return }
+        isChoosingDiagnosticsDestination = true
+        let panel = NSSavePanel()
+        panel.title = localized("导出诊断")
+        panel.message = localized("请选择新名称以保留已有诊断文件。")
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = SupportDiagnosticsExporter.defaultFileName()
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.isChoosingDiagnosticsDestination = false
+            guard response == .OK, let url = panel.url else { return }
+            self.beginDiagnosticsExport(to: url)
+        }
+    }
+
+    func cancelDiagnosticsExport() {
+        diagnosticsExportTask?.cancel()
+    }
+
+    private func beginDiagnosticsExport(to url: URL) {
+        guard !isExportingDiagnostics else { return }
+        let projects = copyProjects
+        let history = reports
+        var activity = SupportDiagnosticsSnapshot.Activity()
+        activity.language = selectedLanguage.rawValue
+        activity.theme = selectedTheme.rawValue
+        activity.executionMode = executionMode.rawValue
+        activity.selectedVerificationMode = selectedVerificationMode.rawValue
+        activity.backupEnabled = preferences.backupEnabled
+        activity.scanning = isScanning
+        activity.importing = isImporting
+        activity.organizing = isRunningOrganizer
+        activity.activeProjectCount = activeProjectIDs.count
+        activity.unsavedChanges = hasUnsavedChanges
+        activity.errorCategory = .classify(importError)
+        let capturedActivity = activity
+        isExportingDiagnostics = true
+        diagnosticsExportStatus = localized("正在导出诊断…")
+        let worker = Task.detached(priority: .utility) { () -> Result<Void, any Error> in
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let snapshot = SupportDiagnosticsSnapshot.capture(projects: projects, reports: history, activity: capturedActivity)
+                try SupportDiagnosticsExporter.write(snapshot, to: url)
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        diagnosticsExportTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self else { return }
+            self.isExportingDiagnostics = false
+            self.diagnosticsExportTask = nil
+            switch result {
+            case .success:
+                self.diagnosticsExportStatus = self.localized("已导出诊断，可先检查文件再提供给支持人员。")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let error):
+                if error is CancellationError {
+                    self.diagnosticsExportStatus = self.localized("诊断导出已取消")
+                } else {
+                    let detail: String
+                    if let exportError = error as? SupportDiagnosticsExporter.ExportError {
+                        switch exportError {
+                        case .destinationExists: detail = self.localized("已有文件已保留，请选择新名称。")
+                        case .invalidDestination: detail = self.localized("请选择可写文件夹中的 JSON 文件。")
+                        }
+                    } else {
+                        detail = error.localizedDescription
+                    }
+                    self.diagnosticsExportStatus = self.localized("诊断导出失败") + ": " + detail
+                }
+            }
         }
     }
 

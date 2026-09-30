@@ -18,10 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard viewModel?.hasActiveFileOperations == true else {
+        guard viewModel?.hasActiveFileOperations == true || viewModel?.isExportingDiagnostics == true else {
             return .terminateNow
         }
-        viewModel?.importError = "仍有导入、校验或规整任务正在执行。请先取消并等待文件操作收尾后再退出。"
+        viewModel?.importError = viewModel?.localized("仍有导入、校验、规整或诊断导出正在执行。请先取消并等待文件操作收尾后再退出。")
         return .terminateCancel
     }
 
@@ -83,6 +83,12 @@ struct AirwangDITForMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .help) {
+                Button(viewModel.localized("导出诊断")) {
+                    viewModel.exportDiagnostics()
+                }
+                .disabled(viewModel.isExportingDiagnostics || viewModel.isChoosingDiagnosticsDestination)
+            }
         }
 
         Settings {
@@ -193,6 +199,26 @@ private struct AppSettingsView: View {
                 Text(viewModel.localized("关闭后，新建项目只加入队列，需要手动执行。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section(viewModel.localized("支持与诊断")) {
+                Text(viewModel.localized("导出版本、系统环境和任务状态。诊断不包含素材、文件名、路径或原始错误文本。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button(viewModel.localized("导出诊断")) {
+                        viewModel.exportDiagnostics()
+                    }
+                    .disabled(viewModel.isExportingDiagnostics || viewModel.isChoosingDiagnosticsDestination)
+                    .accessibilityIdentifier("settings-export-diagnostics")
+                    if viewModel.isExportingDiagnostics {
+                        ProgressView().controlSize(.small)
+                        Button(viewModel.localized("取消导出")) { viewModel.cancelDiagnosticsExport() }
+                    }
+                }
+                if let status = viewModel.diagnosticsExportStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

@@ -33,6 +33,7 @@ Commercial release gates and current evidence are maintained in [DISTRIBUTION_RE
 - Writes task reports and keeps local task history.
 - Provides Chinese and English UI language settings.
 - Provides day and night themes.
+- Exports optional local support diagnostics with media, filenames, paths, and raw errors excluded. See [support diagnostics](SUPPORT_DIAGNOSTICS.md).
 
 ## Project Layout
 
