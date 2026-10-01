@@ -138,7 +138,7 @@ final class AppViewModel: ObservableObject {
     @Published var hasScannedSource = false
     @Published private(set) var taskLogScopeName = AppStorageScope.displayName
 
-    let settingsStore = SettingsStore()
+    let settingsStore: SettingsStore
     private let volumeMonitor = VolumeMonitor()
     private let scanner = MediaScanner()
     private let transferService = TransferService()
@@ -178,16 +178,26 @@ final class AppViewModel: ObservableObject {
     private var copyStatisticsIndex = CopyStatisticsIndex()
     private var manualQueueRunActive = false
     private var diagnosticsExportTask: Task<Void, Never>?
+    private let backupChangeConfirmation: ((String, String) -> Bool)?
 
-    init() {
+    init(dataDirectory: URL? = nil, backupChangeConfirmation: ((String, String) -> Bool)? = nil) {
+        self.backupChangeConfirmation = backupChangeConfirmation
+        if let dataDirectory {
+            settingsStore = SettingsStore(
+                preferencesURL: dataDirectory.appendingPathComponent(AppStorageScope.preferencesURL.lastPathComponent),
+                uiSettingsURL: dataDirectory.appendingPathComponent(AppStorageScope.uiSettingsURL.lastPathComponent)
+            )
+        } else {
+            settingsStore = SettingsStore()
+        }
         preferences = settingsStore.load()
         let uiSettings = settingsStore.loadUISettings()
         selectedTheme = uiSettings.theme
         selectedLanguage = uiSettings.language
         autoStartQueuedProjects = uiSettings.autoStartQueuedProjects
-        reportURL = Self.makeReportURL()
-        projectURL = Self.makeProjectURL()
-        statisticsIndexURL = Self.makeStatisticsIndexURL()
+        reportURL = dataDirectory?.appendingPathComponent(Self.makeReportURL().lastPathComponent) ?? Self.makeReportURL()
+        projectURL = dataDirectory?.appendingPathComponent(Self.makeProjectURL().lastPathComponent) ?? Self.makeProjectURL()
+        statisticsIndexURL = dataDirectory?.appendingPathComponent(Self.makeStatisticsIndexURL().lastPathComponent) ?? Self.makeStatisticsIndexURL()
         let reportLoad = Self.loadReports(from: reportURL)
         reports = reportLoad.items
         let statisticsIndexLoad = Self.loadStatisticsIndex(from: statisticsIndexURL)
@@ -1415,6 +1425,42 @@ final class AppViewModel: ObservableObject {
         importError = "已将项目“\(project.name)”重新加入任务队列。已有文件会完整复核 SHA-256，缺失文件会补拷，内容不一致的文件将保留并报告异常。需要手动点击“执行任务队列”才会开始。"
     }
 
+    func canRetryBackup(for project: CopyProject) -> Bool {
+        guard let current = copyProjects.first(where: { $0.id == project.id }),
+              !activeProjectIDs.contains(current.id), current.canPrepareBackupRetry,
+              let report = primaryReferenceReport(for: current) else { return false }
+        return report.success && !report.cancelled && !report.reportDocumentWriteFailed
+            && report.fileRecords.count == current.selectedItems.count
+    }
+
+    private func primaryReferenceReport(for project: CopyProject) -> TransferReport? {
+        if let reference = project.primaryCompletionReference { return reference.report }
+        return reports.first(where: { $0.id == project.primaryReportID })
+    }
+
+    func retryBackupProject(_ project: CopyProject) {
+        guard canRetryBackup(for: project), let current = copyProjects.first(where: { $0.id == project.id }) else {
+            importError = localized("主盘完成记录不足，或项目仍在执行，无法独立重试备份。")
+            return
+        }
+        do {
+            _ = try TransferService.backupRetryReference(
+                project: current, report: primaryReferenceReport(for: current)
+            )
+        } catch {
+            importError = localized("无法独立重试备份") + ": " + error.localizedDescription
+            return
+        }
+        updateProject(current.id) { item in item.prepareForBackupRetry() }
+        scheduleNextAutoStartCheck()
+        selectedSection = .copy
+        let executionNote = manualQueueRunActive
+            ? localized("当前手动队列会继续执行此项目。")
+            : localized("请手动执行任务队列。")
+        importError = String(format: localized("项目“%@”已加入独立备份重试队列。主盘完成状态和原报告已保留，已有备份文件会完整复核 SHA-256。"), current.name)
+            + " " + executionNote
+    }
+
     func cancelAutoStart(for project: CopyProject) {
         guard project.status == .queued else {
             importError = "项目“\(project.name)”已经不在排队状态，无法取消自动执行。"
@@ -1459,7 +1505,7 @@ final class AppViewModel: ObservableObject {
         guard !cleaned.isEmpty else { return }
         updateProject(project.id) { item in
             item.name = cleaned
-            if item.status == .queued {
+            if item.status == .queued, !item.backupOnlyRetry {
                 let shortID = String(item.id.uuidString.prefix(8).lowercased())
                 item.taskFolderName = FileNameSanitizer.safeComponent(cleaned) + "_" + shortID
             }
@@ -1474,7 +1520,9 @@ final class AppViewModel: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "修改项目名称"
-        alert.informativeText = "名称会用于队列显示、报告标题；排队中的项目还会同步更新目标文件夹名。"
+        alert.informativeText = project.backupOnlyRetry
+            ? localized("独立备份重试只修改显示名称与后续报告标题，已有主盘文件夹保持不变。")
+            : "名称会用于队列显示、报告标题；排队中的项目还会同步更新目标文件夹名。"
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
 
@@ -1719,17 +1767,21 @@ final class AppViewModel: ObservableObject {
         var backupProgress: TransferProgressCoalescer?
 
         do {
-            let primaryResult = try await transferService.runPrimaryStage(
-                project: primaryProject,
-                interruptionToken: token,
-                language: selectedLanguage
-            ) { state in
-                await MainActor.run {
-                    primaryProgress.ingest(state)
+            var primaryResult: TransferService.ProjectStageResult?
+            if !primaryProject.backupOnlyRetry {
+                let result = try await transferService.runPrimaryStage(
+                    project: primaryProject,
+                    interruptionToken: token,
+                    language: selectedLanguage
+                ) { state in
+                    await MainActor.run {
+                        primaryProgress.ingest(state)
+                    }
                 }
+                primaryResult = result
+                primaryProgress.cancelPending()
+                finishPrimaryStage(projectID: projectID, result: result)
             }
-            primaryProgress.cancelPending()
-            finishPrimaryStage(projectID: projectID, result: primaryResult)
 
             guard let currentProject = copyProjects.first(where: { $0.id == projectID }) else {
                 finishProjectTask(projectID)
@@ -1738,7 +1790,9 @@ final class AppViewModel: ObservableObject {
             if currentProject.status == .cancelling {
                 updateProject(projectID) { item in
                     item.status = .cancelled
-                    item.errorMessage = "用户取消了导入任务，主盘阶段已收尾，后续阶段未执行。"
+                    item.errorMessage = item.backupOnlyRetry
+                        ? localized("独立备份重试已取消，主盘完成状态已保留。")
+                        : "用户取消了导入任务，主盘阶段已收尾，后续阶段未执行。"
                 }
                 finishProjectTask(projectID)
                 return
@@ -1748,7 +1802,7 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
-            if !primaryResult.report.success {
+            if let primaryResult, !primaryResult.report.success {
                 updateProject(projectID) { item in
                     if item.hasBackup {
                         item.status = .blocked
@@ -1784,6 +1838,8 @@ final class AppViewModel: ObservableObject {
 
             let backupResult = try await transferService.runBackupStage(
                 project: currentProject,
+                primaryReferenceReport: currentProject.backupOnlyRetry
+                    ? primaryReferenceReport(for: currentProject) : nil,
                 interruptionToken: token,
                 language: selectedLanguage
             ) { state in
@@ -1821,8 +1877,11 @@ final class AppViewModel: ObservableObject {
 
         updateProject(projectID) { item in
             item.primaryReportID = result.report.id
+            item.primaryCompletionReference = result.report.success
+                ? PrimaryCompletionReference(report: result.report) : nil
             item.primaryCopyState.isActive = false
-            item.primaryCopyState.isComplete = result.finalState.copyFailedFiles.isEmpty
+            item.primaryCopyState.isComplete = result.finalState.copiedFiles >= result.finalState.totalFiles
+                && result.finalState.copyFailedFiles.isEmpty
             item.primaryCopyState.finishedAt = Date()
             item.primaryVerifyState.isActive = false
             item.primaryVerifyState.isComplete = result.report.success
@@ -1844,7 +1903,8 @@ final class AppViewModel: ObservableObject {
         updateProject(projectID) { item in
             item.backupReportID = result.report.id
             item.backupCopyState.isActive = false
-            item.backupCopyState.isComplete = result.finalState.copyFailedFiles.isEmpty
+            item.backupCopyState.isComplete = result.finalState.copiedFiles >= result.finalState.totalFiles
+                && result.finalState.copyFailedFiles.isEmpty
             item.backupCopyState.finishedAt = Date()
             item.backupVerifyState.isActive = false
             item.backupVerifyState.isComplete = result.report.success
@@ -1949,11 +2009,11 @@ final class AppViewModel: ObservableObject {
                 let stageState = makeVerificationStageState(from: state, title: stage == .primary ? ProjectStageKind.primaryVerify.title : ProjectStageKind.backupVerify.title)
                 if stage == .primary {
                     item.primaryCopyState.isActive = false
-                    item.primaryCopyState.isComplete = state.copyFailedFiles.isEmpty
+                    item.primaryCopyState.isComplete = state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
                     item.primaryVerifyState = stageState
                 } else {
                     item.backupCopyState.isActive = false
-                    item.backupCopyState.isComplete = state.copyFailedFiles.isEmpty
+                    item.backupCopyState.isComplete = state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
                     item.backupVerifyState = stageState
                 }
             }
@@ -1973,7 +2033,7 @@ final class AppViewModel: ObservableObject {
             startedAt: state.startedAt,
             failedFiles: state.copyFailedFiles,
             isActive: true,
-            isComplete: state.processedBytes >= state.totalBytes && state.copyFailedFiles.isEmpty
+            isComplete: state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
         )
     }
 
@@ -1997,8 +2057,12 @@ final class AppViewModel: ObservableObject {
     private func canRunAlongsideActiveProjects(_ project: CopyProject) -> Bool {
         for activeID in activeProjectIDs {
             guard let active = copyProjects.first(where: { $0.id == activeID }) else { continue }
-            if PathSafety.pathsShareVolume(project.sourceRootURL, active.sourceRootURL)
-                || PathSafety.pathsShareVolume(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)) {
+            let source = project.backupOnlyRetry ? project.primaryImportURL : project.sourceRootURL
+            let activeSource = active.backupOnlyRetry ? active.primaryImportURL : active.sourceRootURL
+            let sourceVolume = project.backupOnlyRetry ? project.targetRootURL : URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true)
+            let activeSourceVolume = active.backupOnlyRetry ? active.targetRootURL : URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)
+            if PathSafety.pathsShareVolume(source, activeSource)
+                || PathSafety.pathsShareVolume(sourceVolume, activeSourceVolume) {
                 return false
             }
             if PathSafety.pathsShareVolume(project.targetRootURL, active.targetRootURL) {
@@ -2174,6 +2238,10 @@ final class AppViewModel: ObservableObject {
             }
             item.backupReportID = nil
             if backupURL == nil {
+                if item.backupOnlyRetry {
+                    item.status = .completed
+                    item.backupOnlyRetry = false
+                }
                 item.backupCopyState = ProjectStageState(
                     title: ProjectStageKind.backupCopy.title,
                     detail: "未配置备份盘"
@@ -2213,9 +2281,17 @@ final class AppViewModel: ObservableObject {
         var warnings: [String] = []
         let sourceVolumeURL = URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true)
 
+        let sharesOriginalSourceVolume: Bool
+        if project.backupOnlyRetry {
+            let backupID = try? backupURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+            sharesOriginalSourceVolume = project.sourceVolumeIdentifier != nil
+                && project.sourceVolumeIdentifier == backupID
+        } else {
+            sharesOriginalSourceVolume = PathSafety.pathsShareVolume(sourceVolumeURL, backupURL)
+                || PathSafety.pathsShareVolume(project.sourceRootURL, backupURL)
+        }
         if PathSafety.pathsOverlap(project.sourceRootURL, backupURL)
-            || PathSafety.pathsShareVolume(sourceVolumeURL, backupURL)
-            || PathSafety.pathsShareVolume(project.sourceRootURL, backupURL) {
+            || sharesOriginalSourceVolume {
             warnings.append("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
         }
 
@@ -2235,6 +2311,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func confirmProjectBackupChange(title: String, message: String) -> Bool {
+        if let backupChangeConfirmation { return backupChangeConfirmation(title, message) }
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -2260,7 +2337,8 @@ final class AppViewModel: ObservableObject {
 
         for project in copyProjects where activeProjectIDs.contains(project.id) {
             let affectedRole: String?
-            if PathSafety.isContained(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), in: url)
+            if !project.backupOnlyRetry,
+               PathSafety.isContained(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), in: url)
                 || PathSafety.isContained(project.sourceRootURL, in: url) {
                 affectedRole = "源设备"
             } else if PathSafety.isContained(project.targetRootURL, in: url)

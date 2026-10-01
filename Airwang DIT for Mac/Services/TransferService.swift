@@ -20,6 +20,8 @@ struct TransferService {
         case destinationWriteFailed(path: String, reason: String)
         case sourceVolumeChanged(path: String)
         case resumeFileChanged(path: String)
+        case primaryReferenceUnavailable(reason: String)
+        case primaryCheckpointMismatch(file: String)
 
         var errorDescription: String? {
             switch self {
@@ -49,6 +51,10 @@ struct TransferService {
                 return "源设备标识与创建项目时不一致，已阻止恢复。请重新连接原始源设备：\(path)"
             case let .resumeFileChanged(path):
                 return "恢复期间文件发生变化，已停止当前阶段并保留现有文件：\(path)"
+            case let .primaryReferenceUnavailable(reason):
+                return "独立备份重试缺少有效主盘完成记录，已阻止写入：\(reason)"
+            case let .primaryCheckpointMismatch(file):
+                return "主盘文件与原主盘报告不一致，已阻止独立备份重试并保留现有文件：\(file)"
             }
         }
     }
@@ -142,6 +148,73 @@ struct TransferService {
         let finalState: TransferState
     }
 
+    struct BackupRetryReference {
+        let reportID: UUID
+        let verificationMode: VerificationMode
+        let records: [String: FileVerificationRecord]
+        let fileModes: [String: VerificationMode]
+    }
+
+    static func backupRetryReference(project: CopyProject, report: TransferReport?) throws -> BackupRetryReference {
+        let report = report ?? project.primaryCompletionReference?.report
+        guard project.primaryCopyState.isComplete, project.primaryVerifyState.isComplete,
+              let report, project.primaryReportID == report.id, report.success, !report.cancelled,
+              !report.reportDocumentWriteFailed, report.interruptionReason == nil,
+              report.failedFiles.isEmpty, report.copyFailedFiles.isEmpty, report.verificationFailedFiles.isEmpty else {
+            throw TransferError.primaryReferenceUnavailable(reason: "主盘成功报告缺失或状态不一致")
+        }
+        guard let reportSourceRoot = report.sourceRootPath,
+              PathSafety.normalizedPath(URL(fileURLWithPath: report.targetPath, isDirectory: true))
+                == PathSafety.normalizedPath(project.primaryImportURL),
+              PathSafety.normalizedPath(URL(fileURLWithPath: reportSourceRoot, isDirectory: true))
+                == PathSafety.normalizedPath(project.sourceRootURL) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告路径与项目主盘不一致")
+        }
+        let paths = project.selectedItems.map(\.relativePath)
+        guard !paths.isEmpty, Set(paths).count == paths.count,
+              report.selectedFileCount == paths.count, report.importedItems.count == paths.count,
+              Set(report.importedItems) == Set(paths), report.fileRecords.count == paths.count,
+              Set(report.fileRecords.map(\.relativePath)) == Set(paths),
+              Set(report.resumedFiles).count == report.resumedFiles.count,
+              Set(report.resumedFiles).isSubset(of: Set(paths)) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告文件清单缺失、重复或与项目不一致")
+        }
+        guard let mode = VerificationMode.allCases.first(where: {
+            [$0.rawValue, $0.title, $0.shortTitle,
+             AppLocalization.text($0.title, language: .english),
+             AppLocalization.text($0.shortTitle, language: .english)].contains(report.verificationMode)
+        }) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告校验策略无法识别")
+        }
+        let resumed = Set(report.resumedFiles)
+        var fileModes: [String: VerificationMode] = [:]
+        for record in report.fileRecords {
+            // Recovery uses full SHA-256 for existing files even when the
+            // project's chosen mode is weaker. Retain that per-file evidence.
+            let fileMode: VerificationMode = resumed.contains(record.relativePath) ? .sha256 : mode
+            fileModes[record.relativePath] = fileMode
+            let validStatus = fileMode == .skipped ? ["跳过校验", "Skipped"] : ["通过", "Passed"]
+            guard record.size >= 0, validStatus.contains(record.status), record.backupChecksum == nil else {
+                throw TransferError.primaryReferenceUnavailable(reason: "报告包含未完成的主盘文件记录")
+            }
+            if fileMode == .sha256 || fileMode == .fastFingerprint {
+                guard let hash = record.targetChecksum, record.sourceChecksum == hash,
+                      (fileMode != .fastFingerprint || hash.hasPrefix("fingerprint-")) else {
+                    throw TransferError.primaryReferenceUnavailable(reason: "报告中的主盘校验值缺失或不一致")
+                }
+                let digest = fileMode == .fastFingerprint ? String(hash.dropFirst("fingerprint-".count)) : hash
+                guard digest.utf8.count == 64,
+                      digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                    throw TransferError.primaryReferenceUnavailable(reason: "报告中的主盘校验值格式无法识别")
+                }
+            }
+        }
+        return BackupRetryReference(
+            reportID: report.id, verificationMode: mode,
+            records: Dictionary(uniqueKeysWithValues: report.fileRecords.map { ($0.relativePath, $0) }), fileModes: fileModes
+        )
+    }
+
     private struct ReportDocumentWriteResult {
         let requestedTargetURL: URL?
         let targetURL: URL?
@@ -178,6 +251,7 @@ struct TransferService {
 
     func runBackupStage(
         project: CopyProject,
+        primaryReferenceReport: TransferReport? = nil,
         interruptionToken: ImportInterruptionToken? = nil,
         language: AppLanguage = .chinese,
         progress: @escaping @Sendable (TransferState) async -> Void
@@ -187,6 +261,7 @@ struct TransferService {
             stage: .backup,
             interruptionToken: interruptionToken,
             language: language,
+            primaryReferenceReport: primaryReferenceReport,
             progress: progress
         )
     }
@@ -196,6 +271,7 @@ struct TransferService {
         stage: ProjectTransferStage,
         interruptionToken: ImportInterruptionToken?,
         language: AppLanguage,
+        primaryReferenceReport: TransferReport? = nil,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> ProjectStageResult {
         let startedAt = Date()
@@ -278,16 +354,31 @@ struct TransferService {
         var existingDestinations: [String: ResumeFileIdentity] = [:]
         var resumedFiles: [String] = []
         var newlyCopiedFiles = 0
+        var backupRetryReference: BackupRetryReference?
+        var primaryReferenceValidated = false
+        var primarySourceIdentities: [String: ResumeFileIdentity] = [:]
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
             try validateRelativePaths(sources)
-            try ensureAvailable(sourceBaseURL, role: sourceLabel)
+            if project.backupOnlyRetry, stage != .backup {
+                throw TransferError.primaryReferenceUnavailable(reason: "独立备份队列不能执行主盘拷贝")
+            }
+            try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: stage == .backup ? sourceVolumeIdentifier : nil)
             if stage == .primary, let expectedID = project.sourceVolumeIdentifier {
                 let actualID = try sourceBaseURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
                 guard actualID == expectedID else {
                     throw TransferError.sourceVolumeChanged(path: sourceBaseURL.path)
                 }
+            }
+            if project.backupOnlyRetry {
+                let reference = try Self.backupRetryReference(project: project, report: primaryReferenceReport)
+                backupRetryReference = reference
+                primarySourceIdentities = try await validateBackupRetrySource(
+                    project: project, reference: reference, interruptionToken: interruptionToken,
+                    language: language, state: state, progress: progress
+                )
+                primaryReferenceValidated = true
             }
             existingDestinations = try existingProjectDestinations(
                 project: project,
@@ -317,8 +408,13 @@ struct TransferService {
             }
             sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
-            preflightFailureMessage = error.localizedDescription
-            preflightReportDetails = makePreflightReportDetails(for: error)
+            let handledError: Error = error is CancellationError
+                ? TransferError.transferInterrupted(reason: Self.userCancellationReason) : error
+            preflightFailureMessage = handledError.localizedDescription
+            preflightReportDetails = makePreflightReportDetails(for: handledError)
+            if project.backupOnlyRetry || handledError.localizedDescription == Self.userCancellationReason {
+                fatalStopReason = handledError.localizedDescription
+            }
             failedFiles = sources.map(\.relativePath)
             skippedFiles = failedFiles
             fileRecords = sources.map { item in
@@ -329,14 +425,14 @@ struct TransferService {
                     targetChecksum: nil,
                     backupChecksum: nil,
                     status: "未执行",
-                    message: "阶段预检失败，未开始拷贝：\(error.localizedDescription)"
+                    message: "阶段预检失败，未开始拷贝：\(handledError.localizedDescription)"
                 )
             }
             state.phaseTitle = "预检失败，已生成报告"
             state.verificationStatus = "未开始拷贝"
             state.failedFiles = failedFiles
             state.skippedFiles = skippedFiles
-            state.reportSummary = "阶段预检失败：\(error.localizedDescription)"
+            state.reportSummary = "阶段预检失败：\(handledError.localizedDescription)"
             await progress(state)
         }
 
@@ -353,6 +449,9 @@ struct TransferService {
                     try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                     let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                     let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+                    if project.backupOnlyRetry {
+                        try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                    }
                     // SHA-256 校验阶段会独立重读源文件,拷贝时不再内联计算源哈希
                     // (内联哈希无法捕获读卡路径上的瞬时损坏,见校验阶段说明)。
                     if let existingIdentity = existingDestinations[item.relativePath] {
@@ -380,6 +479,9 @@ struct TransferService {
                             progress: progress
                         )
                         newlyCopiedFiles += 1
+                    }
+                    if project.backupOnlyRetry {
+                        try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
                     }
 
                     copiedItemPaths.insert(item.relativePath)
@@ -515,6 +617,9 @@ struct TransferService {
                         try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                         let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                         let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+                        if project.backupOnlyRetry {
+                            try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                        }
                         var resumeSourceIdentity: ResumeFileIdentity?
                         if let expectedIdentity = existingDestinations[item.relativePath] {
                             try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
@@ -540,6 +645,13 @@ struct TransferService {
                         )
                         try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
                         try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
+                        if let reference = backupRetryReference {
+                            try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                            if reference.fileModes[item.relativePath] == .sha256, itemVerificationMode == .sha256,
+                               record.sourceChecksum != reference.records[item.relativePath]?.targetChecksum {
+                                throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                            }
+                        }
                         if let expectedIdentity = existingDestinations[item.relativePath], let resumeSourceIdentity {
                             try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
                             try PathSafety.ensureSafeExistingFileTarget(for: sourceFileURL, under: sourceBaseURL)
@@ -631,6 +743,33 @@ struct TransferService {
             }
         }
 
+        if preflightFailureMessage == nil, project.backupOnlyRetry, fatalStopReason == nil {
+            for item in sources {
+                do {
+                    try checkInterruption(interruptionToken)
+                    try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                    try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                } catch {
+                    let handledError: Error = error is CancellationError
+                        ? TransferError.transferInterrupted(reason: Self.userCancellationReason) : error
+                    appendUnique(item.relativePath, to: &failedFiles)
+                    appendUnique(item.relativePath, to: &verificationFailedFiles)
+                    fatalStopReason = handledError.localizedDescription
+                    let failureRecord = FileVerificationRecord(
+                        relativePath: item.relativePath, size: item.size,
+                        sourceChecksum: nil, targetChecksum: nil, backupChecksum: nil,
+                        status: "异常", message: handledError.localizedDescription
+                    )
+                    if let recordIndex = fileRecords.firstIndex(where: { $0.relativePath == item.relativePath }) {
+                        fileRecords[recordIndex] = failureRecord
+                    } else {
+                        fileRecords.append(failureRecord)
+                    }
+                    break
+                }
+            }
+        }
+
         let finishedAt = Date()
         let wasCancelled = fatalStopReason == Self.userCancellationReason
         var verificationSummary = makeProjectVerificationSummary(
@@ -646,6 +785,13 @@ struct TransferService {
                 ? "Resume: \(resumedFiles.count) existing files passed full SHA-256 verification; \(newlyCopiedFiles) files copied this attempt. Existing files were preserved."
                 : "恢复复核：\(resumedFiles.count) 个已有文件通过 SHA-256 全量核验，本次新增拷贝 \(newlyCopiedFiles) 个文件。现有文件均已保留。"
             verificationSummary += " " + resumeSummary
+        }
+        if project.backupOnlyRetry {
+            let referenceID = project.primaryReportID?.uuidString ?? "Unavailable"
+            let mode = backupRetryReference?.verificationMode.rawValue ?? "unknown"
+            verificationSummary += language == .english
+                ? " Independent backup retry; primary report: \(referenceID); primary checkpoint policy: \(mode); validation: \(primaryReferenceValidated ? "passed" : "not completed"). The original source and primary copy stage were not rerun."
+                : " 独立备份重试；原主盘报告：\(referenceID)；主盘参考策略：\(mode)；复核：\(primaryReferenceValidated ? "已通过" : "未完成"). 本次未重新执行源卡和主盘拷贝阶段。"
         }
         var reportProject = project
         reportProject.verificationMode = stageVerificationMode
@@ -1275,9 +1421,18 @@ struct TransferService {
             if PathSafety.pathsShareVolume(project.targetRootURL, backupRootURL) {
                 throw TransferError.pathOverlap("备份盘不能与主目标盘位于同一个磁盘卷上，请选择独立备份盘。")
             }
-            if PathSafety.pathsOverlap(project.sourceRootURL, backupRootURL)
-                || PathSafety.pathsShareVolume(sourceVolumeURL, backupRootURL)
-                || PathSafety.pathsShareVolume(project.sourceRootURL, backupRootURL) {
+            let sharesOriginalSourceVolume: Bool
+            if project.backupOnlyRetry {
+                // An unmounted card's old path resolves to its ancestor volume.
+                // Compare recorded IDs instead of treating /Volumes as the card.
+                let backupID = try? backupRootURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+                sharesOriginalSourceVolume = project.sourceVolumeIdentifier != nil
+                    && project.sourceVolumeIdentifier == backupID
+            } else {
+                sharesOriginalSourceVolume = PathSafety.pathsShareVolume(sourceVolumeURL, backupRootURL)
+                    || PathSafety.pathsShareVolume(project.sourceRootURL, backupRootURL)
+            }
+            if PathSafety.pathsOverlap(project.sourceRootURL, backupRootURL) || sharesOriginalSourceVolume {
                 throw TransferError.pathOverlap("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
             }
         }
@@ -1598,6 +1753,8 @@ struct TransferService {
                  .destinationAlreadyExists,
                  .sourceVolumeChanged,
                  .resumeFileChanged,
+                 .primaryReferenceUnavailable,
+                 .primaryCheckpointMismatch,
                  .destinationWriteFailed:
                 return transferError.localizedDescription
             case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
@@ -1636,6 +1793,8 @@ struct TransferService {
                  .destinationAlreadyExists,
                  .sourceVolumeChanged,
                  .resumeFileChanged,
+                 .primaryReferenceUnavailable,
+                 .primaryCheckpointMismatch,
                  .destinationWriteFailed:
                 return transferError.localizedDescription
             case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
@@ -1969,6 +2128,75 @@ struct TransferService {
         return FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
     }
 
+    private func validateBackupRetrySource(
+        project: CopyProject, reference: BackupRetryReference,
+        interruptionToken: ImportInterruptionToken?, language: AppLanguage,
+        state initialState: TransferState,
+        progress: @escaping @Sendable (TransferState) async -> Void
+    ) async throws -> [String: ResumeFileIdentity] {
+        var identities: [String: ResumeFileIdentity] = [:]
+        var state = initialState
+        state.phaseTitle = language == .english ? "Checking the primary against its original report" : "正在按原报告复核主盘"
+        state.verificationStatus = state.phaseTitle
+        state.verificationProcessedBytes = 0
+        state.verificationTotalBytes = reference.records.values.reduce(Int64(0)) {
+            let sum = $0.addingReportingOverflow($1.size)
+            return sum.overflow ? Int64.max : sum.partialValue
+        }
+        for item in project.selectedItems {
+            try checkInterruption(interruptionToken)
+            try ensureAvailable(project.primaryImportURL, role: "主目标盘", expectedVolumeIdentifier: project.targetVolumeIdentifier)
+            let url = try PathSafety.resolvedURL(for: item.relativePath, under: project.primaryImportURL)
+            try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+            guard let record = reference.records[item.relativePath] else {
+                throw TransferError.primaryReferenceUnavailable(reason: "主盘记录缺少 \(item.relativePath)")
+            }
+            let before = try ResumeFileIdentity.capture(url)
+            state.currentFile = item.relativePath
+            await progress(state)
+            switch reference.fileModes[item.relativePath] ?? reference.verificationMode {
+            case .sha256:
+                let actual = try await checksum(for: url, interruptionToken: interruptionToken, state: &state, progress: progress)
+                guard actual == record.targetChecksum else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            case .fastFingerprint:
+                guard before.size == record.size else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+                let actual = try await fingerprint(for: url, fileSize: record.size, interruptionToken: interruptionToken, state: &state, progress: progress)
+                guard actual == record.targetChecksum else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            case .sizeOnly, .skipped:
+                guard before.size == record.size else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            }
+            try checkInterruption(interruptionToken)
+            try ensureAvailable(project.primaryImportURL, role: "主目标盘", expectedVolumeIdentifier: project.targetVolumeIdentifier)
+            try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+            guard try ResumeFileIdentity.capture(url) == before else {
+                throw TransferError.resumeFileChanged(path: item.relativePath)
+            }
+            identities[item.relativePath] = before
+        }
+        return identities
+    }
+
+    private func assertBackupRetrySource(
+        item: ProjectMediaItem, project: CopyProject, identities: [String: ResumeFileIdentity]
+    ) throws {
+        guard let expected = identities[item.relativePath] else {
+            throw TransferError.primaryReferenceUnavailable(reason: "主盘复核未完成")
+        }
+        let url = try PathSafety.resolvedURL(for: item.relativePath, under: project.primaryImportURL)
+        try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+        guard try ResumeFileIdentity.capture(url) == expected else {
+            throw TransferError.resumeFileChanged(path: item.relativePath)
+        }
+    }
+
     private func checksum(
         for url: URL,
         interruptionToken: ImportInterruptionToken?,
@@ -2045,7 +2273,7 @@ struct TransferService {
             )
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: nil,
                 targetChecksum: nil,
                 backupChecksum: nil,
@@ -2060,7 +2288,7 @@ struct TransferService {
             )
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: nil,
                 targetChecksum: nil,
                 backupChecksum: nil,
@@ -2090,7 +2318,7 @@ struct TransferService {
             }
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: sourceHash,
                 targetChecksum: stage == .primary ? targetHash : nil,
                 backupChecksum: stage == .backup ? targetHash : nil,
@@ -2100,14 +2328,14 @@ struct TransferService {
         case .fastFingerprint:
             let sourceFingerprint = try await fingerprint(
                 for: sourceURL,
-                fileSize: item.size,
+                fileSize: sourceSize,
                 interruptionToken: interruptionToken,
                 state: &state,
                 progress: progress
             )
             let targetFingerprint = try await fingerprint(
                 for: targetURL,
-                fileSize: item.size,
+                fileSize: sourceSize,
                 interruptionToken: interruptionToken,
                 state: &state,
                 progress: progress
@@ -2117,7 +2345,7 @@ struct TransferService {
             }
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: sourceFingerprint,
                 targetChecksum: stage == .primary ? targetFingerprint : nil,
                 backupChecksum: stage == .backup ? targetFingerprint : nil,
@@ -2708,6 +2936,13 @@ struct TransferService {
                     detail: detail,
                     recommendation: "重新连接设备并确认路径可访问后重试",
                     englishRecommendation: "Reconnect the device and confirm the path is accessible before retrying"
+                )
+            case .primaryReferenceUnavailable, .primaryCheckpointMismatch:
+                return PreflightReportDetails(
+                    failureType: "主盘参考复核失败", englishFailureType: "Primary checkpoint validation failed",
+                    detail: detail,
+                    recommendation: "检查原主盘报告和当前主盘内容，保留现有文件后再决定恢复方式",
+                    englishRecommendation: "Review the original primary report and current primary files; preserve them before choosing a recovery route"
                 )
             case .transferInterrupted,
                  .sourceVolumeChanged,

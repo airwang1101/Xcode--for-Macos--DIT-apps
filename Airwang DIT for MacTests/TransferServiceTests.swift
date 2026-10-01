@@ -1145,6 +1145,366 @@ final class TransferServiceTests: XCTestCase {
 
     // MARK: - Helpers
 
+
+    // Independent retries use completed primary evidence, without the original card.
+    func testIndependentBackupRoundTripsAndResumesWithoutSourceInEveryMode() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let data = Data(repeating: 0x6A, count: 256_000)
+        for mode in VerificationMode.allCases {
+            let (initial, report) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: mode, data: data, staleSize: true)
+            var project = initial
+            XCTAssertTrue(project.prepareForBackupRetry())
+            let originalPrimaryState = try encodedStage(project.primaryCopyState)
+            let originalPrimaryReport = try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(report.reportDocumentPath)))
+            let backupFile = try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")
+            try writeFile(data, to: backupFile)
+            let inode = try FileManager.default.attributesOfItem(atPath: backupFile.path)[.systemFileNumber] as? NSNumber
+            project = try JSONDecoder().decode(CopyProject.self, from: JSONEncoder().encode(project))
+            XCTAssertEqual(project.primaryCompletionReference?.report.importedItems.count, 2)
+            XCTAssertEqual(project.primaryCompletionReference?.report.fileRecords.map(\.size), [Int64(data.count), Int64(data.count)])
+            try FileManager.default.removeItem(at: source)
+            let result = try await TransferService().runBackupStage(project: project, language: .english) { _ in }
+            XCTAssertTrue(result.report.success, result.report.verificationSummary)
+            XCTAssertEqual(result.report.resumedFiles, ["a.mov"])
+            XCTAssertEqual(result.report.fileRecords.first?.backupChecksum, result.report.fileRecords.first?.sourceChecksum)
+            XCTAssertEqual(result.report.fileRecords.first?.sourceChecksum?.count, 64)
+            XCTAssertEqual(result.report.verificationMode, mode.title)
+            XCTAssertEqual(result.finalState.copiedFiles, 2)
+            XCTAssertEqual(try Data(contentsOf: backupFile), data)
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: backupFile.path)[.systemFileNumber] as? NSNumber, inode)
+            XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(project.backupImportURL).appendingPathComponent("day1/b.mov")), data)
+            XCTAssertEqual(try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")), data)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(report.reportDocumentPath))), originalPrimaryReport)
+            XCTAssertEqual(try encodedStage(project.primaryCopyState), originalPrimaryState)
+            XCTAssertEqual(project.primaryReportID, report.id)
+            XCTAssertTrue(result.report.verificationSummary.contains(report.id.uuidString))
+            XCTAssertTrue(result.report.verificationSummary.contains("validation: passed"))
+        }
+    }
+
+    func testIndependentBackupRejectsChangedPrimaryBeforeAnyBackupWrites() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let data = Data(repeating: 0x6A, count: 256_000)
+        for mode in VerificationMode.allCases {
+            var (project, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: mode, data: data)
+            project.prepareForBackupRetry()
+            let main = project.primaryImportURL.appendingPathComponent("a.mov")
+            let changed = mode == .sha256 || mode == .fastFingerprint ? Data(repeating: 0x6B, count: data.count) : data + Data([1])
+            try changed.write(to: main)
+            let existing = try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")
+            try writeFile(data, to: existing)
+            let result = try await TransferService().runBackupStage(project: project) { _ in }
+            XCTAssertFalse(result.report.success)
+            XCTAssertEqual(result.finalState.copiedFiles, 0)
+            XCTAssertNotNil(result.report.interruptionReason)
+            XCTAssertEqual(try Data(contentsOf: main), changed)
+            XCTAssertEqual(try Data(contentsOf: existing), data)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).appendingPathComponent("day1/b.mov").path))
+            XCTAssertTrue(result.report.verificationSummary.contains("主盘文件与原主盘报告不一致"))
+        }
+    }
+
+    func testIndependentBackupRejectsIncompleteOrInconsistentEvidence() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let (initial, report) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: Data("primary evidence".utf8))
+        var project = initial
+        project.primaryCompletionReference = nil
+        project.prepareForBackupRetry()
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PrimaryCompletionReference(report: report))) as! [String: Any]
+        let records = json["fileRecords"] as! [[String: Any]]
+        var malformedRecord = records[0]; malformedRecord["targetChecksum"] = "invalid"
+        let cases: [[String: Any]] = [
+            ["id": UUID().uuidString], ["targetPath": source.path], ["sourceRootPath": NSNull()],
+            ["verificationMode": "future-unknown"], ["success": false], ["selectedFileCount": 999],
+            ["fileRecords": [records[0], records[0]]], ["fileRecords": [malformedRecord, records[1]]],
+            ["importedItems": ["a.mov", "a.mov"]], ["resumedFiles": ["a.mov", "a.mov"]]
+        ]
+        for patch in cases {
+            var altered = json; altered.merge(patch) { _, new in new }
+            let reference = try JSONDecoder().decode(TransferReport.self, from: JSONSerialization.data(withJSONObject: altered))
+            let result = try await TransferService().runBackupStage(project: project, primaryReferenceReport: reference) { _ in }
+            XCTAssertFalse(result.report.success, "Accepted invalid reference: \(patch.keys)")
+            XCTAssertEqual(result.finalState.copiedFiles, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov").path))
+        }
+        let missing = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertFalse(missing.report.success)
+        let wrongStage = try await TransferService().runPrimaryStage(project: project) { _ in }
+        XCTAssertFalse(wrongStage.report.success)
+        XCTAssertEqual(wrongStage.finalState.copiedFiles, 0)
+    }
+
+    func testIndependentBackupDetectsMutationDuringReferenceCopyAndFinalCheck() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        for trigger in 0..<3 {
+            let data = Data("stable checkpoint".utf8)
+            var (project, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: data)
+            project.prepareForBackupRetry()
+            let main = project.primaryImportURL.appendingPathComponent("a.mov")
+            let result = try await TransferService().runBackupStage(project: project) { state in
+                let matches: Bool
+                switch trigger {
+                case 0: matches = state.phaseTitle == "正在按原报告复核主盘" && state.currentFile == "a.mov"
+                case 1: matches = state.copiedFiles == 1 && state.verificationStartedAt == nil
+                default: matches = state.verificationStartedAt != nil && state.verificationCheckedFiles == 2
+                }
+                if matches { try? Data("changed checkpoint".utf8).write(to: main, options: .atomic) }
+            }
+            XCTAssertFalse(result.report.success, "Missed mutation trigger \(trigger)")
+            XCTAssertNotNil(result.report.interruptionReason)
+            XCTAssertEqual(try Data(contentsOf: main), Data("changed checkpoint".utf8))
+            if trigger == 0 { XCTAssertEqual(result.finalState.copiedFiles, 0) }
+            if trigger == 2 {
+                XCTAssertTrue(result.report.verificationFailedFiles.contains("a.mov"))
+                XCTAssertEqual(Set(result.report.fileRecords.map(\.relativePath)).count, result.report.fileRecords.count)
+                XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")), data)
+            }
+        }
+    }
+
+    func testIndependentBackupKeepsFullHashEvidenceForResumedPrimaryFiles() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        for mode in [VerificationMode.fastFingerprint, .sizeOnly, .skipped] {
+            let data = Data(repeating: 0x41, count: 4 * 1024 * 1024)
+            let (initial, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: mode, data: data)
+            var project = initial
+            project.prepareForRetry()
+            let report = try await TransferService().runPrimaryStage(project: project) { _ in }
+            XCTAssertTrue(report.report.success)
+            XCTAssertEqual(report.report.resumedFiles.count, 2)
+            retainPrimaryCompletion(&project, report: report.report)
+            project.prepareForBackupRetry()
+            var changed = data; changed[1_000_000] = 0x42
+            try changed.write(to: project.primaryImportURL.appendingPathComponent("a.mov"))
+            let result = try await TransferService().runBackupStage(project: project) { _ in }
+            XCTAssertFalse(result.report.success)
+            XCTAssertEqual(result.finalState.copiedFiles, 0)
+            XCTAssertTrue(result.report.verificationSummary.contains("主盘文件与原主盘报告不一致"))
+        }
+    }
+
+    func testIndependentBackupCancellationAndPrimaryIdentityFailBeforeWrites() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let data = Data("safe source".utf8)
+        var (project, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: data)
+        project.prepareForBackupRetry()
+        let token = ImportInterruptionToken()
+        let cancelled = try await TransferService().runBackupStage(project: project, interruptionToken: token) { state in
+            if state.phaseTitle == "正在按原报告复核主盘" { token.stop(reason: "用户取消了导入任务") }
+        }
+        XCTAssertTrue(cancelled.report.cancelled)
+        XCTAssertEqual(cancelled.finalState.copiedFiles, 0)
+        project.targetVolumeIdentifier = "wrong-primary-id"
+        let changedVolume = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertFalse(changedVolume.report.success)
+        XCTAssertEqual(changedVolume.finalState.copiedFiles, 0)
+        XCTAssertEqual(try Data(contentsOf: project.primaryImportURL.appendingPathComponent("a.mov")), data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov").path))
+    }
+
+    @MainActor
+    func testBackupRetryQueueAfterReloadPreservesPrimaryAndRenameFolder() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let storage = try makeTempDir(); defer { cleanup(storage) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let data = Data("queued primary".utf8)
+        let (project, report) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: data)
+        try JSONPersistence.writeProjects([project], to: storage.appendingPathComponent(AppStorageScope.copyProjectsURL.lastPathComponent))
+        try JSONPersistence.writeReports([report], to: storage.appendingPathComponent(AppStorageScope.taskLogURL.lastPathComponent))
+        try FileManager.default.removeItem(at: source)
+        let vm = AppViewModel(dataDirectory: storage)
+        XCTAssertTrue(vm.canRetryBackup(for: project))
+        vm.retryBackupProject(project)
+        vm.renameProject(project, to: "renamed after primary")
+        XCTAssertEqual(vm.copyProjects.first?.taskFolderName, project.taskFolderName)
+        vm.startQueue()
+        let deadline = Date().addingTimeInterval(20)
+        while (vm.copyProjects.first?.status == .queued || !vm.activeProjectIDs.isEmpty) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(vm.copyProjects.first?.status, .completed, vm.importError ?? "")
+        XCTAssertEqual(vm.copyProjects.first?.primaryReportID, report.id)
+        XCTAssertEqual(vm.copyProjects.first?.primaryCopyState.finishedAt, project.primaryCopyState.finishedAt)
+        XCTAssertTrue(vm.copyProjects.first?.primaryCopyState.isComplete == true)
+        XCTAssertTrue(vm.copyProjects.first?.backupCopyState.isComplete == true)
+        XCTAssertEqual(vm.reports.count, 2)
+        XCTAssertEqual(vm.reports.filter { $0.id == report.id }.count, 1)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")), data)
+        let saved = JSONPersistence.loadProjects(from: storage.appendingPathComponent(AppStorageScope.copyProjectsURL.lastPathComponent)).value
+        XCTAssertEqual(saved.first?.primaryCompletionReference?.report.fileRecords.count, 2)
+    }
+
+    @MainActor
+    func testBackupRetryRemovalRestoresCompletedPrimaryAndFailedPreflightDoesNotCompleteCopy() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let storage = try makeTempDir(); defer { cleanup(storage) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let (project, report) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: Data("unchanged".utf8))
+        let vm = AppViewModel(dataDirectory: storage, backupChangeConfirmation: { _, _ in true })
+        vm.copyProjects = [project]; vm.reports = [report]
+        vm.retryBackupProject(project)
+        vm.removeBackup(from: try XCTUnwrap(vm.copyProjects.first))
+        XCTAssertEqual(vm.copyProjects.first?.status, .completed)
+        XCTAssertFalse(vm.copyProjects.first?.backupOnlyRetry == true)
+        XCTAssertTrue(vm.copyProjects.first?.primaryVerifyState.isComplete == true)
+        XCTAssertEqual(vm.copyProjects.first?.primaryReportID, report.id)
+        vm.copyProjects = [project]
+        vm.retryBackupProject(project)
+        try Data("mutation".utf8).write(to: project.primaryImportURL.appendingPathComponent("a.mov"))
+        vm.startQueue()
+        let deadline = Date().addingTimeInterval(20)
+        while (vm.copyProjects.first?.status == .queued || !vm.activeProjectIDs.isEmpty) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(vm.copyProjects.first?.status, .failed)
+        XCTAssertFalse(vm.copyProjects.first?.backupCopyState.isComplete == true)
+        XCTAssertFalse(vm.copyProjects.first?.backupVerifyState.isComplete == true)
+        XCTAssertTrue(vm.copyProjects.first?.primaryVerifyState.isComplete == true)
+        XCTAssertTrue(vm.canRetryBackup(for: try XCTUnwrap(vm.copyProjects.first)))
+    }
+
+
+    func testIndependentBackupAllowsInternalBackupAfterExternalCardDisconnect() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let backup = try makeTempDir(); defer { cleanup(backup) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        let data = Data("disconnected external card".utf8)
+        var (project, report) = try await completedPrimary(source: source, primary: primary.mount, backup: backup, mode: .sha256, data: data)
+        let missingCardPath = "/Volumes/AirwangMissingTestCard-" + UUID().uuidString
+        project.sourceVolumePath = missingCardPath
+        project.sourceRootPath = missingCardPath
+        project.sourceVolumeIdentifier = "recorded-disconnected-card-" + UUID().uuidString
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PrimaryCompletionReference(report: report))) as! [String: Any]
+        json["sourceRootPath"] = missingCardPath; json["sourcePath"] = missingCardPath
+        report = try JSONDecoder().decode(TransferReport.self, from: JSONSerialization.data(withJSONObject: json))
+        retainPrimaryCompletion(&project, report: report)
+        project.prepareForBackupRetry()
+        let result = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertTrue(result.report.success, result.report.verificationSummary)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")), data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingCardPath))
+        // Reusing the original source volume as a backup is still refused.
+        project.sourceVolumeIdentifier = try backup.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+        let rejected = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertFalse(rejected.report.success)
+        XCTAssertEqual(rejected.finalState.copiedFiles, 0)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")), data)
+    }
+
+
+    func testIndependentBackupRejectsMissingOrSymlinkPrimaryAndPreservesExistingBackup() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let external = try makeTempDir(); defer { cleanup(external) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let data = Data("protected original".utf8)
+        var (project, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: data)
+        project.prepareForBackupRetry()
+        let main = project.primaryImportURL.appendingPathComponent("a.mov")
+        let existing = try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov")
+        try writeFile(data, to: existing)
+        try FileManager.default.removeItem(at: main)
+        let missing = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertFalse(missing.report.success)
+        XCTAssertEqual(missing.finalState.copiedFiles, 0)
+        let externalFile = external.appendingPathComponent("keep.mov")
+        try writeFile(data, to: externalFile)
+        try FileManager.default.createSymbolicLink(at: main, withDestinationURL: externalFile)
+        let symlink = try await TransferService().runBackupStage(project: project) { _ in }
+        XCTAssertFalse(symlink.report.success)
+        XCTAssertEqual(symlink.finalState.copiedFiles, 0)
+        XCTAssertEqual(try Data(contentsOf: externalFile), data)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: main.path), externalFile.path)
+        XCTAssertEqual(try Data(contentsOf: existing), data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).appendingPathComponent("day1/b.mov").path))
+    }
+
+    func testIndependentBackupTaskCancellationDuringReferenceCreatesCancelledReport() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        var (project, _) = try await completedPrimary(source: source, primary: primary.mount, backup: backup.mount, mode: .sha256, data: Data("cancel checkpoint".utf8))
+        project.prepareForBackupRetry()
+        let retryProject = project
+        let task = Task {
+            try await TransferService().runBackupStage(project: retryProject) { state in
+                if state.phaseTitle == "正在按原报告复核主盘" {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+        }
+        let result = try await task.value
+        XCTAssertTrue(result.report.cancelled)
+        XCTAssertFalse(result.report.success)
+        XCTAssertEqual(result.finalState.copiedFiles, 0)
+        XCTAssertNotNil(result.report.localReportDocumentPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).appendingPathComponent("a.mov").path))
+    }
+
+    private func completedPrimary(source: URL, primary: URL, backup: URL, mode: VerificationMode, data: Data, staleSize: Bool = false, isolation: isolated (any Actor)? = #isolation) async throws -> (CopyProject, TransferReport) {
+        try writeFile(data, to: source.appendingPathComponent("a.mov"))
+        try writeFile(data, to: source.appendingPathComponent("day1/b.mov"))
+        var items = [mediaItem(sourceRoot: source, relativePath: "a.mov", data: data), mediaItem(sourceRoot: source, relativePath: "day1/b.mov", data: data)]
+        if staleSize { items = items.map { item in ProjectMediaItem(id: item.id, filePath: item.filePath, relativePath: item.relativePath, displayName: item.displayName, createdAt: item.createdAt, size: 1, mediaKindRawValue: item.mediaKindRawValue) } }
+        var project = makeProject(source: source, target: primary, backup: backup, items: items, mode: mode, taskFolder: "Independent-\(UUID().uuidString.prefix(8))")
+        let result = try await TransferService().runPrimaryStage(project: project) { _ in }
+        XCTAssertTrue(result.report.success, result.report.verificationSummary)
+        retainPrimaryCompletion(&project, report: result.report)
+        return (project, result.report)
+    }
+
+    private func retainPrimaryCompletion(_ project: inout CopyProject, report: TransferReport) {
+        project.primaryReportID = report.id
+        project.primaryCompletionReference = PrimaryCompletionReference(report: report)
+        project.primaryCopyState.isComplete = true
+        project.primaryCopyState.finishedAt = report.finishedAt
+        project.primaryCopyState.reportDocumentPath = report.reportDocumentPath
+        project.primaryVerifyState.isComplete = true
+        project.primaryVerifyState.finishedAt = report.finishedAt
+        project.status = .failed
+    }
+
+    private func encodedStage(_ state: ProjectStageState) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(state)
+    }
+
     private func makeTempDir() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("AirwangXfer-\(UUID().uuidString)", isDirectory: true)

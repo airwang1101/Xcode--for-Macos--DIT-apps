@@ -28,6 +28,7 @@ Commercial release gates and current evidence are maintained in [DISTRIBUTION_RE
 - Auto-starts newly queued projects after 5 minutes when the setting is enabled.
 - Copies to a primary target drive.
 - Optionally backs up from the primary copy to a backup drive.
+- Retries backups independently from a completed primary with persisted verification evidence and conflict preservation. See [independent backup retry](BACKUP_RETRY.md).
 - Verifies copied files using SHA-256 or size checks, with a skip-verification option.
 - Blocks unsafe paths, overlapping source and destination paths, same-volume target and backup paths, and symlink escape paths.
 - Writes task reports and keeps local task history.

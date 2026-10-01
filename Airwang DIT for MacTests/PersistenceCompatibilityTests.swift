@@ -34,6 +34,8 @@ final class PersistenceCompatibilityTests: XCTestCase {
         XCTAssertFalse(project.autoStartEnabled)
         XCTAssertNil(project.autoStartDeadline)
         XCTAssertFalse(project.resumeExistingFiles)
+        XCTAssertFalse(project.backupOnlyRetry)
+        XCTAssertNil(project.primaryCompletionReference)
         XCTAssertNil(project.sourceVolumeIdentifier)
         XCTAssertNil(project.targetVolumeIdentifier)
         XCTAssertNil(project.backupVolumeIdentifier)
@@ -563,6 +565,91 @@ final class PersistenceCompatibilityTests: XCTestCase {
             XCTAssertThrowsError(try JSONPersistence.writeProjects([makeProject()], to: url))
             XCTAssertEqual(try Data(contentsOf: url), replacement)
         }
+    }
+
+
+    func testIndependentBackupStatePreservesPrimaryAndRoundTrips() throws {
+        var project = makeProject(autoStartEnabled: true, autoStartDeadline: Date())
+        project.backupRootPath = "/Volumes/Backup"
+        project.status = .failed
+        project.verificationMode = .fastFingerprint
+        let report = makeReport(finishedAt: Date(), totalBytes: 42, selectedFileCount: 1, success: true,
+            importedItems: ["a.mov"], fileRecords: [FileVerificationRecord(relativePath: "a.mov", size: 42, sourceChecksum: "proof", targetChecksum: "proof", backupChecksum: nil, status: "通过", message: "ok")])
+        project.primaryReportID = report.id
+        project.primaryCompletionReference = PrimaryCompletionReference(report: report)
+        project.backupReportID = UUID()
+        project.primaryCopyState.isComplete = true
+        project.primaryVerifyState.isComplete = true
+        project.primaryCopyState.reportDocumentPath = "/original/report.txt"
+        project.backupCopyState.completedFiles = 5
+        let previousPrimary = try encodedStage(project.primaryCopyState)
+        let previousBackupReport = project.backupReportID
+        XCTAssertTrue(project.prepareForBackupRetry())
+        let restored = try JSONDecoder().decode(CopyProject.self, from: JSONEncoder().encode(project))
+        XCTAssertTrue(restored.backupOnlyRetry)
+        XCTAssertTrue(restored.resumeExistingFiles)
+        XCTAssertEqual(restored.status, .queued)
+        XCTAssertEqual(restored.primaryReportID, report.id)
+        XCTAssertEqual(restored.backupReportID, previousBackupReport)
+        XCTAssertEqual(restored.primaryCompletionReference?.report.fileRecords.count, 1)
+        XCTAssertEqual(restored.primaryCompletionReference?.report.importedItems, ["a.mov"])
+        XCTAssertEqual(try encodedStage(restored.primaryCopyState), previousPrimary)
+        XCTAssertEqual(restored.primaryImportURL, project.primaryImportURL)
+        XCTAssertEqual(restored.verificationMode, .fastFingerprint)
+        XCTAssertFalse(restored.autoStartEnabled)
+        XCTAssertNil(restored.autoStartDeadline)
+        XCTAssertEqual(restored.backupCopyState.completedFiles, 0)
+        project.prepareForRetry()
+        XCTAssertFalse(project.backupOnlyRetry)
+        XCTAssertNil(project.primaryCompletionReference)
+    }
+
+    func testIndependentBackupPreparationRejectsUnsafeStatesWithoutMutation() throws {
+        var eligible = makeProject()
+        eligible.backupRootPath = "/Volumes/Backup"
+        eligible.primaryReportID = UUID()
+        eligible.primaryCopyState.isComplete = true
+        eligible.primaryVerifyState.isComplete = true
+        for index in 0..<5 {
+            var project = eligible
+            switch index {
+            case 0: project.backupRootPath = nil
+            case 1: project.primaryReportID = nil
+            case 2: project.primaryVerifyState.isComplete = false
+            case 3: project.status = .running
+            default: project.status = .cancelling
+            }
+            let before = project
+            XCTAssertFalse(project.prepareForBackupRetry())
+            XCTAssertEqual(project.status, before.status)
+            XCTAssertEqual(project.primaryReportID, before.primaryReportID)
+            XCTAssertEqual(project.backupRootPath, before.backupRootPath)
+            XCTAssertFalse(project.backupOnlyRetry)
+        }
+    }
+
+    func testProjectV2MigrationRetainsOriginalBeyondRollingBackups() throws {
+        for json in ["[]", "{\"schemaVersion\":1,\"projects\":[]}"] {
+            try withStoreFile(json) { url, original in
+                try JSONPersistence.writeProjects([makeProject()], to: url)
+                let first = try Data(contentsOf: url)
+                XCTAssertEqual((try JSONSerialization.jsonObject(with: first) as? [String: Any])?["schemaVersion"] as? Int, 2)
+                XCTAssertThrowsError(try PersistentSchema.validateDataVersion(first, supported: 1))
+                try JSONPersistence.writeProjects([], to: url)
+                let backups = try FileManager.default.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+                    .filter { $0.lastPathComponent.contains(".before-v2-") }
+                XCTAssertEqual(backups.count, 1)
+                XCTAssertEqual(try Data(contentsOf: XCTUnwrap(backups.first)), original)
+                XCTAssertEqual(try Data(contentsOf: url.deletingPathExtension().appendingPathExtension("bak.json")), first)
+                XCTAssertNil(JSONPersistence.loadProjects(from: url).warning)
+            }
+        }
+    }
+
+    private func encodedStage(_ state: ProjectStageState) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(state)
     }
 
     private func withStoreFile(_ json: String, body: (URL, Data) throws -> Void) throws {

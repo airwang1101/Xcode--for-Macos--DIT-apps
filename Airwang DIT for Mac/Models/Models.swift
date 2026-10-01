@@ -218,6 +218,17 @@ enum AppLocalization {
         "备份报告": "Backup Report",
         "取消": "Cancel",
         "重试": "Retry",
+        "仅重试备份": "Retry Backup Only",
+        "等待独立备份重试": "Waiting for independent backup retry",
+        "按原主盘报告复核后补备份，可拔出原始源卡。": "Check the primary against its original report, then complete the backup. The original card can be disconnected.",
+        "此次执行从主盘读取，主盘完成状态和原报告已保留。": "This run reads from the primary. Its completed state and original report are retained.",
+        "主盘完成记录不足，或项目仍在执行，无法独立重试备份。": "The completed primary record is unavailable, or the project is still running. Independent backup retry is unavailable.",
+        "无法独立重试备份": "Independent backup retry unavailable",
+        "当前手动队列会继续执行此项目。": "The current manual queue will continue with this project.",
+        "请手动执行任务队列。": "Start the task queue manually.",
+        "项目“%@”已加入独立备份重试队列。主盘完成状态和原报告已保留，已有备份文件会完整复核 SHA-256。": "Project \"%@\" has been queued for independent backup retry. The completed primary and original report are retained. Existing backup files will receive full SHA-256 verification.",
+        "独立备份重试只修改显示名称与后续报告标题，已有主盘文件夹保持不变。": "Renaming an independent backup retry changes its display name and future report titles. The existing primary folder is retained.",
+        "独立备份重试已取消，主盘完成状态已保留。": "Independent backup retry cancelled. The completed primary state is retained.",
         "改名": "Rename",
         "删除": "Delete",
         "更换备份": "Change Backup",
@@ -1200,6 +1211,8 @@ struct CopyProject: Codable, Identifiable {
     var autoStartDeadline: Date?
     var errorMessage: String?
     var resumeExistingFiles: Bool
+    var backupOnlyRetry: Bool
+    var primaryCompletionReference: PrimaryCompletionReference?
     var sourceVolumeIdentifier: String?
     var targetVolumeIdentifier: String?
     var backupVolumeIdentifier: String?
@@ -1231,6 +1244,8 @@ struct CopyProject: Codable, Identifiable {
         case autoStartDeadline
         case errorMessage
         case resumeExistingFiles
+        case backupOnlyRetry
+        case primaryCompletionReference
         case sourceVolumeIdentifier
         case targetVolumeIdentifier
         case backupVolumeIdentifier
@@ -1257,7 +1272,8 @@ struct CopyProject: Codable, Identifiable {
         resumeExistingFiles: Bool = false,
         sourceVolumeIdentifier: String? = nil,
         targetVolumeIdentifier: String? = nil,
-        backupVolumeIdentifier: String? = nil
+        backupVolumeIdentifier: String? = nil,
+        backupOnlyRetry: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -1285,6 +1301,8 @@ struct CopyProject: Codable, Identifiable {
         self.autoStartDeadline = autoStartDeadline
         errorMessage = nil
         self.resumeExistingFiles = resumeExistingFiles
+        self.backupOnlyRetry = backupOnlyRetry
+        primaryCompletionReference = nil
         self.sourceVolumeIdentifier = sourceVolumeIdentifier
             ?? (try? URL(fileURLWithPath: sourceRootPath).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         self.targetVolumeIdentifier = targetVolumeIdentifier
@@ -1351,6 +1369,8 @@ struct CopyProject: Codable, Identifiable {
         autoStartDeadline = try container.decodeIfPresent(Date.self, forKey: .autoStartDeadline)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
         resumeExistingFiles = try container.decodeIfPresent(Bool.self, forKey: .resumeExistingFiles) ?? false
+        backupOnlyRetry = try container.decodeIfPresent(Bool.self, forKey: .backupOnlyRetry) ?? false
+        primaryCompletionReference = try container.decodeIfPresent(PrimaryCompletionReference.self, forKey: .primaryCompletionReference)
         sourceVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .sourceVolumeIdentifier)
         targetVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .targetVolumeIdentifier)
         backupVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .backupVolumeIdentifier)
@@ -1385,6 +1405,8 @@ struct CopyProject: Codable, Identifiable {
         errorMessage = nil
         skipVerificationConfirmations = 0
         resumeExistingFiles = true
+        backupOnlyRetry = false
+        primaryCompletionReference = nil
         primaryCopyState = ProjectStageState(title: ProjectStageKind.primaryCopy.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
         primaryVerifyState = ProjectStageState(title: ProjectStageKind.primaryVerify.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
         backupCopyState = ProjectStageState(
@@ -1403,6 +1425,32 @@ struct CopyProject: Codable, Identifiable {
         backupReportID = nil
         autoStartEnabled = false
         autoStartDeadline = nil
+    }
+
+    var canPrepareBackupRetry: Bool {
+        hasBackup && status != .running && status != .cancelling
+            && primaryCopyState.isComplete && primaryVerifyState.isComplete && primaryReportID != nil
+    }
+
+    @discardableResult
+    mutating func prepareForBackupRetry() -> Bool {
+        guard canPrepareBackupRetry else { return false }
+        status = .queued
+        errorMessage = nil
+        skipVerificationConfirmations = 0
+        resumeExistingFiles = true
+        backupOnlyRetry = true
+        backupCopyState = ProjectStageState(
+            title: ProjectStageKind.backupCopy.title, detail: "等待独立备份重试",
+            totalBytes: totalBytes, totalFiles: selectedItems.count
+        )
+        backupVerifyState = ProjectStageState(
+            title: ProjectStageKind.backupVerify.title, detail: "等待备份完成",
+            totalBytes: totalBytes, totalFiles: selectedItems.count
+        )
+        autoStartEnabled = false
+        autoStartDeadline = nil
+        return true
     }
 
     func isAutoStartReady(at now: Date) -> Bool {
@@ -1571,6 +1619,16 @@ struct FileVerificationRecord: Codable, Identifiable {
     let message: String
 }
 
+/// A completed primary retains its full file evidence across app restarts.
+/// Ordinary report logs continue using their existing compact encoding.
+struct PrimaryCompletionReference: Codable {
+    let report: TransferReport
+
+    init(report: TransferReport) { self.report = report }
+    init(from decoder: any Decoder) throws { report = try TransferReport(from: decoder) }
+    func encode(to encoder: any Encoder) throws { try report.encodeComplete(to: encoder) }
+}
+
 struct TransferReport: Identifiable, Codable {
     let id: UUID
     let startedAt: Date
@@ -1702,6 +1760,14 @@ struct TransferReport: Identifiable, Codable {
     }
 
     func encode(to encoder: any Encoder) throws {
+        try encode(to: encoder, preservingSuccessfulRecords: false)
+    }
+
+    func encodeComplete(to encoder: any Encoder) throws {
+        try encode(to: encoder, preservingSuccessfulRecords: true)
+    }
+
+    private func encode(to encoder: any Encoder, preservingSuccessfulRecords: Bool) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(startedAt, forKey: .startedAt)
@@ -1727,8 +1793,8 @@ struct TransferReport: Identifiable, Codable {
         try container.encodeIfPresent(reportDocumentPath, forKey: .reportDocumentPath)
         try container.encodeIfPresent(localReportDocumentPath, forKey: .localReportDocumentPath)
         try container.encode(reportDocumentWriteFailed, forKey: .reportDocumentWriteFailed)
-        try container.encode([String](), forKey: .importedItems)
-        try container.encode(fileRecords.filter { $0.status != "通过" }, forKey: .fileRecords)
+        try container.encode(preservingSuccessfulRecords ? importedItems : [], forKey: .importedItems)
+        try container.encode(preservingSuccessfulRecords ? fileRecords : fileRecords.filter { $0.status != "通过" }, forKey: .fileRecords)
         try container.encode(resumedFiles, forKey: .resumedFiles)
     }
 

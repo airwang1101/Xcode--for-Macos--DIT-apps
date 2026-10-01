@@ -1,7 +1,7 @@
 import Foundation
 
 struct ProjectStoreFile: Codable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var projects: [CopyProject]
@@ -116,10 +116,19 @@ enum JSONPersistence {
     }
 
     static func writeProjects(_ projects: [CopyProject], to url: URL) throws {
-        try validateExistingFile(at: url) { data in
+        try validateExistingFile(at: url, supportedSchemaVersion: ProjectStoreFile.currentSchemaVersion) { data in
             let decoder = JSONDecoder()
             do { _ = try decoder.decode(ProjectStoreFile.self, from: data) }
             catch { _ = try decoder.decode([CopyProject].self, from: data) }
+            let fields = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            if (fields?["schemaVersion"] as? Int ?? 1) < ProjectStoreFile.currentSchemaVersion {
+                let backup = url.deletingLastPathComponent().appendingPathComponent(
+                    url.deletingPathExtension().lastPathComponent + ".before-v2-" + UUID().uuidString + ".json"
+                )
+                // Keep the original v1/legacy bytes independently of the rolling
+                // .bak file, which later saves replace. Failure prevents migration.
+                try data.write(to: backup, options: .withoutOverwriting)
+            }
         }
         try write(ProjectStoreFile(projects: projects), to: url)
     }
@@ -162,14 +171,14 @@ enum JSONPersistence {
 
     /// Validate the file again at save time. A launch-time warning alone cannot
     /// stop a later save, or protect against another version replacing the store.
-    private static func validateExistingFile(at url: URL, decode: (Data) throws -> Void) throws {
+    private static func validateExistingFile(at url: URL, supportedSchemaVersion: Int = 1, decode: (Data) throws -> Void) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         if try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
             throw PersistenceWriteError.protectedFile(url, "存储文件是符号链接")
         }
         let data = try Data(contentsOf: url)
         do {
-            try PersistentSchema.validateDataVersion(data)
+            try PersistentSchema.validateDataVersion(data, supported: supportedSchemaVersion)
             try decode(data)
         } catch {
             if (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {

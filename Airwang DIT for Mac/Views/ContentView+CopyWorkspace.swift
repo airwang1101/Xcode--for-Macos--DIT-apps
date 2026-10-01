@@ -461,6 +461,12 @@ extension ContentView {
                 .font(.caption)
                 .foregroundStyle(secondaryTextColor)
                 .lineLimit(1)
+            if project.backupOnlyRetry {
+                Text(viewModel.localized("此次执行从主盘读取，主盘完成状态和原报告已保留。"))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("\(viewModel.localized("目标")): \(project.primaryImportURL.path)")
                 .font(.caption)
                 .foregroundStyle(secondaryTextColor)
@@ -540,6 +546,7 @@ extension ContentView {
                 .tint(.red)
                 .disabled(viewModel.activeProjectIDs.contains(project.id))
             }
+            backupRetryAction(for: project)
         }
         .padding(14)
         .background(glassSurface(cornerRadius: 18, elevation: .tile))
@@ -560,6 +567,24 @@ extension ContentView {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(Color.orange.opacity(viewModel.selectedTheme == .night ? 0.14 : 0.10), in: Capsule())
+    }
+
+    @ViewBuilder
+    func backupRetryAction(for project: CopyProject) -> some View {
+        if !(project.backupOnlyRetry && project.status == .queued), viewModel.canRetryBackup(for: project) {
+            HStack(alignment: .center, spacing: 10) {
+                Button(viewModel.localized("仅重试备份")) {
+                    viewModel.retryBackupProject(project)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .accessibilityIdentifier("backup-retry-" + project.id.uuidString)
+                Text(viewModel.localized("按原主盘报告复核后补备份，可拔出原始源卡。"))
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     func autoStartCountdownText(_ project: CopyProject, now: Date) -> String {
@@ -747,6 +772,7 @@ extension ContentView {
 
             detailRow(viewModel.localized("主目标地址"), value: project.primaryImportURL.path)
             detailRow(viewModel.localized("备份地址"), value: project.backupImportURL?.path ?? viewModel.localized("未配置"))
+            backupRetryAction(for: project)
         }
         .padding(18)
         .background(glassSurface(cornerRadius: 20, elevation: .card))
@@ -777,7 +803,7 @@ extension ContentView {
     func projectProgressTitle(_ project: CopyProject) -> String {
         switch project.status {
         case .queued:
-            return "等待执行"
+            return project.backupOnlyRetry ? viewModel.localized("等待独立备份重试") : "等待执行"
         case .running:
             if project.backupVerifyState.isActive { return "备份校验中" }
             if project.backupCopyState.isActive { return "备份中" }

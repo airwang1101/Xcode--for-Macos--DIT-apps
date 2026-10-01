@@ -15,6 +15,8 @@ final class SupportDiagnosticsTests: XCTestCase {
         project.sourceVolumeIdentifier = secret + "-SOURCE-DEVICE"
         project.targetVolumeIdentifier = secret + "-TARGET-DEVICE"
         let report = makeReport()
+        project.primaryCompletionReference = PrimaryCompletionReference(report: report)
+        project.backupOnlyRetry = true
         var activity = SupportDiagnosticsSnapshot.Activity()
         activity.errorCategory = .classify(project.errorMessage)
         let snapshot = SupportDiagnosticsSnapshot.capture(projects: [project], reports: [report], activity: activity)
