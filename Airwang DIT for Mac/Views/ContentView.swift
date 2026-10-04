@@ -8,7 +8,45 @@ struct ContentView: View {
     @State private var resizeSettlingTask: Task<Void, Never>?
     @State private var measuredHeaderHeight: CGFloat = 0
 
+    @State var paperCopyTab: PaperCopyTab = .create
+    @State var paperSelectedVolumeID: String?
+    @State var paperShowsSources = false
+    init(paperCopyTab: PaperCopyTab = .create) {
+        _paperCopyTab = State(initialValue: paperCopyTab)
+    }
+    var usesPaperAppearance: Bool { viewModel.interfaceStyle == .paper }
+    var paperPalette: PaperPalette { PaperPalette(theme: viewModel.selectedTheme) }
+
     var body: some View {
+        Group {
+            if usesPaperAppearance {
+                paperRoot
+            } else {
+                classicRoot
+            }
+        }
+        .environment(\.ditPaperAppearance, usesPaperAppearance)
+        .fontDesign(usesPaperAppearance ? .default : .serif)
+        .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
+        .sheet(item: $viewModel.pendingImportVolume) { volume in
+            ImportSheet(volume: volume)
+                .environmentObject(viewModel)
+                .environment(\.ditPaperAppearance, usesPaperAppearance)
+        }
+        .sheet(item: $viewModel.activeFolderPicker) { purpose in
+            FolderPickerSheet(purpose: purpose)
+                .environmentObject(viewModel)
+                .environment(\.ditPaperAppearance, usesPaperAppearance)
+        }
+        .alert(viewModel.localized("提示"), isPresented: Binding(
+            get: { viewModel.importError != nil },
+            set: { if !$0 { viewModel.importError = nil } }
+        )) {
+            Button(viewModel.localized("知道了"), role: .cancel) {}
+        } message: { Text(viewModel.importError ?? "") }
+    }
+
+    var classicRoot: some View {
         ZStack(alignment: .top) {
             musicBackdrop
                 .ignoresSafeArea()
@@ -31,22 +69,6 @@ struct ContentView: View {
         }
         .onDisappear {
             resizeSettlingTask?.cancel()
-        }
-        .sheet(item: $viewModel.pendingImportVolume) { volume in
-            ImportSheet(volume: volume)
-                .environmentObject(viewModel)
-        }
-        .sheet(item: $viewModel.activeFolderPicker) { purpose in
-            FolderPickerSheet(purpose: purpose)
-                .environmentObject(viewModel)
-        }
-        .alert("提示", isPresented: Binding(
-            get: { viewModel.importError != nil },
-            set: { if !$0 { viewModel.importError = nil } }
-        )) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text(viewModel.importError ?? "")
         }
     }
 
@@ -820,9 +842,9 @@ struct ContentView: View {
 
     // 颜色全部委托给 `AppTheme` 扩展(Views/Theme/AirwangPalette.swift),避免再次出现
     // 三套独立定义(见 TEST_REPORT.md #45/#46/#47)。
-    var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
-    var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
-    var accentColor: Color { viewModel.selectedTheme.accentColor }
-    var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
+    var primaryTextColor: Color { usesPaperAppearance ? paperPalette.ink : viewModel.selectedTheme.primaryTextColor }
+    var secondaryTextColor: Color { usesPaperAppearance ? paperPalette.secondary : viewModel.selectedTheme.secondaryTextColor }
+    var accentColor: Color { usesPaperAppearance ? paperPalette.accent : viewModel.selectedTheme.accentColor }
+    var secondaryAccentColor: Color { usesPaperAppearance ? paperPalette.secondaryAccent : viewModel.selectedTheme.secondaryAccentColor }
 
 }

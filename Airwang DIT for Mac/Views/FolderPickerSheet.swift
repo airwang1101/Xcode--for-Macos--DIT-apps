@@ -46,7 +46,9 @@ struct FolderPickerSheet: View {
         .frame(minWidth: 980, idealWidth: 1160, maxWidth: .infinity, minHeight: 640, idealHeight: 740, maxHeight: .infinity)
         .background(
             Group {
-                if viewModel.selectedTheme == .night {
+                if viewModel.interfaceStyle == .paper {
+                    PaperPalette(theme: viewModel.selectedTheme).background
+                } else if viewModel.selectedTheme == .night {
                     LinearGradient(
                         colors: [
                             Color(red: 0.025, green: 0.028, blue: 0.042),
@@ -72,7 +74,7 @@ struct FolderPickerSheet: View {
             }
         )
         .background(ResizableSheetWindowConfigurator(minSize: NSSize(width: 980, height: 640), idealSize: NSSize(width: 1160, height: 740)))
-        .fontDesign(.serif)
+        .fontDesign(viewModel.interfaceStyle == .paper ? .default : .serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
     }
 
@@ -424,8 +426,8 @@ struct FolderPickerSheet: View {
     }
 
     // 颜色委托给 `AppTheme` 扩展,与主面板和 ImportSheet 保持一致(见 #46)。
-    private var themePrimaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
-    private var themeSecondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
-    private var themeAccentColor: Color { viewModel.selectedTheme.accentColor }
+    private var themePrimaryTextColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).ink : viewModel.selectedTheme.primaryTextColor }
+    private var themeSecondaryTextColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).secondary : viewModel.selectedTheme.secondaryTextColor }
+    private var themeAccentColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).accent : viewModel.selectedTheme.accentColor }
 
 }

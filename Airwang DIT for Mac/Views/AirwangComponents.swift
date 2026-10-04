@@ -122,6 +122,7 @@ enum AirwangGlassElevation {
 }
 
 struct AirwangGlassSurface: View {
+    @Environment(\.ditPaperAppearance) private var paperAppearance
     let cornerRadius: CGFloat
     let theme: AppTheme
     let tint: Color
@@ -139,6 +140,20 @@ struct AirwangGlassSurface: View {
     }
 
     var body: some View {
+        Group {
+            if paperAppearance {
+                RoundedRectangle(cornerRadius: min(cornerRadius, 8))
+                    .fill(PaperPalette(theme: theme).surface)
+                    .overlay(RoundedRectangle(cornerRadius: min(cornerRadius, 8))
+                        .strokeBorder(PaperPalette(theme: theme).divider, lineWidth: 0.7))
+            } else {
+                classicSurface
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var classicSurface: some View {
         // 此前 reduceEffects 在两棵不同的 ZStack 之间整体切换,窗口缩放的
         // 起点和落点各触发一次全部表面的销毁重建,恰好把卡顿尖峰放在用户
         // 抓住窗口边缘的那一帧。现在只有一棵树,降级仅调整图层参数。
@@ -207,6 +222,7 @@ struct AirwangGlassSurface: View {
 }
 
 private struct AirwangLayeredShadow: ViewModifier {
+    @Environment(\.ditPaperAppearance) private var paperAppearance
     let theme: AppTheme
     let tint: Color
     let tintStrength: Double
@@ -221,7 +237,7 @@ private struct AirwangLayeredShadow: ViewModifier {
         // 染色光晕已从阴影系统移除(由选中态描边承担)。
         // enabled 走透明度归零而非增删修饰符:修饰符链保持恒定,
         // 窗口缩放降级不再引起视图身份变化。
-        let gate = enabled ? 1.0 : 0.0
+        let gate = enabled && !paperAppearance ? 1.0 : 0.0
         return content
             .shadow(
                 color: Color.black.opacity((isNight ? ambient.night : ambient.day) * gate),

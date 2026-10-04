@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D60000000000000000000002 /* ContentView+PaperWorkbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000012 /* ContentView+PaperWorkbench.swift */; };
+		D60000000000000000000001 /* PaperDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000011 /* PaperDesign.swift */; };
 		D50000000000000000000002 /* ReportPDFExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50000000000000000000012 /* ReportPDFExporterTests.swift */; };
 		D50000000000000000000001 /* ReportPDFExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50000000000000000000011 /* ReportPDFExporter.swift */; };
 		D40000000000000000000001 /* SupportDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000011 /* SupportDiagnostics.swift */; };
@@ -59,6 +61,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D60000000000000000000012 /* ContentView+PaperWorkbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+PaperWorkbench.swift"; sourceTree = "<group>"; };
+		D60000000000000000000011 /* PaperDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PaperDesign.swift"; sourceTree = "<group>"; };
 		D50000000000000000000012 /* ReportPDFExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportPDFExporterTests.swift; sourceTree = "<group>"; };
 		D50000000000000000000011 /* ReportPDFExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportPDFExporter.swift; sourceTree = "<group>"; };
 		D40000000000000000000011 /* SupportDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportDiagnostics.swift; sourceTree = "<group>"; };
@@ -197,6 +201,8 @@
 				D10000000000000000000014 /* ImportSheet.swift */,
 				D10000000000000000000015 /* FolderPickerSheet.swift */,
 				D10000000000000000000016 /* AirwangComponents.swift */,
+				D60000000000000000000012 /* ContentView+PaperWorkbench.swift */,
+				D60000000000000000000011 /* PaperDesign.swift */,
 				B10000000000000000000011 /* AirwangPalette.swift */,
 			);
 			path = Views;
@@ -369,6 +375,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D50000000000000000000001 /* ReportPDFExporter.swift in Sources */,
+				D60000000000000000000002 /* ContentView+PaperWorkbench.swift in Sources */,
+				D60000000000000000000001 /* PaperDesign.swift in Sources */,
 				D40000000000000000000001 /* SupportDiagnostics.swift in Sources */,
 				A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */,
 				A10000000000000000000002 /* Models.swift in Sources */,

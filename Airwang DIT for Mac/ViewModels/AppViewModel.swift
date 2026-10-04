@@ -65,6 +65,7 @@ final class AppViewModel: ObservableObject {
     @Published var preferences: AppPreferences {
         didSet { rebuildDisplayVolumesCache() }
     }
+    @Published var interfaceStyle: InterfaceStyle = .paper
     @Published var selectedTheme: AppTheme = .day
     @Published var selectedLanguage: AppLanguage = .chinese
     @Published var autoStartQueuedProjects = false
@@ -197,6 +198,7 @@ final class AppViewModel: ObservableObject {
         }
         preferences = settingsStore.load()
         let uiSettings = settingsStore.loadUISettings()
+        interfaceStyle = uiSettings.interfaceStyle
         selectedTheme = uiSettings.theme
         selectedLanguage = uiSettings.language
         autoStartQueuedProjects = uiSettings.autoStartQueuedProjects
@@ -728,6 +730,11 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
+    func setInterfaceStyle(_ style: InterfaceStyle) {
+        interfaceStyle = style
+        saveUISettings()
+    }
+
     func setTheme(_ theme: AppTheme) {
         selectedTheme = theme
         saveUISettings()
@@ -749,7 +756,8 @@ final class AppViewModel: ObservableObject {
                 AppUISettings(
                     theme: selectedTheme,
                     language: selectedLanguage,
-                    autoStartQueuedProjects: autoStartQueuedProjects
+                    autoStartQueuedProjects: autoStartQueuedProjects,
+                    interfaceStyle: interfaceStyle
                 )
             )
         } catch {

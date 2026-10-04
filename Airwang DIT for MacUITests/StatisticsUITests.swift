@@ -72,6 +72,39 @@ final class StatisticsUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["statistics-recent-reports-card"].exists, app.debugDescription)
     }
 
+    func testPaperWorkbenchKeepsBottomNavigationAndTopSubnavigation() throws {
+        requireElement("paper-create-form", timeout: 8)
+        requireElement("paper-secondary-navigation")
+        requireElement("paper-task-rail")
+        requireElement("bottom-tab-bar")
+        for tab in ["devices", "queue", "reports", "create"] {
+            requireElement("paper-copy-tab-" + tab).click()
+            let target = ["devices": "paper-devices", "queue": "paper-queue",
+                          "reports": "paper-reports", "create": "paper-create-form"][tab]!
+            requireElement(target)
+            requireElement("bottom-tab-bar")
+        }
+        for section in ["backup", "organize", "statistics", "dashboard", "copy"] {
+            tapBottomTab(section)
+            requireElement("workspace-" + section)
+            requireElement("bottom-tab-bar")
+        }
+    }
+
+    func testPaperPreferencesAndClassicFallbackRemainReachable() throws {
+        requireElement("paper-create-form", timeout: 8)
+        requireElement("paper-backup-toggle").click()
+        requireElement("paper-create-form")
+        requireElement("paper-settings-menu").click()
+        let classic = app.menuItems["经典界面"]
+        XCTAssertTrue(classic.waitForExistence(timeout: 3), app.debugDescription)
+        classic.click()
+        requireElement("floating-workspace-header")
+        requireElement("bottom-tab-bar")
+        tapBottomTab("statistics")
+        requireElement("statistics-activity-heatmap-card")
+    }
+
     @discardableResult
     private func requireElement(
         _ identifier: String,

@@ -152,6 +152,40 @@ enum AppLocalization {
     }
 
     private static let english: [String: String] = [
+        "纸面工作台": "Paper workbench",
+        "界面外观": "Appearance",
+        "经典界面": "Classic interface",
+        "新建任务": "New task",
+        "设备": "Devices",
+        "队列": "Queue",
+        "报告": "Reports",
+        "来源": "Source",
+        "校验": "Verification",
+        "选择相机卡或存储设备作为来源。": "Choose a camera card or storage device as the source.",
+        "选择存储位置，用于保存拷贝的素材。": "Choose where to store copied media.",
+        "选择校验方式与执行模式。": "Choose verification and execution modes.",
+        "重新扫描": "Refresh devices",
+        "选择来源设备": "Choose source device",
+        "当前没有可用来源，请连接设备或刷新。": "No source is available. Connect a device or refresh.",
+        "选择素材后确认文件数与拷贝容量，保留全部素材选择方式。": "Review media and the copy size before adding the task. All selection modes are available.",
+        "主存储位置": "Primary storage",
+        "主盘校验后备份": "Back up after primary verification",
+        "备份从主目标盘读取，按当前任务选择的校验方式执行。": "Backup reads from primary storage using the task's selected verification method.",
+        "任务名称（可选）": "Task name (optional)",
+        "选择素材并加入队列": "Select media and add to queue",
+        "进入现有素材选择界面，确认文件后创建项目。": "Review and confirm media in the selection window before creating the task.",
+        "预览文件": "Preview media",
+        "更多选项": "More options",
+        "当前任务": "Current task",
+        "暂无运行中的任务": "No task is running",
+        "查看全部": "View all",
+        "全部报告": "All reports",
+        "剩余": "Remaining",
+        "已处理": "Processed",
+        "文件": "Files",
+        "提示": "Notice",
+        "知道了": "OK",
+        "选择备份盘": "Choose backup destination",
         "主题": "Theme",
         "白天": "Day",
         "夜晚": "Night",
@@ -539,7 +573,14 @@ enum AppStorageScope {
     }
 }
 
+enum InterfaceStyle: String, CaseIterable, Identifiable, Codable {
+    case paper, classic
+    var id: String { rawValue }
+    var title: String { self == .paper ? "纸面工作台" : "经典界面" }
+}
+
 struct AppUISettings: Codable {
+    var interfaceStyle: InterfaceStyle
     var theme: AppTheme
     var language: AppLanguage
     var autoStartQueuedProjects: Bool
@@ -550,16 +591,19 @@ struct AppUISettings: Codable {
         case theme
         case language
         case autoStartQueuedProjects
+        case interfaceStyle
     }
 
     init(
         theme: AppTheme,
         language: AppLanguage = .chinese,
-        autoStartQueuedProjects: Bool = false
+        autoStartQueuedProjects: Bool = false,
+        interfaceStyle: InterfaceStyle = .paper
     ) {
         self.theme = theme
         self.language = language
         self.autoStartQueuedProjects = autoStartQueuedProjects
+        self.interfaceStyle = interfaceStyle
     }
 
     init(from decoder: any Decoder) throws {
@@ -567,6 +611,7 @@ struct AppUISettings: Codable {
         theme = try container.decodeIfPresent(AppTheme.self, forKey: .theme) ?? .day
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .chinese
         autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? false
+        interfaceStyle = try container.decodeIfPresent(InterfaceStyle.self, forKey: .interfaceStyle) ?? .paper
     }
 }
 

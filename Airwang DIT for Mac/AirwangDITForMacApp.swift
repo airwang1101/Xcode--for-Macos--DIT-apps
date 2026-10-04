@@ -175,6 +175,15 @@ private struct AppSettingsView: View {
     var body: some View {
         Form {
             Section(viewModel.localized("界面设置")) {
+                Picker(viewModel.localized("界面外观"), selection: Binding(
+                    get: { viewModel.interfaceStyle },
+                    set: { viewModel.setInterfaceStyle($0) }
+                )) {
+                    ForEach(InterfaceStyle.allCases) { style in
+                        Text(viewModel.localized(style.title)).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
                 Picker(viewModel.localized("主题"), selection: Binding(
                     get: { viewModel.selectedTheme },
                     set: { viewModel.setTheme($0) }
@@ -230,7 +239,7 @@ private struct AppSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .fontDesign(.serif)
+        .fontDesign(viewModel.interfaceStyle == .paper ? .default : .serif)
         .padding(24)
         .frame(width: 460)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)

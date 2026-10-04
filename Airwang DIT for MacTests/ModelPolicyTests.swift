@@ -5,6 +5,47 @@ import XCTest
 /// 纯逻辑模型/策略层测试：不碰文件系统，毫秒级完成。
 final class ModelPolicyTests: XCTestCase {
 
+    func testLegacyUISettingsAdoptPaperWithoutLosingLanguageThemeOrAutoStart() throws {
+        let data = Data(#"{"theme":"night","language":"english","autoStartQueuedProjects":true}"#.utf8)
+        let settings = try JSONDecoder().decode(AppUISettings.self, from: data)
+        XCTAssertEqual(settings.interfaceStyle, .paper)
+        XCTAssertEqual(settings.theme, .night)
+        XCTAssertEqual(settings.language, .english)
+        XCTAssertTrue(settings.autoStartQueuedProjects)
+    }
+
+    func testClassicAppearanceRoundTripsWithAllExistingPreferences() throws {
+        let original = AppUISettings(theme: .night, language: .english,
+                                     autoStartQueuedProjects: true, interfaceStyle: .classic)
+        let restored = try JSONDecoder().decode(AppUISettings.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(restored.interfaceStyle, .classic)
+        XCTAssertEqual(restored.theme, .night)
+        XCTAssertEqual(restored.language, .english)
+        XCTAssertTrue(restored.autoStartQueuedProjects)
+    }
+
+    @MainActor
+    func testChangingAppearancePreservesSavedExistingPreferences() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DIT-Appearance-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppViewModel(dataDirectory: root)
+        model.setTheme(.night)
+        model.setLanguage(.english)
+        model.setAutoStartQueuedProjects(true)
+        model.setInterfaceStyle(.classic)
+        let settings = model.settingsStore.loadUISettings()
+        XCTAssertEqual(settings.interfaceStyle, .classic)
+        XCTAssertEqual(settings.theme, .night)
+        XCTAssertEqual(settings.language, .english)
+        XCTAssertTrue(settings.autoStartQueuedProjects)
+        model.setInterfaceStyle(.paper)
+        XCTAssertEqual(model.settingsStore.loadUISettings().interfaceStyle, .paper)
+        XCTAssertEqual(model.selectedTheme, .night)
+        XCTAssertEqual(model.selectedLanguage, .english)
+        XCTAssertTrue(model.autoStartQueuedProjects)
+    }
+
     // MARK: - FileNameSanitizer
 
     func testSafeComponentReplacesIllegalCharactersAndCollapsesUnderscores() {

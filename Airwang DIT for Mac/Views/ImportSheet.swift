@@ -82,7 +82,7 @@ struct ImportSheet: View {
         .frame(minWidth: 980, idealWidth: 1180, maxWidth: .infinity, minHeight: 660, idealHeight: 760, maxHeight: .infinity)
         .background(importSheetBackground)
         .background(ResizableSheetWindowConfigurator(minSize: NSSize(width: 980, height: 660), idealSize: NSSize(width: 1180, height: 760)))
-        .fontDesign(.serif)
+        .fontDesign(viewModel.interfaceStyle == .paper ? .default : .serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
     }
 
@@ -1204,7 +1204,9 @@ struct ImportSheet: View {
 
     private var importSheetBackground: some View {
         Group {
-            if viewModel.selectedTheme == .night {
+            if viewModel.interfaceStyle == .paper {
+                PaperPalette(theme: viewModel.selectedTheme).background
+            } else if viewModel.selectedTheme == .night {
                 LinearGradient(
                     colors: [
                         Color(red: 0.025, green: 0.028, blue: 0.042),
@@ -1243,10 +1245,10 @@ struct ImportSheet: View {
 
     // 颜色委托给 `AppTheme` 扩展,与主面板保持一致(原本 ImportSheet 在白天模式
     // 走 `Color.primary` / `Color.secondary`,与暖色背景不协调,见 #45)。
-    private var primaryTextColor: Color { viewModel.selectedTheme.primaryTextColor }
-    private var secondaryTextColor: Color { viewModel.selectedTheme.secondaryTextColor }
-    private var accentColor: Color { viewModel.selectedTheme.accentColor }
-    private var secondaryAccentColor: Color { viewModel.selectedTheme.secondaryAccentColor }
+    private var primaryTextColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).ink : viewModel.selectedTheme.primaryTextColor }
+    private var secondaryTextColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).secondary : viewModel.selectedTheme.secondaryTextColor }
+    private var accentColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).accent : viewModel.selectedTheme.accentColor }
+    private var secondaryAccentColor: Color { viewModel.interfaceStyle == .paper ? PaperPalette(theme: viewModel.selectedTheme).secondaryAccent : viewModel.selectedTheme.secondaryAccentColor }
 
     private var thumbFill: Color {
         viewModel.selectedTheme == .night ? Color.white.opacity(0.06) : Color.black.opacity(0.08)

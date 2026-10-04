@@ -1,0 +1,49 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Scheme LastUpgradeVersion="2620" version="1.7">
+   <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES" buildArchitectures="Automatic">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000009" BuildableName="Airwang DIT for Mac.app" BlueprintName="Airwang DIT for Mac" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO" shouldAutocreateTestPlan="YES">
+      <EnvironmentVariables>
+         <EnvironmentVariable key="AIRWANG_DIT_UNIT_TESTING" value="1" isEnabled="YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable key="AIRWANG_DIT_APP_SUPPORT_DIR" value="/tmp/airwang-dit-unit-tests" isEnabled="YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
+      <Testables>
+         <TestableReference skipped="YES" parallelizable="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A20000000000000000000009" BuildableName="Airwang DIT for MacTests.xctest" BlueprintName="Airwang DIT for MacTests" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A30000000000000000000009" BuildableName="Airwang DIT for MacUITests.xctest" BlueprintName="Airwang DIT for MacUITests" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+      <MacroExpansion>
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000009" BuildableName="Airwang DIT for Mac.app" BlueprintName="Airwang DIT for Mac" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
+   </TestAction>
+   <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
+      <BuildableProductRunnable runnableDebuggingMode="0">
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000009" BuildableName="Airwang DIT for Mac.app" BlueprintName="Airwang DIT for Mac" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES">
+      <BuildableProductRunnable runnableDebuggingMode="0">
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000009" BuildableName="Airwang DIT for Mac.app" BlueprintName="Airwang DIT for Mac" ReferencedContainer="container:Airwang DIT for Mac.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction buildConfiguration="Debug">
+   </AnalyzeAction>
+   <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES">
+   </ArchiveAction>
+</Scheme>
