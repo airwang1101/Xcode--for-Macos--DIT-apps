@@ -21,7 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard viewModel?.hasActiveFileOperations == true || viewModel?.isExportingDiagnostics == true else {
             return .terminateNow
         }
-        viewModel?.importError = viewModel?.localized("仍有导入、校验、规整或诊断导出正在执行。请先取消并等待文件操作收尾后再退出。")
+        if viewModel?.isExportingPDFReport == true {
+            viewModel?.importError = viewModel?.localized("PDF 报告正在导出。请先取消并等待导出收尾后再退出。")
+        } else {
+            viewModel?.importError = viewModel?.localized("仍有导入、校验、规整或诊断导出正在执行。请先取消并等待文件操作收尾后再退出。")
+        }
         return .terminateCancel
     }
 
@@ -88,6 +92,10 @@ struct AirwangDITForMacApp: App {
                     viewModel.exportDiagnostics()
                 }
                 .disabled(viewModel.isExportingDiagnostics || viewModel.isChoosingDiagnosticsDestination)
+                Button(viewModel.localized("取消 PDF 导出")) {
+                    viewModel.cancelPDFReportExport()
+                }
+                .disabled(!viewModel.isExportingPDFReport)
             }
         }
 

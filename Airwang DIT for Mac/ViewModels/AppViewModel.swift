@@ -126,6 +126,10 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isExportingDiagnostics = false
     @Published private(set) var isChoosingDiagnosticsDestination = false
     @Published private(set) var diagnosticsExportStatus: String?
+    @Published private(set) var isExportingPDFReport = false
+    @Published private(set) var isChoosingPDFReportDestination = false
+    @Published private(set) var pdfReportExportStatus: String?
+    @Published private(set) var pdfReportExportID: UUID?
     @Published var activeFolderPicker: FolderPickerPurpose?
     @Published var folderRoots: [FolderBrowserItem] = []
     @Published var folderChildren: [FolderBrowserItem] = []
@@ -178,6 +182,7 @@ final class AppViewModel: ObservableObject {
     private var copyStatisticsIndex = CopyStatisticsIndex()
     private var manualQueueRunActive = false
     private var diagnosticsExportTask: Task<Void, Never>?
+    private var pdfReportExportTask: Task<Void, Never>?
     private let backupChangeConfirmation: ((String, String) -> Bool)?
 
     init(dataDirectory: URL? = nil, backupChangeConfirmation: ((String, String) -> Bool)? = nil) {
@@ -238,6 +243,7 @@ final class AppViewModel: ObservableObject {
 
     deinit {
         diagnosticsExportTask?.cancel()
+        pdfReportExportTask?.cancel()
         statisticsRefreshTask?.cancel()
         statisticsBuildTask?.cancel()
         autoStartTask?.cancel()
@@ -409,7 +415,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var hasActiveFileOperations: Bool {
-        hasActiveTransfers || isRunningOrganizer || organizerExecutionTask != nil
+        hasActiveTransfers || isRunningOrganizer || organizerExecutionTask != nil || isExportingPDFReport
     }
 
     var hasActiveTransfers: Bool {
@@ -779,6 +785,77 @@ final class AppViewModel: ObservableObject {
             NSWorkspace.shared.open(documentURL)
         } else {
             importError = "找不到拷贝报告。目标报告和 App 本地备份报告都不存在，可能已被手动删除。"
+        }
+    }
+
+    func exportPDFReport(_ report: TransferReport) {
+        guard !isExportingPDFReport, !isChoosingPDFReportDestination else { return }
+        guard let source = existingReportDocumentURL(for: report) else {
+            importError = localized("找不到原始 TXT 报告，无法导出完整 PDF。")
+            return
+        }
+        isChoosingPDFReportDestination = true
+        let panel = NSSavePanel()
+        panel.title = localized("导出 PDF 报告")
+        panel.message = localized("PDF 包含原始 TXT 的完整明细，请选择新名称以保留已有文件。")
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = ReportPDFExporter.defaultFileName(for: source)
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.isChoosingPDFReportDestination = false
+            guard response == .OK, let destination = panel.url else { return }
+            self.beginPDFReportExport(sourceURL: source, to: destination, reportID: report.id)
+        }
+    }
+
+    func cancelPDFReportExport() {
+        pdfReportExportTask?.cancel()
+    }
+
+    func beginPDFReportExport(sourceURL: URL, to destination: URL, reportID: UUID) {
+        guard !isExportingPDFReport else { return }
+        isExportingPDFReport = true
+        pdfReportExportID = reportID
+        pdfReportExportStatus = localized("正在导出 PDF 报告…")
+        let worker = Task.detached(priority: .utility) { () -> Result<Int, any Error> in
+            let accessing = destination.startAccessingSecurityScopedResource()
+            defer { if accessing { destination.stopAccessingSecurityScopedResource() } }
+            do {
+                return .success(try ReportPDFExporter.export(sourceURL: sourceURL, to: destination))
+            } catch {
+                return .failure(error)
+            }
+        }
+        pdfReportExportTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self else { return }
+            self.isExportingPDFReport = false
+            self.pdfReportExportTask = nil
+            switch result {
+            case let .success(pages):
+                self.pdfReportExportStatus = String(format: self.localized("PDF 报告已导出（%d 页）。"), pages)
+            case let .failure(error):
+                let detail: String
+                if error is CancellationError {
+                    detail = self.localized("PDF 导出已取消。")
+                } else if let exportError = error as? ReportPDFExporter.ExportError {
+                    switch exportError {
+                    case .destinationExists: detail = self.localized("已有文件已保留，请选择新名称。")
+                    case .invalidDestination: detail = self.localized("请选择可写文件夹中的 PDF 文件。")
+                    case .invalidSource: detail = self.localized("找不到有效的原始 TXT 报告。")
+                    case .sourceChanged: detail = self.localized("原始 TXT 报告在读取期间发生变化，导出已停止。")
+                    case .renderingFailed: detail = self.localized("无法完整生成 PDF 报告。")
+                    }
+                } else {
+                    detail = error.localizedDescription
+                }
+                self.pdfReportExportStatus = detail
+            }
         }
     }
 

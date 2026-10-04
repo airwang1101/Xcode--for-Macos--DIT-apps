@@ -1099,6 +1099,33 @@ extension ContentView {
 
                                 Spacer()
                             }
+                            HStack(spacing: 10) {
+                                Button(viewModel.localized("导出 PDF 报告")) {
+                                    viewModel.exportPDFReport(report)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(secondaryAccentColor)
+                                .disabled(viewModel.isExportingPDFReport || viewModel.isChoosingPDFReportDestination)
+                                .accessibilityIdentifier("report-pdf-export-\(report.id.uuidString)")
+
+                                Spacer()
+                            }
+                            if viewModel.pdfReportExportID == report.id {
+                                HStack(spacing: 10) {
+                                    if let status = viewModel.pdfReportExportStatus {
+                                        Text(status)
+                                            .font(.caption)
+                                            .foregroundStyle(secondaryTextColor)
+                                            .accessibilityIdentifier("report-pdf-export-status")
+                                    }
+                                    if viewModel.isExportingPDFReport {
+                                        Button(viewModel.localized("取消")) {
+                                            viewModel.cancelPDFReportExport()
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(14)

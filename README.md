@@ -32,6 +32,7 @@ Commercial release gates and current evidence are maintained in [DISTRIBUTION_RE
 - Verifies copied files using SHA-256 or size checks, with a skip-verification option.
 - Blocks unsafe paths, overlapping source and destination paths, same-volume target and backup paths, and symlink escape paths.
 - Writes task reports and keeps local task history.
+- Exports complete saved TXT reports as paginated PDFs from the task log, preserving Unicode names and per-file verification evidence. Existing output files are never replaced. See [PDF report export](PDF_REPORTS.md).
 - Provides Chinese and English UI language settings.
 - Provides day and night themes.
 - Exports optional local support diagnostics with media, filenames, paths, and raw errors excluded. See [support diagnostics](SUPPORT_DIAGNOSTICS.md).
@@ -153,7 +154,7 @@ Corrupt backups now have an additional unique identifier, so repeated recovery a
 - Files with different content, symbolic links, and directory collisions are preserved and reported as failures. Recovery does not replace or remove them.
 - New projects record available source, primary, and backup volume identifiers. Transfer and report writes stop if a recorded destination is disconnected or replaced, even when its old mountpoint directory still exists.
 - Each attempt produces a separate report. Reports list files reused after successful full verification and the number of files newly copied in that attempt.
-- Recovery repeats the primary stage before running backup. The original source must remain available. Resuming inside a partially copied file and restoring backup independently of the original source are not implemented.
+- Full retry repeats the primary stage before running backup and requires the original source. Independent backup retry uses persisted primary evidence and can run without the source card. Resuming inside a partially copied file is not implemented.
 - Legacy project and report JSON remains readable. Missing recovery fields default to a fresh execution policy and unrecorded volume identifiers.
 
 The Debug test scheme places application data in `/tmp/airwang-dit-unit-tests`. The two UI tests remain excluded from the default scheme. See [the recovery verification record](RECOVERY_VERIFICATION_2026-09-30.md) for current test coverage and release limitations.
