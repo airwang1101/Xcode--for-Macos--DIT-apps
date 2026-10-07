@@ -1,0 +1,18 @@
+# Register the manual entry on the default branch without porting development code.
+# In Run workflow, select a development branch that contains this workflow's tests.
+# This placeholder is always skipped and never allocates a hosted runner.
+name: Validate macOS distribution preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select-development-branch:
+    name: Select a development branch in Run workflow to run its existing tests
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Select a development branch in Run workflow."
