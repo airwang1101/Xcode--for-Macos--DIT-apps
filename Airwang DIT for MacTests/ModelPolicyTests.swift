@@ -151,3 +151,96 @@ final class ModelPolicyTests: XCTestCase {
         XCTAssertTrue(OrganizerPlanProgress.resolving(processed: 5, total: 9).message.contains("5/9"))
     }
 }
+
+final class ImportSelectionTests: XCTestCase {
+    @MainActor
+    func testSelectionTracksMutationsAndScanOrder() async throws {
+        let storage = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        let model = AppViewModel(dataDirectory: storage)
+        let items = makeItems(count: 4)
+        model.scannedItems = items
+        model.selectedItemIDs = [items[3].id, items[1].id, "missing"]
+        XCTAssertEqual(model.selectedItems, [items[1], items[3]])
+        XCTAssertEqual(model.selectedTotalBytes, 6)
+        XCTAssertEqual(model.scannedTotalBytes, 10)
+
+        // Reordering and replacing an item with the same ID must invalidate the snapshot.
+        let replacement = makeItem(path: items[3].relativePath, size: 100)
+        model.scannedItems = [replacement, items[1]]
+        XCTAssertEqual(model.selectedItems, [replacement, items[1]])
+        XCTAssertEqual(model.selectedTotalBytes, 102)
+        XCTAssertEqual(model.scannedTotalBytes, 102)
+        model.clearScannedSelection()
+        XCTAssertTrue(model.selectedItems.isEmpty)
+        XCTAssertEqual(model.selectedTotalBytes, 0)
+        model.selectAllScannedItems()
+        XCTAssertEqual(model.selectedItems, model.scannedItems)
+        model.scannedItems = []
+        XCTAssertTrue(model.selectedItems.isEmpty)
+        XCTAssertEqual(model.selectedTotalBytes, 0)
+        XCTAssertEqual(model.scannedTotalBytes, 0)
+    }
+
+    @MainActor
+    func testSelectionPreservesRelatedSidecarsAndSummary() async throws {
+        let storage = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        let model = AppViewModel(dataDirectory: storage)
+        let photo = makeItem(path: "DCIM/Caf\u{00e9}.arw", size: 10)
+        let sidecar = makeItem(path: "DCIM/CAFE\u{0301}.xmp", size: 2)
+        let otherFolder = makeItem(path: "Other/Caf\u{00e9}.arw", size: 20)
+        model.scannedItems = [sidecar, otherFolder, photo]
+        model.toggle(item: photo)
+        XCTAssertEqual(model.selectedItems, [sidecar, photo])
+        XCTAssertEqual(model.selectedTotalBytes, 12)
+        model.preferences.targetPath = storage.path
+        model.pendingImportVolume = StorageVolume(
+            id: "/selection-fixture", name: "Card", url: URL(fileURLWithPath: "/selection-fixture"),
+            isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil
+        )
+        let summary = try XCTUnwrap(model.selectionSummary)
+        XCTAssertEqual(summary.selectedItems, [sidecar, photo])
+        XCTAssertEqual(summary.totalSize, 12)
+        model.toggle(item: sidecar)
+        XCTAssertTrue(model.selectedItems.isEmpty)
+        XCTAssertNil(model.selectionSummary)
+        let group = TimeGroup(id: "group", date: photo.createdAt, items: [photo], totalSize: 10)
+        model.toggle(group: group)
+        XCTAssertEqual(model.selectedItems, [sidecar, photo])
+        model.toggle(group: group)
+        XCTAssertTrue(model.selectedItems.isEmpty)
+    }
+
+    @MainActor
+    func testLargeSelectionReadPerformance() async throws {
+        let storage = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        let model = AppViewModel(dataDirectory: storage)
+        model.scannedItems = makeItems(count: 10_000)
+        model.selectAllScannedItems()
+        XCTAssertEqual(model.selectedItems.count, 10_000)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        measure(metrics: [XCTClockMetric()], options: options) {
+            var checksum: Int64 = 0
+            for _ in 0..<30 {
+                checksum += Int64(model.selectedItems.count)
+                checksum += model.selectedTotalBytes + model.scannedTotalBytes
+            }
+            XCTAssertEqual(checksum, 3_000_600_000)
+        }
+    }
+
+    private func makeItems(count: Int) -> [MediaItem] {
+        (0..<count).map { makeItem(path: "DCIM/clip_\($0).mov", size: Int64($0 + 1)) }
+    }
+
+    private func makeItem(path: String, size: Int64) -> MediaItem {
+        let url = URL(fileURLWithPath: "/selection-fixture").appendingPathComponent(path)
+        return MediaItem(
+            id: url.path, fileURL: url, relativePath: path, displayName: url.lastPathComponent,
+            createdAt: Date(timeIntervalSince1970: 0), size: size, isVideo: true, mediaKind: .video
+        )
+    }
+}

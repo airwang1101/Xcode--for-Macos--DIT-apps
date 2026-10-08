@@ -2,7 +2,17 @@
 
 Airwang DIT for Mac is a SwiftUI macOS app for Digital Imaging Technician copy workflows. It helps ingest media from external cards or folders, copy selected assets to a primary working drive, optionally create a backup, verify the result, and keep traceable task reports.
 
-Repository: [wngair/Xcode--for-Macos--DIT-apps](https://github.com/wngair/Xcode--for-Macos--DIT-apps)
+Repository: [airwang1101/Xcode--for-Macos--DIT-apps](https://github.com/airwang1101/Xcode--for-Macos--DIT-apps)
+
+Active development branch: `codex/dit-paper-workbench`. The paper workbench is
+the default appearance; Classic remains available in Settings. Continue feature
+development and ablation experiments on this branch. The earlier
+`codex/dit-m1-m3-safety` branch remains a preserved checkpoint.
+
+Paper-branch validation and ablation evidence:
+[PAPER_ABLATION_2026-10-08.md](PAPER_ABLATION_2026-10-08.md).
+The current source review and trial acceptance notes are in
+[PAPER_REVIEW_2026-10-08.md](PAPER_REVIEW_2026-10-08.md).
 
 ## Current Status
 
@@ -79,10 +89,10 @@ Select the `Airwang DIT for Mac` scheme, then run the app from Xcode.
 
 ## Build From Terminal
 
-This machine currently has Xcode available at `/Applications/Xcode-beta.app`. If `xcodebuild` reports that the active developer directory is Command Line Tools, set `DEVELOPER_DIR` for the command:
+This machine currently has Xcode available at `/Applications/Xcode.app`. If `xcodebuild` reports that the active developer directory is Command Line Tools, set `DEVELOPER_DIR` for the command:
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcodebuild \
   -project "Airwang DIT for Mac.xcodeproj" \
   -scheme "Airwang DIT for Mac" \
@@ -93,13 +103,24 @@ xcodebuild \
 To make full Xcode the default developer directory for future terminal sessions:
 
 ```bash
-sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 ```
 
 ## Run Tests
 
+For background unit validation without launching the app, use the staged library
+harness. It retains all Swift source and tests, omitting only the application
+entry declaration from the temporary copy. Native Xcode compilation separately
+checks the complete application, its entry declaration and assets. Visual and
+interaction checks still require the foreground authorization described in
+[UI_REDESIGN.md](UI_REDESIGN.md).
+
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+python3 script/headless_tests.py
+```
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcodebuild \
   -project "Airwang DIT for Mac.xcodeproj" \
   -scheme "Airwang DIT for Mac" \

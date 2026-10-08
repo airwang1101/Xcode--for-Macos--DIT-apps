@@ -99,11 +99,11 @@ final class AppViewModel: ObservableObject {
         }
     }
     @Published var timeGroups: [TimeGroup] = []
-    @Published var selectedItemIDs: Set<String> = []
+    @Published var selectedItemIDs: Set<String> = [] {
+        didSet { selectedItemsSnapshot = nil }
+    }
     @Published var isScanning = false
     @Published var isImporting = false
-    @Published var transferState = TransferState()
-    @Published var latestReport: TransferReport?
     @Published var reports: [TransferReport] = []
     @Published private(set) var copyStatistics = CopyStatisticsSummary.make(reports: [], projects: [])
     @Published private(set) var copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: [])
@@ -148,13 +148,11 @@ final class AppViewModel: ObservableObject {
     private let scanner = MediaScanner()
     private let transferService = TransferService()
     private let organizerService = OrganizerService()
-    private let interruptionToken = ImportInterruptionToken()
     private static let projectAutoStartDelay: TimeInterval = 300
     private static let statisticsRefreshInterval: TimeInterval = 600
     private let reportURL: URL
     private let projectURL: URL
     private let statisticsIndexURL: URL
-    private var importTask: Task<Void, Never>?
     private var projectTasks: [UUID: Task<Void, Never>] = [:]
     private var projectTokens: [UUID: ImportInterruptionToken] = [:]
     private var pendingDeleteProjectIDs: Set<UUID> = []
@@ -168,12 +166,11 @@ final class AppViewModel: ObservableObject {
     private var statisticsBuildTask: Task<Void, Never>?
     private var statisticsRevision: UInt64 = 0
     private var organizerPlanGeneration = UUID()
-    private var activeImportSummary: ImportSelectionSummary?
-    private var importProgressCoalescer: TransferProgressCoalescer?
-    private var retrySourceItems: [MediaItem] = []
     private var scanSessionID = UUID()
     private var folderNavigationID = UUID()
     private var sourceFolderNavigationID = UUID()
+    private var selectedItemsSnapshot: (items: [MediaItem], totalBytes: Int64)?
+    private var scannedTotalBytesCache: Int64 = 0
     private var scannedItemsByID: [String: MediaItem] = [:]
     private var scannedItemOrder: [String: Int] = [:]
     private var relatedIDsByItemID: [String: Set<String>] = [:]
@@ -272,20 +269,23 @@ final class AppViewModel: ObservableObject {
         localized(theme.title)
     }
 
-    var selectedItems: [MediaItem] {
-        selectedItemIDs
+    var selectedItems: [MediaItem] { importSelectionSnapshot.items }
+
+    var selectedTotalBytes: Int64 { importSelectionSnapshot.totalBytes }
+
+    var scannedTotalBytes: Int64 { scannedTotalBytesCache }
+
+    // Reuse selection work across UI reads. Either input invalidates this snapshot.
+    private var importSelectionSnapshot: (items: [MediaItem], totalBytes: Int64) {
+        if let selectedItemsSnapshot { return selectedItemsSnapshot }
+        let items = selectedItemIDs
             .compactMap { scannedItemsByID[$0] }
             .sorted {
                 (scannedItemOrder[$0.id] ?? Int.max) < (scannedItemOrder[$1.id] ?? Int.max)
             }
-    }
-
-    var selectedTotalBytes: Int64 {
-        selectedItems.reduce(0) { $0 + $1.size }
-    }
-
-    var scannedTotalBytes: Int64 {
-        scannedItems.reduce(0) { $0 + $1.size }
+        let snapshot = (items: items, totalBytes: items.reduce(Int64(0)) { $0 + $1.size })
+        selectedItemsSnapshot = snapshot
+        return snapshot
     }
 
     // shouldShowAsImportSource 要做卷标识符解析(文件系统调用),不能放在
@@ -305,16 +305,17 @@ final class AppViewModel: ObservableObject {
 
     var selectionSummary: ImportSelectionSummary? {
         guard let volume = pendingImportVolume,
-              let targetURL = preferences.targetURL,
-              !selectedItems.isEmpty else {
+              let targetURL = preferences.targetURL else {
             return nil
         }
+        let selection = importSelectionSnapshot
+        guard !selection.items.isEmpty else { return nil }
 
         return ImportSelectionSummary(
             sourceVolume: volume,
             sourceRootURL: sourceFolderURL ?? volume.url,
-            selectedItems: selectedItems,
-            totalSize: selectedItems.reduce(0) { $0 + $1.size },
+            selectedItems: selection.items,
+            totalSize: selection.totalBytes,
             targetURL: targetURL,
             backupURL: preferences.backupURL,
             verificationMode: selectedVerificationMode.title,
@@ -421,7 +422,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var hasActiveTransfers: Bool {
-        isImporting || !activeProjectIDs.isEmpty || importTask != nil || !projectTasks.isEmpty
+        isImporting || !activeProjectIDs.isEmpty || !projectTasks.isEmpty
     }
 
     var orderedProjects: [CopyProject] { orderedProjectsCache }
@@ -463,11 +464,6 @@ final class AppViewModel: ObservableObject {
     var folderSelection: FolderBrowserItem? {
         guard let selectedFolderURL else { return nil }
         return makeFolderItem(from: selectedFolderURL, fallbackName: selectedFolderURL.lastPathComponent)
-    }
-
-    var selectedSourceCapacity: StorageCapacitySnapshot? {
-        guard let sourceFolderURL else { return nil }
-        return DiskCapacityResolver.capacity(for: sourceFolderURL)
     }
 
     var targetCapacity: StorageCapacitySnapshot? {
@@ -1146,7 +1142,6 @@ final class AppViewModel: ObservableObject {
             importError = "项目“\(project.name)”未能保存，已取消加入队列。请处理保存错误后重试。"
             return
         }
-        retrySourceItems = summary.selectedItems
         closeImportSheet()
         selectedSection = .copy
         scheduleNextAutoStartCheck()
@@ -1425,20 +1420,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func recordFinishedReport(_ report: TransferReport) {
-        latestReport = report
         reports.insert(report, at: 0)
         saveReports()
         copyStatisticsIndex.add(report)
         saveStatisticsIndex()
         rebuildCopyStatistics()
-    }
-
-    func cancelImport() {
-        interruptionToken.stop(reason: "用户取消了导入任务")
-        importTask?.cancel()
-        importProgressCoalescer?.cancelPending()
-        transferState.phaseTitle = "正在取消"
-        transferState.verificationStatus = "等待当前文件操作结束"
     }
 
     func cancelProject(_ project: CopyProject) {
@@ -1660,131 +1646,6 @@ final class AppViewModel: ObservableObject {
             return
         }
         importError = "找不到项目输出文件夹：\(url.path)"
-    }
-
-    func retryLatestFailedItems() {
-        guard let latestReport else {
-            importError = "当前还没有可重试的任务日志。"
-            return
-        }
-        guard !latestReport.failedFiles.isEmpty else {
-            importError = "最新任务没有异常素材，不需要重试。"
-            return
-        }
-
-        let retryItems = retryItems(for: latestReport)
-        guard !retryItems.isEmpty else {
-            importError = "当前会话里找不到可重试的异常素材，请重新选择源文件夹扫描后再试。"
-            return
-        }
-
-        let createdAt = Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let retryName = "重试异常_\(latestReport.namingRule)_\(formatter.string(from: createdAt))"
-        let safeFolderName = FileNameSanitizer.safeComponent(
-            retryName,
-            fallback: "Retry_\(formatter.string(from: createdAt))"
-        )
-        let targetRootURL = URL(fileURLWithPath: latestReport.targetPath, isDirectory: true)
-            .deletingLastPathComponent()
-        let backupRootPath = latestReport.backupPath.map {
-            URL(fileURLWithPath: $0, isDirectory: true).deletingLastPathComponent().path
-        }
-        let verificationMode = VerificationMode.allCases.first {
-            $0.title == latestReport.verificationMode || $0.shortTitle == latestReport.verificationMode
-        } ?? selectedVerificationMode
-        let autoStartDeadline = autoStartQueuedProjects
-            ? createdAt.addingTimeInterval(Self.projectAutoStartDelay)
-            : nil
-
-        let project = CopyProject(
-            name: retryName,
-            taskFolderName: safeFolderName,
-            createdAt: createdAt,
-            updatedAt: createdAt,
-            sourceName: latestReport.sourceName,
-            sourceVolumePath: latestReport.sourcePath,
-            sourceRootPath: latestReport.sourceRootPath ?? latestReport.sourcePath,
-            targetRootPath: targetRootURL.path,
-            backupRootPath: backupRootPath,
-            selectedItems: retryItems.map(ProjectMediaItem.init(mediaItem:)),
-            totalBytes: retryItems.reduce(0) { $0 + $1.size },
-            verificationMode: verificationMode,
-            orderIndex: nextProjectOrderIndex(),
-            autoStartEnabled: autoStartQueuedProjects,
-            autoStartDeadline: autoStartDeadline
-        )
-
-        copyProjects.append(project)
-        normalizeProjectOrder()
-        saveProjects()
-        scheduleNextAutoStartCheck()
-        selectedSection = .copy
-        if let autoStartDeadline {
-            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目。5 分钟内可取消自动执行，预计启动：\(shortTimeText(autoStartDeadline))。"
-        } else {
-            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目，需要手动执行队列才会开始。"
-        }
-    }
-
-    private func startImport(with summary: ImportSelectionSummary) {
-        isImporting = true
-        let destinationCount = destinationCount(for: summary)
-        transferState = TransferState(
-            totalBytes: summary.totalSize * Int64(destinationCount),
-            processedBytes: 0,
-            verificationTotalBytes: summary.totalSize * Int64(1 + destinationCount),
-            copiedFiles: 0,
-            verifiedFiles: 0,
-            verificationCheckedFiles: 0,
-            totalFiles: summary.selectedItems.count,
-            startedAt: Date(),
-            currentFile: "",
-            verificationStatus: "等待整批校验",
-            failedFiles: [],
-            phaseTitle: "正在准备导入",
-            reportSummary: ""
-        )
-        interruptionToken.reset()
-        activeImportSummary = summary
-        retrySourceItems = summary.selectedItems
-
-        let progressCoalescer = TransferProgressCoalescer { [weak self] state in
-            self?.transferState = state
-        }
-        importProgressCoalescer = progressCoalescer
-
-        let transferService = self.transferService
-        importTask = Task { [weak self, summary, interruptionToken, transferService] in
-            guard let self else { return }
-            do {
-                let result = try await transferService.runImport(
-                    summary: summary,
-                    interruptionToken: interruptionToken,
-                    language: self.selectedLanguage
-                ) { state in
-                    await MainActor.run {
-                        progressCoalescer.ingest(state)
-                    }
-                }
-                progressCoalescer.cancelPending()
-                self.recordFinishedReport(result.report)
-            } catch is CancellationError {
-                progressCoalescer.cancelPending()
-                self.transferState.phaseTitle = "任务已取消"
-                self.transferState.verificationStatus = "用户已取消"
-                self.transferState.isCancelled = true
-            } catch {
-                progressCoalescer.cancelPending()
-                self.importError = "导入任务失败：\(error.localizedDescription)"
-            }
-
-            self.isImporting = false
-            self.importTask = nil
-            self.activeImportSummary = nil
-            self.importProgressCoalescer = nil
-        }
     }
 
     private func scheduleQueuedProjects(automaticOnlyAt now: Date? = nil) {
@@ -2171,7 +2032,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updateGlobalImportFlag() {
-        isImporting = !activeProjectIDs.isEmpty || importTask != nil
+        isImporting = !activeProjectIDs.isEmpty
     }
 
     private func updateProject(
@@ -2207,76 +2068,6 @@ final class AppViewModel: ObservableObject {
 
     private func nextProjectOrderIndex() -> Int {
         (copyProjects.map(\.orderIndex).max() ?? -1) + 1
-    }
-
-    private func retryItems(for report: TransferReport) -> [MediaItem] {
-        let sourceRootURL = URL(fileURLWithPath: report.sourceRootPath ?? report.sourcePath, isDirectory: true)
-        let cachedItems = (retrySourceItems + scannedItems).reduce(into: [String: MediaItem]()) { result, item in
-            guard PathSafety.isContained(item.fileURL, in: sourceRootURL) else { return }
-            result[item.relativePath] = item
-        }
-        var items: [MediaItem] = []
-        var seen = Set<String>()
-
-        for relativePath in report.failedFiles where seen.insert(relativePath).inserted {
-            guard (try? SafeRelativePath(relativePath)) != nil else { continue }
-            if let cachedItem = cachedItems[relativePath],
-               FileManager.default.fileExists(atPath: cachedItem.fileURL.path) {
-                items.append(cachedItem)
-                continue
-            }
-
-            guard let fileURL = try? PathSafety.resolvedURL(for: relativePath, under: sourceRootURL) else {
-                continue
-            }
-            guard let item = makeRetryMediaItem(relativePath: relativePath, fileURL: fileURL) else {
-                continue
-            }
-            items.append(item)
-        }
-
-        return items
-    }
-
-    private func makeRetryMediaItem(relativePath: String, fileURL: URL) -> MediaItem? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-
-        let keys: Set<URLResourceKey> = [
-            .creationDateKey,
-            .contentModificationDateKey,
-            .fileSizeKey,
-            .nameKey,
-            .isRegularFileKey
-        ]
-        guard let values = try? fileURL.resourceValues(forKeys: keys),
-              values.isRegularFile == true else {
-            return nil
-        }
-
-        let mediaKind = mediaKind(for: fileURL.pathExtension.lowercased())
-        return MediaItem(
-            id: relativePath,
-            fileURL: fileURL,
-            relativePath: relativePath,
-            displayName: values.name ?? fileURL.lastPathComponent,
-            createdAt: values.creationDate ?? values.contentModificationDate ?? .now,
-            size: Int64(values.fileSize ?? 0),
-            isVideo: mediaKind == .video,
-            mediaKind: mediaKind
-        )
-    }
-
-    private func mediaKind(for fileExtension: String) -> ScanFilter {
-        if ["mov", "mp4", "mxf", "r3d", "braw", "ari", "crm", "avi", "mkv", "mts", "m2ts"].contains(fileExtension) {
-            return .video
-        }
-        if ["jpg", "jpeg", "png", "heic", "tif", "tiff", "dng", "cr2", "cr3", "nef", "arw", "raf", "rw2"].contains(fileExtension) {
-            return .photo
-        }
-        if ["wav", "aif", "aiff", "mp3", "m4a", "flac"].contains(fileExtension) {
-            return .audio
-        }
-        return .all
     }
 
     private func projectBackupEditBlockReason(_ project: CopyProject) -> String? {
@@ -2446,30 +2237,6 @@ final class AppViewModel: ObservableObject {
         if !messages.isEmpty {
             importError = messages.joined(separator: "\n")
         }
-
-        guard isImporting, let activeImportSummary else { return }
-
-        let affectedRole: String?
-        if PathSafety.isContained(activeImportSummary.sourceVolume.url, in: url) {
-            affectedRole = "源设备"
-        } else if PathSafety.isContained(activeImportSummary.targetURL, in: url) {
-            affectedRole = "主目标盘"
-        } else if let backupURL = activeImportSummary.backupURL,
-                  PathSafety.isContained(backupURL, in: url) {
-            affectedRole = "备份盘"
-        } else {
-            affectedRole = nil
-        }
-
-        guard let affectedRole else { return }
-        let reason = "\(affectedRole) 在导入任务执行中断开：\(url.path)"
-        interruptionToken.stop(reason: reason)
-        importTask?.cancel()
-        transferState.phaseTitle = "设备中断，正在安全收尾"
-        transferState.verificationStatus = "停止新写入并生成报告"
-        transferState.interruptionReason = reason
-        transferState.reportSummary = reason
-        importError = reason
     }
 
     private func existingReportDocumentURL(for report: TransferReport) -> URL? {
@@ -2570,10 +2337,6 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
-    private func destinationCount(for summary: ImportSelectionSummary) -> Int {
-        summary.backupURL == nil ? 1 : 2
-    }
-
     private func relatedItemIDs(for item: MediaItem) -> Set<String> {
         relatedIDsByItemID[item.id] ?? [item.id]
     }
@@ -2590,6 +2353,8 @@ final class AppViewModel: ObservableObject {
     }
 
     private func rebuildScanIndexes() {
+        selectedItemsSnapshot = nil
+        scannedTotalBytesCache = scannedItems.reduce(0) { $0 + $1.size }
         scannedItemsByID = Dictionary(uniqueKeysWithValues: scannedItems.map { ($0.id, $0) })
         scannedItemOrder = Dictionary(uniqueKeysWithValues: scannedItems.enumerated().map { ($0.element.id, $0.offset) })
         var groupedIDs: [String: Set<String>] = [:]

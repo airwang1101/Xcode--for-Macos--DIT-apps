@@ -1,9 +1,6 @@
 name: Validate macOS distribution preview
 
 on:
-  push:
-    branches: [main, master, 'codex/**']
-  pull_request:
   workflow_dispatch:
 
 permissions:

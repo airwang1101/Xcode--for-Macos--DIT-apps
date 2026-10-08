@@ -1,0 +1,690 @@
+{
+  "validation": {
+    "paper_baseline": "fccf3a59141782ec53140bfc1e8e41f9da3ddc4a",
+    "imported_changes": "fb0a1e362d7e29d9606e0e67767f7d208b12b75d",
+    "active_development_branch": "codex/dit-paper-workbench",
+    "native_debug_build_for_testing": {
+      "exit_code": 0,
+      "tests_executed": false
+    },
+    "release_tool_tests": {
+      "passed": 17,
+      "failed": 0
+    },
+    "foreground_interaction_performed": false,
+    "native_release_build": {
+      "exit_code": 0
+    },
+    "initial_harness_failure": {
+      "failed_test": "TransferServiceTests.testReportWritesUseIsolatedTestStorage",
+      "cause": "Harness used a different temporary app-support directory than native scheme",
+      "fix": "Match AIRWANG_DIT_APP_SUPPORT_DIR=/tmp/airwang-dit-unit-tests; production code and tests unchanged"
+    },
+    "environment": {
+      "arch": "arm64",
+      "macOS": "27.2",
+      "macOS_build": "26B5101f",
+      "Xcode": "27.0",
+      "Xcode_build": "27A266a",
+      "unit_configuration": "Swift 6 Debug library, macOS 14 deployment target",
+      "serial_variants": true
+    },
+    "harness_sha256": "7c8f5d83e27dc691a4510bdba5dc9838f0360c8fbbf7f2048c71ffb32ee1006c",
+    "full_headless_unit_tests": {
+      "passed": 155,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "duration_seconds": 133.381
+    },
+    "native_release_product": "/tmp/airwang-paper-native-build/Build/Products/Release/Airwang DIT for Mac.app"
+  },
+  "source_preservation": {
+    "baseline": "fccf3a59141782ec53140bfc1e8e41f9da3ddc4a",
+    "integration_equals_baseline_plus_three_change_groups": true,
+    "changed_production_files": [
+      "Airwang DIT for Mac/Models/Models.swift",
+      "Airwang DIT for Mac/Services/MediaScanner.swift",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift"
+    ],
+    "unchanged_production_files": [
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift",
+      "Airwang DIT for Mac/Models/StoreFiles.swift",
+      "Airwang DIT for Mac/Services/OrganizerService.swift",
+      "Airwang DIT for Mac/Services/PathSafety.swift",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift",
+      "Airwang DIT for Mac/Services/SettingsStore.swift",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift",
+      "Airwang DIT for Mac/Services/TransferService.swift",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift",
+      "Airwang DIT for Mac/Views/ContentView.swift",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift",
+      "Airwang DIT for Mac/Views/ImportSheet.swift",
+      "Airwang DIT for Mac/Views/PaperDesign.swift"
+    ]
+  },
+  "controlled_runs": [
+    {
+      "run": "control",
+      "variant": "control",
+      "exit_code": 0,
+      "tests": 77,
+      "failures": 0,
+      "elapsed_including_build_seconds": 61.38673210144043,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          5.125822,
+          5.211434,
+          5.027372,
+          5.270469,
+          5.032893
+        ],
+        "StatisticsPerformanceTests.testCachedHeatmapModeSwitchLookupStaysConstantWork": [
+          0.006793,
+          0.006111,
+          0.006257,
+          0.006155,
+          0.006076
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.284824,
+          0.280259,
+          0.279342,
+          0.28083,
+          0.282313
+        ],
+        "StatisticsPerformanceTests.testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory": [
+          0.028341,
+          0.02838,
+          0.028812,
+          0.028252,
+          0.030476
+        ]
+      }
+    },
+    {
+      "run": "selection",
+      "variant": "selection",
+      "exit_code": 0,
+      "tests": 77,
+      "failures": 0,
+      "elapsed_including_build_seconds": 47.36508011817932,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          1.3e-05,
+          1e-05,
+          9e-06,
+          1.1e-05,
+          1.1e-05
+        ],
+        "StatisticsPerformanceTests.testCachedHeatmapModeSwitchLookupStaysConstantWork": [
+          0.00607,
+          0.006227,
+          0.006183,
+          0.006172,
+          0.006189
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.278401,
+          0.278002,
+          0.278505,
+          0.279757,
+          0.281328
+        ],
+        "StatisticsPerformanceTests.testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory": [
+          0.028089,
+          0.027404,
+          0.027818,
+          0.027649,
+          0.028727
+        ]
+      }
+    },
+    {
+      "run": "heatmap",
+      "variant": "heatmap",
+      "exit_code": 0,
+      "tests": 77,
+      "failures": 0,
+      "elapsed_including_build_seconds": 82.90538311004639,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          5.757203,
+          5.454985,
+          5.334686,
+          5.72365,
+          5.398096
+        ],
+        "StatisticsPerformanceTests.testCachedHeatmapModeSwitchLookupStaysConstantWork": [
+          0.006274,
+          0.006142,
+          0.006072,
+          0.006419,
+          0.006035
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.219781,
+          0.187022,
+          0.188308,
+          0.18591,
+          0.186525
+        ],
+        "StatisticsPerformanceTests.testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory": [
+          0.027755,
+          0.027962,
+          0.027895,
+          0.028298,
+          0.027563
+        ]
+      }
+    },
+    {
+      "run": "cleanup",
+      "variant": "cleanup",
+      "exit_code": 0,
+      "tests": 77,
+      "failures": 0,
+      "elapsed_including_build_seconds": 101.17888474464417,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          4.940195,
+          5.206414,
+          5.446169,
+          5.182203,
+          8.751862
+        ],
+        "StatisticsPerformanceTests.testCachedHeatmapModeSwitchLookupStaysConstantWork": [
+          0.006099,
+          0.00601,
+          0.006056,
+          0.006122,
+          0.005977
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.27616,
+          0.51991,
+          0.89801,
+          0.815981,
+          0.680613
+        ],
+        "StatisticsPerformanceTests.testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory": [
+          0.044802,
+          0.100262,
+          0.082258,
+          0.130387,
+          0.214111
+        ]
+      }
+    },
+    {
+      "run": "combined",
+      "variant": "combined",
+      "exit_code": 0,
+      "tests": 77,
+      "failures": 0,
+      "elapsed_including_build_seconds": 64.89558386802673,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          1.2e-05,
+          1.1e-05,
+          1.6e-05,
+          9e-06,
+          9e-06
+        ],
+        "StatisticsPerformanceTests.testCachedHeatmapModeSwitchLookupStaysConstantWork": [
+          0.006075,
+          0.00627,
+          0.006645,
+          0.006145,
+          0.006204
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.186401,
+          0.187565,
+          0.237347,
+          0.40819,
+          0.187173
+        ],
+        "StatisticsPerformanceTests.testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory": [
+          0.027853,
+          0.029518,
+          0.031821,
+          0.029617,
+          0.028738
+        ]
+      }
+    },
+    {
+      "run": "control-repeat",
+      "variant": "control",
+      "exit_code": 0,
+      "tests": 2,
+      "failures": 0,
+      "elapsed_including_build_seconds": 66.89729595184326,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          6.352651,
+          5.89129,
+          5.616042,
+          5.928159,
+          5.698643
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.282769,
+          0.278392,
+          0.278862,
+          0.292147,
+          0.30218
+        ]
+      }
+    },
+    {
+      "run": "combined-repeat",
+      "variant": "combined",
+      "exit_code": 0,
+      "tests": 2,
+      "failures": 0,
+      "elapsed_including_build_seconds": 27.770549774169922,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          3.3e-05,
+          1.1e-05,
+          1.8e-05,
+          1e-05,
+          1.1e-05
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.186645,
+          0.18696,
+          0.186177,
+          0.187697,
+          0.188432
+        ]
+      }
+    },
+    {
+      "run": "cleanup-repeat",
+      "variant": "cleanup",
+      "exit_code": 0,
+      "tests": 2,
+      "failures": 0,
+      "elapsed_including_build_seconds": 57.16956186294556,
+      "clock_samples_seconds": {
+        "ImportSelectionTests.testLargeSelectionReadPerformance": [
+          5.160312,
+          5.058084,
+          5.076689,
+          5.075521,
+          4.986999
+        ],
+        "StatisticsPerformanceTests.testHeatmapBuildPerformance": [
+          0.275085,
+          0.274795,
+          0.274536,
+          0.275146,
+          0.274085
+        ]
+      }
+    }
+  ],
+  "source_hashes": {
+    "control": {
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+      "Airwang DIT for Mac/Models/Models.swift": "d69ef1ed4dc87ad8616761149513e5d22f977d7e0db8943d17ddf2a108afbc69",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+      "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+      "Airwang DIT for Mac/Services/MediaScanner.swift": "72816aec7ea6e21e200fee39f824d5816157dd308051773b6be206cdbe0d2506",
+      "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+      "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+      "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+      "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "1407c86fb300a3387db261cc0ec200e922622ac52c05094666adc3b20f7a4798",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift": "510333e4c537e1c8e70bf2fd5f85514b1cacdb957333eab6009d051664a3ee7c",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+      "Airwang DIT for Mac/Views/ContentView.swift": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+      "Airwang DIT for Mac/Views/ImportSheet.swift": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+      "Airwang DIT for Mac/Views/PaperDesign.swift": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+      "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+      "Airwang DIT for MacTests/ModelPolicyTests.swift": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+      "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+      "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+      "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+      "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+      "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+      "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+      "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+    },
+    "cleanup": {
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+      "Airwang DIT for Mac/Models/Models.swift": "8862699c46e11badf4e2059f646705f9edd11bb48f99ad7bfae9b7eaf7d6585f",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+      "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+      "Airwang DIT for Mac/Services/MediaScanner.swift": "3c024a7ab5e63438e4aa68dbd84b0b7047fb6a72ca8f3d052f2565b8a80c2a74",
+      "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+      "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+      "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+      "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "b9b240578480b38c7c1ee2b962f4fe14f3ed55604b86a660ee05560ef2099e99",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift": "73f0a310f30a1456f3d94ba1ba00f0206f4254494ab161df0486e743fb9d7472",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+      "Airwang DIT for Mac/Views/ContentView.swift": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+      "Airwang DIT for Mac/Views/ImportSheet.swift": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+      "Airwang DIT for Mac/Views/PaperDesign.swift": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+      "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+      "Airwang DIT for MacTests/ModelPolicyTests.swift": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+      "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+      "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+      "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+      "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+      "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+      "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+      "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+    },
+    "selection": {
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+      "Airwang DIT for Mac/Models/Models.swift": "d69ef1ed4dc87ad8616761149513e5d22f977d7e0db8943d17ddf2a108afbc69",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+      "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+      "Airwang DIT for Mac/Services/MediaScanner.swift": "72816aec7ea6e21e200fee39f824d5816157dd308051773b6be206cdbe0d2506",
+      "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+      "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+      "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+      "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "06f2d611ede1174ec0d7e6feb45655e19d0ae3a0766728f3d95252fa564bf784",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift": "510333e4c537e1c8e70bf2fd5f85514b1cacdb957333eab6009d051664a3ee7c",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+      "Airwang DIT for Mac/Views/ContentView.swift": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+      "Airwang DIT for Mac/Views/ImportSheet.swift": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+      "Airwang DIT for Mac/Views/PaperDesign.swift": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+      "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+      "Airwang DIT for MacTests/ModelPolicyTests.swift": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+      "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+      "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+      "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+      "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+      "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+      "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+      "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+    },
+    "heatmap": {
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+      "Airwang DIT for Mac/Models/Models.swift": "88ab75f2faa8d54b07b0dbbf68ca01cf7a2555daf24febf4e7d0454eba8122bd",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+      "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+      "Airwang DIT for Mac/Services/MediaScanner.swift": "72816aec7ea6e21e200fee39f824d5816157dd308051773b6be206cdbe0d2506",
+      "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+      "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+      "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+      "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "1407c86fb300a3387db261cc0ec200e922622ac52c05094666adc3b20f7a4798",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift": "510333e4c537e1c8e70bf2fd5f85514b1cacdb957333eab6009d051664a3ee7c",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+      "Airwang DIT for Mac/Views/ContentView.swift": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+      "Airwang DIT for Mac/Views/ImportSheet.swift": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+      "Airwang DIT for Mac/Views/PaperDesign.swift": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+      "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+      "Airwang DIT for MacTests/ModelPolicyTests.swift": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+      "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+      "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+      "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+      "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+      "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+      "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+      "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+    },
+    "combined": {
+      "Airwang DIT for Mac/AirwangDITForMacApp.swift": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+      "Airwang DIT for Mac/Models/Models.swift": "c907c0175bc8814a7931f1df9040ce1c54e8693a2ba34c7abb6526b56a7b0e3d",
+      "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+      "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+      "Airwang DIT for Mac/Services/MediaScanner.swift": "3c024a7ab5e63438e4aa68dbd84b0b7047fb6a72ca8f3d052f2565b8a80c2a74",
+      "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+      "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+      "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+      "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+      "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+      "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+      "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+      "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "ef9c15a05ee313cc0539110b051c038c3947e1cc506eb84ef5f4540432118b3b",
+      "Airwang DIT for Mac/Views/AirwangComponents.swift": "73f0a310f30a1456f3d94ba1ba00f0206f4254494ab161df0486e743fb9d7472",
+      "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+      "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+      "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+      "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+      "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+      "Airwang DIT for Mac/Views/ContentView.swift": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+      "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+      "Airwang DIT for Mac/Views/ImportSheet.swift": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+      "Airwang DIT for Mac/Views/PaperDesign.swift": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+      "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+      "Airwang DIT for MacTests/ModelPolicyTests.swift": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+      "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+      "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+      "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+      "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+      "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+      "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+      "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+    }
+  },
+  "final_harness_manifest": {
+    "source_root": "/Users/apple/\u5f00\u53d1/Xcode- for Macos-\u4e13\u95e8\u505aDIT\u5f00\u53d1apps",
+    "transformation": "Omit only @main AirwangDITForMacApp declaration in staged library",
+    "files": [
+      {
+        "path": "Airwang DIT for Mac/AirwangDITForMacApp.swift",
+        "source_sha256": "513c75c622e3649165095e1c9a48c672ca5ba6a211de9828494a4e31a30a7c6e",
+        "staged_sha256": "e486fc2378969afd314abc41ce5a24e3d7368c9ea7c7b6465f9964f68af7729b"
+      },
+      {
+        "path": "Airwang DIT for Mac/Models/Models.swift",
+        "source_sha256": "c907c0175bc8814a7931f1df9040ce1c54e8693a2ba34c7abb6526b56a7b0e3d",
+        "staged_sha256": "c907c0175bc8814a7931f1df9040ce1c54e8693a2ba34c7abb6526b56a7b0e3d"
+      },
+      {
+        "path": "Airwang DIT for Mac/Models/OrganizerModels.swift",
+        "source_sha256": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+        "staged_sha256": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f"
+      },
+      {
+        "path": "Airwang DIT for Mac/Models/StoreFiles.swift",
+        "source_sha256": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+        "staged_sha256": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/MediaScanner.swift",
+        "source_sha256": "3c024a7ab5e63438e4aa68dbd84b0b7047fb6a72ca8f3d052f2565b8a80c2a74",
+        "staged_sha256": "3c024a7ab5e63438e4aa68dbd84b0b7047fb6a72ca8f3d052f2565b8a80c2a74"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/OrganizerService.swift",
+        "source_sha256": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+        "staged_sha256": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/PathSafety.swift",
+        "source_sha256": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+        "staged_sha256": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/ReportPDFExporter.swift",
+        "source_sha256": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+        "staged_sha256": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/SettingsStore.swift",
+        "source_sha256": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+        "staged_sha256": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/SupportDiagnostics.swift",
+        "source_sha256": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+        "staged_sha256": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/TransferService.swift",
+        "source_sha256": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+        "staged_sha256": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57"
+      },
+      {
+        "path": "Airwang DIT for Mac/Services/VolumeMonitor.swift",
+        "source_sha256": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+        "staged_sha256": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998"
+      },
+      {
+        "path": "Airwang DIT for Mac/ViewModels/AppViewModel.swift",
+        "source_sha256": "ef9c15a05ee313cc0539110b051c038c3947e1cc506eb84ef5f4540432118b3b",
+        "staged_sha256": "ef9c15a05ee313cc0539110b051c038c3947e1cc506eb84ef5f4540432118b3b"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/AirwangComponents.swift",
+        "source_sha256": "73f0a310f30a1456f3d94ba1ba00f0206f4254494ab161df0486e743fb9d7472",
+        "staged_sha256": "73f0a310f30a1456f3d94ba1ba00f0206f4254494ab161df0486e743fb9d7472"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/AirwangPalette.swift",
+        "source_sha256": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+        "staged_sha256": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift",
+        "source_sha256": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+        "staged_sha256": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift",
+        "source_sha256": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+        "staged_sha256": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ContentView+PaperWorkbench.swift",
+        "source_sha256": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5",
+        "staged_sha256": "7ca35d62aae87071625ffd9ba9b90934a30a3a133f6a3bea14d2e2937b6469d5"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift",
+        "source_sha256": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+        "staged_sha256": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ContentView.swift",
+        "source_sha256": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86",
+        "staged_sha256": "e62aa9de20e318c820c09ab8cdf0d354e5f8d2fc25f3648f4714ae41b588ab86"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/FolderPickerSheet.swift",
+        "source_sha256": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914",
+        "staged_sha256": "1e310a53f79368d62b40ff6b27d20ba285d492f71b152443418589d29c71b914"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/ImportSheet.swift",
+        "source_sha256": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c",
+        "staged_sha256": "b82db988e7a9ced628a94c64b7c2f0cd9531772d3800fc153645fd504ca7026c"
+      },
+      {
+        "path": "Airwang DIT for Mac/Views/PaperDesign.swift",
+        "source_sha256": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f",
+        "staged_sha256": "119ed5c0217b9ace4c64d800b66956f17c1140942fe2688f15a56a195173518f"
+      },
+      {
+        "path": "Airwang DIT for MacTests/MediaScannerTests.swift",
+        "source_sha256": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+        "staged_sha256": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e"
+      },
+      {
+        "path": "Airwang DIT for MacTests/ModelPolicyTests.swift",
+        "source_sha256": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa",
+        "staged_sha256": "f0fc91cf99b663e88e4b26dd8646826f9d7a2d5e94955efe6d6af88b125492fa"
+      },
+      {
+        "path": "Airwang DIT for MacTests/OrganizerServiceTests.swift",
+        "source_sha256": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+        "staged_sha256": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd"
+      },
+      {
+        "path": "Airwang DIT for MacTests/PathSafetyTests.swift",
+        "source_sha256": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+        "staged_sha256": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6"
+      },
+      {
+        "path": "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift",
+        "source_sha256": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+        "staged_sha256": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5"
+      },
+      {
+        "path": "Airwang DIT for MacTests/ReportPDFExporterTests.swift",
+        "source_sha256": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+        "staged_sha256": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f"
+      },
+      {
+        "path": "Airwang DIT for MacTests/StatisticsPerformanceTests.swift",
+        "source_sha256": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+        "staged_sha256": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836"
+      },
+      {
+        "path": "Airwang DIT for MacTests/SupportDiagnosticsTests.swift",
+        "source_sha256": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+        "staged_sha256": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde"
+      },
+      {
+        "path": "Airwang DIT for MacTests/TransferServiceTests.swift",
+        "source_sha256": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309",
+        "staged_sha256": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+      }
+    ]
+  },
+  "raw_log_sha256": {
+    "full-unit": "ae2ecb4ff34f3606883b74a0b49ff7299d25433d17141bb9fe79c175fa3a291f",
+    "native-debug": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-release": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release-tools": "f9ac6ecbfadfcd9b639bc8ae30bbd2899b11f0c30e46f4764004fd2c54db21e6",
+    "control": "12a0c51f2a00601196de7c84d98b19db759c5ca12b9094b5d2b8389017899ad4",
+    "selection": "af48aea549ba662b47a6529fe277ffa3a2c793655898f169ea2d64c319d9f64c",
+    "heatmap": "acd2f48f5e951399f27489e1b6c29e2997494928bc51941e351ee8260cf204cd",
+    "cleanup": "9365622773fb23efef52715d896210d0bdd87d327325c99f5ad8bfd32a21098e",
+    "combined": "336d172f402fd39c750eb0242aaa0a4052bf5a417a84acc474d511621f46763a",
+    "control-repeat": "07cb50792b188c317368bf579f1d1de5e0844b0877f300a9e907ce23df4f594d",
+    "combined-repeat": "bb9214f6b8eb50ab8cf64ef3d9883db3c8a4480eca82187760c01c35a7ce7478",
+    "cleanup-repeat": "41b977b0471727862a31226d6857768a0695533baf54f9c6b809168201bd81d9"
+  },
+  "pooled_heatmap_time_reduction_percent": 24.60771211555013
+}
