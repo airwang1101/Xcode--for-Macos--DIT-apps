@@ -61,6 +61,7 @@ enum MainSection: String, CaseIterable, Identifiable {
     case copy
     case dashboard
     case backup
+    case organize
     case statistics
 
     var id: String { rawValue }
@@ -70,6 +71,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "拷贝"
         case .dashboard: "仪表盘"
         case .backup: "备份"
+        case .organize: "规整"
         case .statistics: "统计"
         }
     }
@@ -79,6 +81,7 @@ enum MainSection: String, CaseIterable, Identifiable {
         case .copy: "square.and.arrow.down.on.square"
         case .dashboard: "gauge.with.dots.needle.67percent"
         case .backup: "externaldrive.badge.timemachine"
+        case .organize: "folder.badge.gearshape"
         case .statistics: "chart.xyaxis.line"
         }
     }
@@ -156,11 +159,40 @@ enum AppLocalization {
         "中文": "Chinese",
         "界面设置": "Interface Settings",
         "自动执行": "Auto Start",
+        "支持与诊断": "Support and Diagnostics",
+        "导出诊断": "Export Diagnostics",
+        "导出 PDF 报告": "Export PDF Report",
+        "取消 PDF 导出": "Cancel PDF Export",
+        "找不到原始 TXT 报告，无法导出完整 PDF。": "The original TXT report is missing. A complete PDF cannot be exported.",
+        "PDF 包含原始 TXT 的完整明细，请选择新名称以保留已有文件。": "The PDF contains all original TXT evidence. Choose a new name to preserve existing files.",
+        "正在导出 PDF 报告…": "Exporting PDF report…",
+        "PDF 报告已导出（%d 页）。": "PDF report exported (%d pages).",
+        "PDF 导出已取消。": "PDF export cancelled.",
+        "请选择可写文件夹中的 PDF 文件。": "Choose a PDF file in a writable folder.",
+        "找不到有效的原始 TXT 报告。": "The original TXT report is unavailable or invalid.",
+        "原始 TXT 报告在读取期间发生变化，导出已停止。": "The original TXT report changed while being read. Export stopped.",
+        "无法完整生成 PDF 报告。": "The complete PDF report could not be generated.",
+        "PDF 报告正在导出。请先取消并等待导出收尾后再退出。": "A PDF report is being exported. Cancel it and wait for cleanup before quitting.",
+        "取消导出": "Cancel Export",
+        "导出版本、系统环境和任务状态。诊断不包含素材、文件名、路径或原始错误文本。": "Export the app version, system information, and task status. Media, filenames, paths, and raw error text are excluded.",
+        "请选择新名称以保留已有诊断文件。": "Choose a new name to preserve existing diagnostic files.",
+        "正在导出诊断…": "Exporting diagnostics…",
+        "已导出诊断，可先检查文件再提供给支持人员。": "Diagnostics exported. Review the file before sharing it with support.",
+        "诊断导出已取消": "Diagnostics export cancelled",
+        "诊断导出失败": "Diagnostics export failed",
+        "已有文件已保留，请选择新名称。": "The existing file was preserved. Choose a new name.",
+        "请选择可写文件夹中的 JSON 文件。": "Choose a JSON file in a writable folder.",
+        "仍有导入、校验、规整或诊断导出正在执行。请先取消并等待文件操作收尾后再退出。": "Import, verification, organization, or diagnostics export is still running. Cancel it and wait for file operations to finish before quitting.",
         "新建任务默认 5 分钟后自动执行": "Auto-start new queued projects after 5 minutes",
         "关闭后，新建项目只加入队列，需要手动执行。": "When off, new projects only enter the queue and require manual start.",
+        "当前执行方式": "Current Run Policy",
+        "加入队列，等待手动执行": "Queue and wait for manual start",
+        "加入队列，5 分钟后自动执行": "Queue and auto-start after 5 minutes",
+        "任务将在 5 分钟后开始写入目标盘，请确认源盘、主盘、备份盘路径无误。": "The task will start writing in 5 minutes. Confirm the source, primary, and backup paths first.",
         "拷贝": "Copy",
         "仪表盘": "Dashboard",
         "备份": "Backup",
+        "规整": "Organize",
         "统计": "Stats",
         "多项目拷贝队列、主盘校验、串行备份与可追溯报告": "Multi-project copy queue, primary verification, serial backup, and traceable reports",
         "选择主目标盘": "Choose Primary Target",
@@ -198,6 +230,17 @@ enum AppLocalization {
         "备份报告": "Backup Report",
         "取消": "Cancel",
         "重试": "Retry",
+        "仅重试备份": "Retry Backup Only",
+        "等待独立备份重试": "Waiting for independent backup retry",
+        "按原主盘报告复核后补备份，可拔出原始源卡。": "Check the primary against its original report, then complete the backup. The original card can be disconnected.",
+        "此次执行从主盘读取，主盘完成状态和原报告已保留。": "This run reads from the primary. Its completed state and original report are retained.",
+        "主盘完成记录不足，或项目仍在执行，无法独立重试备份。": "The completed primary record is unavailable, or the project is still running. Independent backup retry is unavailable.",
+        "无法独立重试备份": "Independent backup retry unavailable",
+        "当前手动队列会继续执行此项目。": "The current manual queue will continue with this project.",
+        "请手动执行任务队列。": "Start the task queue manually.",
+        "项目“%@”已加入独立备份重试队列。主盘完成状态和原报告已保留，已有备份文件会完整复核 SHA-256。": "Project \"%@\" has been queued for independent backup retry. The completed primary and original report are retained. Existing backup files will receive full SHA-256 verification.",
+        "独立备份重试只修改显示名称与后续报告标题，已有主盘文件夹保持不变。": "Renaming an independent backup retry changes its display name and future report titles. The existing primary folder is retained.",
+        "独立备份重试已取消，主盘完成状态已保留。": "Independent backup retry cancelled. The completed primary state is retained.",
         "改名": "Rename",
         "删除": "Delete",
         "更换备份": "Change Backup",
@@ -224,6 +267,14 @@ enum AppLocalization {
         "外部设备": "External Device",
         "可用卷": "Available Volume",
         "容量暂不可读": "Capacity unavailable",
+        "素材总量": "Payload Size",
+        "安全冗余": "Safety Margin",
+        "最低需求": "Minimum Required",
+        "可用空间": "Available Space",
+        "预检状态": "Preflight Status",
+        "可执行": "Ready",
+        "空间不足": "Insufficient Space",
+        "容量不可读，已阻止执行": "Capacity unavailable, execution blocked",
         "存储": "Storage",
         "源设备": "Source Device",
         "目标": "Target",
@@ -323,7 +374,8 @@ enum AppLocalization {
         "报告总数": "Reports",
         "最常用的校验": "Most Used Verification",
         "常用源设备": "Common Sources",
-        "次任务": "runs"
+        "次任务": "runs",
+        "刷新统计": "Refresh Stats"
     ]
 }
 
@@ -353,7 +405,7 @@ enum ByteDisplayFormatter {
     }
 }
 
-enum ScanFilter: String, CaseIterable, Identifiable {
+enum ScanFilter: String, CaseIterable, Identifiable, Sendable {
     case video
     case photo
     case audio
@@ -367,6 +419,16 @@ enum ScanFilter: String, CaseIterable, Identifiable {
         case .photo: "照片"
         case .audio: "音频"
         case .all: "全部"
+        }
+    }
+
+    /// 全工程统一的媒体类型图标（导入表单与规整预览共用）。
+    var systemImageName: String {
+        switch self {
+        case .video: "film.fill"
+        case .photo: "photo.fill"
+        case .audio: "waveform"
+        case .all: "doc.fill"
         }
     }
 }
@@ -407,6 +469,16 @@ struct AppPreferences: Codable {
     }
 }
 
+enum MainWindowLayoutPolicy {
+    static let minimumWidth: CGFloat = 640
+    static let minimumHeight: CGFloat = 560
+    static let portraitWidthBreakpoint: CGFloat = 760
+
+    static func usesPortraitLayout(width: CGFloat, height: CGFloat) -> Bool {
+        width < portraitWidthBreakpoint || height > width * 1.2
+    }
+}
+
 enum AppStorageScope {
     static var displayName: String { "App 专属存储" }
 
@@ -415,6 +487,15 @@ enum AppStorageScope {
     }
 
     static var applicationSupportURL: URL {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if (environment["AIRWANG_DIT_UI_TESTING"] == "1" || environment["AIRWANG_DIT_UNIT_TESTING"] == "1"),
+           let overridePath = environment["AIRWANG_DIT_APP_SUPPORT_DIR"],
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath, isDirectory: true)
+        }
+        #endif
+
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         return base.appendingPathComponent(bundleIdentifier, isDirectory: true)
@@ -435,6 +516,11 @@ enum AppStorageScope {
     static var taskLogURL: URL {
         dataURL
             .appendingPathComponent("import-reports.json")
+    }
+
+    static var statisticsIndexURL: URL {
+        dataURL
+            .appendingPathComponent("statistics-index.json")
     }
 
     static var copyProjectsURL: URL {
@@ -458,7 +544,7 @@ struct AppUISettings: Codable {
     var language: AppLanguage
     var autoStartQueuedProjects: Bool
 
-    static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: true)
+    static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: false)
 
     enum CodingKeys: String, CodingKey {
         case theme
@@ -469,7 +555,7 @@ struct AppUISettings: Codable {
     init(
         theme: AppTheme,
         language: AppLanguage = .chinese,
-        autoStartQueuedProjects: Bool = true
+        autoStartQueuedProjects: Bool = false
     ) {
         self.theme = theme
         self.language = language
@@ -480,7 +566,7 @@ struct AppUISettings: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         theme = try container.decodeIfPresent(AppTheme.self, forKey: .theme) ?? .day
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .chinese
-        autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? true
+        autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? false
     }
 }
 
@@ -488,6 +574,8 @@ enum FolderPickerPurpose: Identifiable {
     case target
     case backup
     case projectBackup(UUID)
+    case organizerSource
+    case organizerDestination
 
     var id: String {
         switch self {
@@ -497,6 +585,10 @@ enum FolderPickerPurpose: Identifiable {
             return "backup"
         case let .projectBackup(id):
             return "projectBackup-\(id.uuidString)"
+        case .organizerSource:
+            return "organizerSource"
+        case .organizerDestination:
+            return "organizerDestination"
         }
     }
 
@@ -505,6 +597,8 @@ enum FolderPickerPurpose: Identifiable {
         case .target: "选择主目标盘"
         case .backup: "选择备份盘"
         case .projectBackup: "选择项目备份盘"
+        case .organizerSource: "选择待规整文件夹"
+        case .organizerDestination: "选择规整目标文件夹"
         }
     }
 
@@ -513,6 +607,8 @@ enum FolderPickerPurpose: Identifiable {
         case .target: "设为主目标盘"
         case .backup: "设为备份盘"
         case .projectBackup: "应用到此项目"
+        case .organizerSource: "设为规整源"
+        case .organizerDestination: "设为规整目标"
         }
     }
 }
@@ -526,20 +622,78 @@ struct StorageCapacitySnapshot: Equatable, Hashable {
         totalCapacity != nil || availableCapacity != nil
     }
 
-    var usageFraction: Double? {
-        guard let totalCapacity, totalCapacity > 0, let availableCapacity else { return nil }
-        return min(max(1 - (Double(availableCapacity) / Double(totalCapacity)), 0), 1)
-    }
-
     var capacityLine: String {
         guard isReadable else { return "容量暂不可读" }
         let free = availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
         let total = totalCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
         return "可用 \(free) / 总计 \(total)"
     }
+}
 
-    var shortAvailableText: String {
-        availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "未知"
+struct SpaceRequirement: Equatable {
+    let payloadBytes: Int64
+    let safetyMarginBytes: Int64
+    let requiredBytes: Int64
+}
+
+struct DestinationSpacePreflight: Equatable {
+    enum Status: Equatable {
+        case passed
+        case insufficient
+        case capacityUnavailable
+    }
+
+    let destinationLabel: String
+    let destinationPath: String
+    let requirement: SpaceRequirement
+    let availableBytes: Int64?
+    let status: Status
+
+    var isAllowed: Bool {
+        status == .passed
+    }
+}
+
+enum SpacePreflightPolicy {
+    static let minimumSafetyMarginBytes: Int64 = 1_000_000_000
+
+    static func requirement(for payloadBytes: Int64) -> SpaceRequirement {
+        let payload = max(payloadBytes, 0)
+        let quotient = payload / 20
+        let remainder = payload % 20
+        let fivePercentMargin = quotient + (remainder == 0 ? 0 : 1)
+        let safetyMargin = max(fivePercentMargin, minimumSafetyMarginBytes)
+        let (required, overflowed) = payload.addingReportingOverflow(safetyMargin)
+
+        return SpaceRequirement(
+            payloadBytes: payload,
+            safetyMarginBytes: safetyMargin,
+            requiredBytes: overflowed ? Int64.max : required
+        )
+    }
+
+    static func evaluate(
+        destinationLabel: String,
+        destinationPath: String,
+        payloadBytes: Int64,
+        availableBytes: Int64?
+    ) -> DestinationSpacePreflight {
+        let requirement = requirement(for: payloadBytes)
+        let status: DestinationSpacePreflight.Status
+
+        if let availableBytes {
+            status = availableBytes >= requirement.requiredBytes ? .passed : .insufficient
+        } else {
+            status = .capacityUnavailable
+        }
+
+        return DestinationSpacePreflight(
+            destinationLabel: destinationLabel,
+            destinationPath: destinationPath,
+            requirement: requirement,
+            availableBytes: availableBytes,
+            status: status
+        )
     }
 }
 
@@ -1059,6 +1213,12 @@ struct CopyProject: Codable, Identifiable {
     var autoStartEnabled: Bool
     var autoStartDeadline: Date?
     var errorMessage: String?
+    var resumeExistingFiles: Bool
+    var backupOnlyRetry: Bool
+    var primaryCompletionReference: PrimaryCompletionReference?
+    var sourceVolumeIdentifier: String?
+    var targetVolumeIdentifier: String?
+    var backupVolumeIdentifier: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1086,6 +1246,12 @@ struct CopyProject: Codable, Identifiable {
         case autoStartEnabled
         case autoStartDeadline
         case errorMessage
+        case resumeExistingFiles
+        case backupOnlyRetry
+        case primaryCompletionReference
+        case sourceVolumeIdentifier
+        case targetVolumeIdentifier
+        case backupVolumeIdentifier
     }
 
     init(
@@ -1105,7 +1271,12 @@ struct CopyProject: Codable, Identifiable {
         status: CopyProjectStatus = .queued,
         orderIndex: Int,
         autoStartEnabled: Bool = false,
-        autoStartDeadline: Date? = nil
+        autoStartDeadline: Date? = nil,
+        resumeExistingFiles: Bool = false,
+        sourceVolumeIdentifier: String? = nil,
+        targetVolumeIdentifier: String? = nil,
+        backupVolumeIdentifier: String? = nil,
+        backupOnlyRetry: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -1132,6 +1303,15 @@ struct CopyProject: Codable, Identifiable {
         self.autoStartEnabled = autoStartEnabled
         self.autoStartDeadline = autoStartDeadline
         errorMessage = nil
+        self.resumeExistingFiles = resumeExistingFiles
+        self.backupOnlyRetry = backupOnlyRetry
+        primaryCompletionReference = nil
+        self.sourceVolumeIdentifier = sourceVolumeIdentifier
+            ?? (try? URL(fileURLWithPath: sourceRootPath).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        self.targetVolumeIdentifier = targetVolumeIdentifier
+            ?? (try? URL(fileURLWithPath: targetRootPath).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        self.backupVolumeIdentifier = backupVolumeIdentifier
+            ?? backupRootPath.flatMap { (try? URL(fileURLWithPath: $0).resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString }
     }
 
     init(from decoder: any Decoder) throws {
@@ -1191,6 +1371,12 @@ struct CopyProject: Codable, Identifiable {
         autoStartEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoStartEnabled) ?? false
         autoStartDeadline = try container.decodeIfPresent(Date.self, forKey: .autoStartDeadline)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        resumeExistingFiles = try container.decodeIfPresent(Bool.self, forKey: .resumeExistingFiles) ?? false
+        backupOnlyRetry = try container.decodeIfPresent(Bool.self, forKey: .backupOnlyRetry) ?? false
+        primaryCompletionReference = try container.decodeIfPresent(PrimaryCompletionReference.self, forKey: .primaryCompletionReference)
+        sourceVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .sourceVolumeIdentifier)
+        targetVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .targetVolumeIdentifier)
+        backupVolumeIdentifier = try container.decodeIfPresent(String.self, forKey: .backupVolumeIdentifier)
     }
 
     var sourceRootURL: URL {
@@ -1215,6 +1401,59 @@ struct CopyProject: Codable, Identifiable {
 
     var hasBackup: Bool {
         backupRootPath != nil
+    }
+
+    mutating func prepareForRetry() {
+        status = .queued
+        errorMessage = nil
+        skipVerificationConfirmations = 0
+        resumeExistingFiles = true
+        backupOnlyRetry = false
+        primaryCompletionReference = nil
+        primaryCopyState = ProjectStageState(title: ProjectStageKind.primaryCopy.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
+        primaryVerifyState = ProjectStageState(title: ProjectStageKind.primaryVerify.title, totalBytes: totalBytes, totalFiles: selectedItems.count)
+        backupCopyState = ProjectStageState(
+            title: ProjectStageKind.backupCopy.title,
+            detail: hasBackup ? "等待主盘完成" : "未配置备份盘",
+            totalBytes: hasBackup ? totalBytes : 0,
+            totalFiles: hasBackup ? selectedItems.count : 0
+        )
+        backupVerifyState = ProjectStageState(
+            title: ProjectStageKind.backupVerify.title,
+            detail: hasBackup ? "等待备份完成" : "未配置备份盘",
+            totalBytes: hasBackup ? totalBytes : 0,
+            totalFiles: hasBackup ? selectedItems.count : 0
+        )
+        primaryReportID = nil
+        backupReportID = nil
+        autoStartEnabled = false
+        autoStartDeadline = nil
+    }
+
+    var canPrepareBackupRetry: Bool {
+        hasBackup && status != .running && status != .cancelling
+            && primaryCopyState.isComplete && primaryVerifyState.isComplete && primaryReportID != nil
+    }
+
+    @discardableResult
+    mutating func prepareForBackupRetry() -> Bool {
+        guard canPrepareBackupRetry else { return false }
+        status = .queued
+        errorMessage = nil
+        skipVerificationConfirmations = 0
+        resumeExistingFiles = true
+        backupOnlyRetry = true
+        backupCopyState = ProjectStageState(
+            title: ProjectStageKind.backupCopy.title, detail: "等待独立备份重试",
+            totalBytes: totalBytes, totalFiles: selectedItems.count
+        )
+        backupVerifyState = ProjectStageState(
+            title: ProjectStageKind.backupVerify.title, detail: "等待备份完成",
+            totalBytes: totalBytes, totalFiles: selectedItems.count
+        )
+        autoStartEnabled = false
+        autoStartDeadline = nil
+        return true
     }
 
     func isAutoStartReady(at now: Date) -> Bool {
@@ -1311,19 +1550,7 @@ struct TransferState {
     var currentSpeedBytesPerSecond: Double = 0
     var currentVerificationSpeedBytesPerSecond: Double = 0
     var interruptionReason: String?
-
-    var copyFraction: Double {
-        guard totalBytes > 0 else { return 0 }
-        return min(max(Double(processedBytes) / Double(totalBytes), 0), 1)
-    }
-
-    var verificationFraction: Double {
-        if verificationTotalBytes > 0 {
-            return min(max(Double(verificationProcessedBytes) / Double(verificationTotalBytes), 0), 1)
-        }
-        guard totalFiles > 0 else { return 0 }
-        return min(max(Double(verificationCheckedFiles) / Double(totalFiles), 0), 1)
-    }
+    var spacePreflightResults: [DestinationSpacePreflight] = []
 
     var copySpeedBytesPerSecond: Double {
         if currentSpeedBytesPerSecond > 0 {
@@ -1382,6 +1609,16 @@ struct FileVerificationRecord: Codable, Identifiable {
     let message: String
 }
 
+/// A completed primary retains its full file evidence across app restarts.
+/// Ordinary report logs continue using their existing compact encoding.
+struct PrimaryCompletionReference: Codable {
+    let report: TransferReport
+
+    init(report: TransferReport) { self.report = report }
+    init(from decoder: any Decoder) throws { report = try TransferReport(from: decoder) }
+    func encode(to encoder: any Encoder) throws { try report.encodeComplete(to: encoder) }
+}
+
 struct TransferReport: Identifiable, Codable {
     let id: UUID
     let startedAt: Date
@@ -1409,6 +1646,7 @@ struct TransferReport: Identifiable, Codable {
     let reportDocumentWriteFailed: Bool
     let importedItems: [String]
     let fileRecords: [FileVerificationRecord]
+    let resumedFiles: [String]
 
     var title: String {
         if cancelled {
@@ -1450,6 +1688,7 @@ struct TransferReport: Identifiable, Codable {
         case reportDocumentWriteFailed
         case importedItems
         case fileRecords
+        case resumedFiles
     }
 
     init(
@@ -1478,7 +1717,8 @@ struct TransferReport: Identifiable, Codable {
         localReportDocumentPath: String?,
         reportDocumentWriteFailed: Bool = false,
         importedItems: [String],
-        fileRecords: [FileVerificationRecord]
+        fileRecords: [FileVerificationRecord],
+        resumedFiles: [String] = []
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -1506,6 +1746,46 @@ struct TransferReport: Identifiable, Codable {
         self.reportDocumentWriteFailed = reportDocumentWriteFailed
         self.importedItems = importedItems
         self.fileRecords = fileRecords
+        self.resumedFiles = resumedFiles
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        try encode(to: encoder, preservingSuccessfulRecords: false)
+    }
+
+    func encodeComplete(to encoder: any Encoder) throws {
+        try encode(to: encoder, preservingSuccessfulRecords: true)
+    }
+
+    private func encode(to encoder: any Encoder, preservingSuccessfulRecords: Bool) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(startedAt, forKey: .startedAt)
+        try container.encode(finishedAt, forKey: .finishedAt)
+        try container.encode(sourceName, forKey: .sourceName)
+        try container.encode(sourcePath, forKey: .sourcePath)
+        try container.encodeIfPresent(sourceRootPath, forKey: .sourceRootPath)
+        try container.encode(targetPath, forKey: .targetPath)
+        try container.encodeIfPresent(backupPath, forKey: .backupPath)
+        try container.encode(selectedFileCount, forKey: .selectedFileCount)
+        try container.encode(totalBytes, forKey: .totalBytes)
+        try container.encode(verificationMode, forKey: .verificationMode)
+        try container.encode(namingRule, forKey: .namingRule)
+        try container.encode(success, forKey: .success)
+        try container.encode(cancelled, forKey: .cancelled)
+        try container.encode(failedFiles, forKey: .failedFiles)
+        try container.encode(copyFailedFiles, forKey: .copyFailedFiles)
+        try container.encode(verificationFailedFiles, forKey: .verificationFailedFiles)
+        try container.encode(skippedFiles, forKey: .skippedFiles)
+        try container.encode(verificationSummary, forKey: .verificationSummary)
+        try container.encodeIfPresent(interruptionReason, forKey: .interruptionReason)
+        try container.encode(duration, forKey: .duration)
+        try container.encodeIfPresent(reportDocumentPath, forKey: .reportDocumentPath)
+        try container.encodeIfPresent(localReportDocumentPath, forKey: .localReportDocumentPath)
+        try container.encode(reportDocumentWriteFailed, forKey: .reportDocumentWriteFailed)
+        try container.encode(preservingSuccessfulRecords ? importedItems : [], forKey: .importedItems)
+        try container.encode(preservingSuccessfulRecords ? fileRecords : fileRecords.filter { $0.status != "通过" }, forKey: .fileRecords)
+        try container.encode(resumedFiles, forKey: .resumedFiles)
     }
 
     init(from decoder: any Decoder) throws {
@@ -1538,6 +1818,7 @@ struct TransferReport: Identifiable, Codable {
         reportDocumentWriteFailed = try container.decodeIfPresent(Bool.self, forKey: .reportDocumentWriteFailed) ?? false
         importedItems = try container.decodeIfPresent([String].self, forKey: .importedItems) ?? []
         fileRecords = try container.decodeIfPresent([FileVerificationRecord].self, forKey: .fileRecords) ?? []
+        resumedFiles = try container.decodeIfPresent([String].self, forKey: .resumedFiles) ?? []
     }
 
     private static func inferredLocalReportPath(reportDocumentPath: String?, targetPath: String) -> String? {
@@ -1563,7 +1844,7 @@ struct TransferReport: Identifiable, Codable {
     }
 }
 
-struct CopyActivityDay: Identifiable, Equatable {
+struct CopyActivityDay: Identifiable, Equatable, Codable {
     let date: Date
     let bytes: Int64
     let files: Int
@@ -1577,11 +1858,60 @@ struct CopyActivityDay: Identifiable, Equatable {
     }
 }
 
-struct CopyStatisticsCountItem: Identifiable, Equatable {
+struct CopyStatisticsCountItem: Identifiable, Equatable, Codable {
     let title: String
     let count: Int
 
     var id: String { title }
+}
+
+private enum CopyStatisticsCalculations {
+    static func activeProcessedBytes(for project: CopyProject) -> Int64 {
+        [
+            project.primaryCopyState,
+            project.primaryVerifyState,
+            project.backupCopyState,
+            project.backupVerifyState
+        ]
+        .filter(\.isActive)
+        .reduce(0) { partial, state in
+            partial + max(state.processedBytes, 0)
+        }
+    }
+
+    static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
+        var streak = 0
+        var cursor = today
+        while activeDates.contains(cursor) {
+            streak += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+                break
+            }
+            cursor = previousDay
+        }
+        return streak
+    }
+
+    static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
+        let sortedDates = activeDates.sorted()
+        var longest = 0
+        var current = 0
+        var previousDate: Date?
+
+        for date in sortedDates {
+            if let previousDate,
+               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
+               expectedDate == date {
+                current += 1
+            } else {
+                current = 1
+            }
+            longest = max(longest, current)
+            previousDate = date
+        }
+
+        return longest
+    }
 }
 
 struct CopyStatisticsSummary: Equatable {
@@ -1671,13 +2001,13 @@ struct CopyStatisticsSummary: Equatable {
             totalFiles: allTimeDays.reduce(0) { $0 + $1.files },
             totalReports: allTimeDays.reduce(0) { $0 + $1.reportCount },
             successfulReports: allTimeDays.reduce(0) { $0 + $1.successCount },
-            activeBytes: activeProjects.reduce(0) { $0 + activeProcessedBytes(for: $1) },
+            activeBytes: activeProjects.reduce(0) { $0 + CopyStatisticsCalculations.activeProcessedBytes(for: $1) },
             activeProjectCount: activeProjects.count,
             peakDayBytes: peakDay?.bytes ?? 0,
             peakDay: peakDay?.hasActivity == true ? peakDay : nil,
             longestReportDuration: reportsUpToToday.map(\.duration).max() ?? 0,
-            currentStreakDays: currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
-            longestStreakDays: longestStreakDays(activeDates: activeDates, calendar: calendar),
+            currentStreakDays: CopyStatisticsCalculations.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: CopyStatisticsCalculations.longestStreakDays(activeDates: activeDates, calendar: calendar),
             activeDayCount: activeDates.count,
             backupReportCount: reportsUpToToday.filter { $0.backupPath != nil }.count,
             verificationModeCounts: topCounts(reportsUpToToday.map(\.verificationMode)),
@@ -1696,53 +2026,6 @@ struct CopyStatisticsSummary: Equatable {
         buckets[day] = bucket
     }
 
-    private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
-        [
-            project.primaryCopyState,
-            project.primaryVerifyState,
-            project.backupCopyState,
-            project.backupVerifyState
-        ]
-        .filter(\.isActive)
-        .reduce(0) { partial, state in
-            partial + max(state.processedBytes, 0)
-        }
-    }
-
-    private static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
-        var streak = 0
-        var cursor = today
-        while activeDates.contains(cursor) {
-            streak += 1
-            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
-                break
-            }
-            cursor = previousDay
-        }
-        return streak
-    }
-
-    private static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
-        let sortedDates = activeDates.sorted()
-        var longest = 0
-        var current = 0
-        var previousDate: Date?
-
-        for date in sortedDates {
-            if let previousDate,
-               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
-               expectedDate == date {
-                current += 1
-            } else {
-                current = 1
-            }
-            longest = max(longest, current)
-            previousDate = date
-        }
-
-        return longest
-    }
-
     private static func topCounts(_ values: [String], limit: Int = 5) -> [CopyStatisticsCountItem] {
         Dictionary(grouping: values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, by: { $0 })
             .map { key, values in
@@ -1759,9 +2042,463 @@ struct CopyStatisticsSummary: Equatable {
     }
 }
 
+struct CopyStatisticsIndex: Codable, Equatable {
+    static let currentSchemaVersion = 2
+
+    var schemaVersion: Int
+    var calendarIdentifier: String
+    var timeZoneIdentifier: String
+    var indexedReportIDs: Set<UUID>
+    var dayBuckets: [CopyStatisticsIndexDay]
+    var totalBytes: Int64
+    var totalFiles: Int
+    var totalReports: Int
+    var successfulReports: Int
+    var peakDay: CopyActivityDay?
+    var longestReportDuration: TimeInterval
+    var backupReportCount: Int
+    var verificationModeCounts: [CopyStatisticsCountItem]
+    var sourceCounts: [CopyStatisticsCountItem]
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        indexedReportIDs: Set<UUID> = [],
+        dayBuckets: [CopyStatisticsIndexDay] = [],
+        totalBytes: Int64 = 0,
+        totalFiles: Int = 0,
+        totalReports: Int = 0,
+        successfulReports: Int = 0,
+        peakDay: CopyActivityDay? = nil,
+        longestReportDuration: TimeInterval = 0,
+        backupReportCount: Int = 0,
+        verificationModeCounts: [CopyStatisticsCountItem] = [],
+        sourceCounts: [CopyStatisticsCountItem] = [],
+        calendar: Calendar = .current
+    ) {
+        self.schemaVersion = schemaVersion
+        calendarIdentifier = Self.identifier(for: calendar)
+        timeZoneIdentifier = calendar.timeZone.identifier
+        self.indexedReportIDs = indexedReportIDs
+        self.dayBuckets = dayBuckets
+        self.totalBytes = totalBytes
+        self.totalFiles = totalFiles
+        self.totalReports = totalReports
+        self.successfulReports = successfulReports
+        self.peakDay = peakDay
+        self.longestReportDuration = longestReportDuration
+        self.backupReportCount = backupReportCount
+        self.verificationModeCounts = verificationModeCounts
+        self.sourceCounts = sourceCounts
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case calendarIdentifier
+        case timeZoneIdentifier
+        case indexedReportIDs
+        case dayBuckets
+        case totalBytes
+        case totalFiles
+        case totalReports
+        case successfulReports
+        case peakDay
+        case longestReportDuration
+        case backupReportCount
+        case verificationModeCounts
+        case sourceCounts
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        try PersistentSchema.validate(schemaVersion, supported: Self.currentSchemaVersion, decoder: decoder)
+        calendarIdentifier = try container.decodeIfPresent(String.self, forKey: .calendarIdentifier) ?? ""
+        timeZoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timeZoneIdentifier) ?? ""
+        indexedReportIDs = try container.decodeIfPresent(Set<UUID>.self, forKey: .indexedReportIDs) ?? []
+        dayBuckets = try container.decodeIfPresent([CopyStatisticsIndexDay].self, forKey: .dayBuckets) ?? []
+        totalBytes = try container.decodeIfPresent(Int64.self, forKey: .totalBytes) ?? 0
+        totalFiles = try container.decodeIfPresent(Int.self, forKey: .totalFiles) ?? 0
+        totalReports = try container.decodeIfPresent(Int.self, forKey: .totalReports) ?? 0
+        successfulReports = try container.decodeIfPresent(Int.self, forKey: .successfulReports) ?? 0
+        peakDay = try container.decodeIfPresent(CopyActivityDay.self, forKey: .peakDay)
+        longestReportDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .longestReportDuration) ?? 0
+        backupReportCount = try container.decodeIfPresent(Int.self, forKey: .backupReportCount) ?? 0
+        verificationModeCounts = try container.decodeIfPresent(
+            [CopyStatisticsCountItem].self,
+            forKey: .verificationModeCounts
+        ) ?? []
+        sourceCounts = try container.decodeIfPresent([CopyStatisticsCountItem].self, forKey: .sourceCounts) ?? []
+    }
+
+    static func make(
+        reports: [TransferReport],
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> CopyStatisticsIndex {
+        var index = CopyStatisticsIndex(calendar: calendar)
+        var buckets: [Date: CopyStatisticsIndexDay] = [:]
+        var modes: [String: Int] = [:]
+        var sources: [String: Int] = [:]
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+
+        // 批量重建仅聚合一次，最后排序。逐条 add 会反复搜索日期并排序设备榜。
+        for report in reports where report.finishedAt < endDay {
+            guard index.indexedReportIDs.insert(report.id).inserted else { continue }
+            let day = calendar.startOfDay(for: report.finishedAt)
+            var bucket = buckets[day] ?? CopyStatisticsIndexDay(date: day)
+            bucket.bytes += max(report.totalBytes, 0)
+            bucket.files += max(report.selectedFileCount, 0)
+            bucket.reportCount += 1
+            bucket.successCount += report.success ? 1 : 0
+            buckets[day] = bucket
+            index.totalBytes += max(report.totalBytes, 0)
+            index.totalFiles += max(report.selectedFileCount, 0)
+            index.totalReports += 1
+            index.successfulReports += report.success ? 1 : 0
+            index.backupReportCount += report.backupPath == nil ? 0 : 1
+            index.longestReportDuration = max(index.longestReportDuration, report.duration)
+            let mode = report.verificationMode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let source = report.sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mode.isEmpty { modes[mode, default: 0] += 1 }
+            if !source.isEmpty { sources[source, default: 0] += 1 }
+        }
+        index.dayBuckets = Array(buckets.values)
+        index.verificationModeCounts = modes.map { CopyStatisticsCountItem(title: $0.key, count: $0.value) }
+        index.sourceCounts = sources.map { CopyStatisticsCountItem(title: $0.key, count: $0.value) }
+        index.normalize()
+        return index
+    }
+
+    func matches(
+        reports: [TransferReport],
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && calendarIdentifier == Self.identifier(for: calendar)
+            && timeZoneIdentifier == calendar.timeZone.identifier
+            && Set(dayBuckets.map(\.date)).count == dayBuckets.count
+            && indexedReportIDs == Set(Self.eligibleReports(reports, calendar: calendar, now: now).map(\.id))
+    }
+
+    mutating func add(
+        _ report: TransferReport,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) {
+        guard Self.isEligible(report, calendar: calendar, now: now) else { return }
+        guard !indexedReportIDs.contains(report.id) else { return }
+
+        let day = calendar.startOfDay(for: report.finishedAt)
+        if let index = dayBuckets.firstIndex(where: { $0.date == day }) {
+            dayBuckets[index].bytes += max(report.totalBytes, 0)
+            dayBuckets[index].files += max(report.selectedFileCount, 0)
+            dayBuckets[index].reportCount += 1
+            if report.success {
+                dayBuckets[index].successCount += 1
+            }
+        } else {
+            dayBuckets.append(CopyStatisticsIndexDay(
+                date: day,
+                bytes: max(report.totalBytes, 0),
+                files: max(report.selectedFileCount, 0),
+                reportCount: 1,
+                successCount: report.success ? 1 : 0
+            ))
+        }
+
+        indexedReportIDs.insert(report.id)
+        totalBytes += max(report.totalBytes, 0)
+        totalFiles += max(report.selectedFileCount, 0)
+        totalReports += 1
+        if report.success {
+            successfulReports += 1
+        }
+        if report.backupPath != nil {
+            backupReportCount += 1
+        }
+        longestReportDuration = max(longestReportDuration, report.duration)
+        verificationModeCounts = Self.incrementedCounts(report.verificationMode, counts: verificationModeCounts)
+        sourceCounts = Self.incrementedCounts(report.sourceName, counts: sourceCounts)
+        updatePeakDay(for: day)
+    }
+
+    mutating func normalize() {
+        dayBuckets = Self.mergedDayBuckets(dayBuckets)
+            .values
+            .sorted { $0.date < $1.date }
+        verificationModeCounts = Self.sortedCounts(verificationModeCounts)
+        sourceCounts = Self.sortedCounts(sourceCounts)
+        if let bucket = dayBuckets.max(by: { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }) {
+            let day = bucket.activityDay
+            peakDay = day.hasActivity ? day : nil
+        } else {
+            peakDay = nil
+        }
+    }
+
+    func summary(
+        projects: [CopyProject],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        dayCount: Int = 365
+    ) -> CopyStatisticsSummary {
+        let normalizedDayCount = max(dayCount, 7)
+        let today = calendar.startOfDay(for: now)
+        let firstDay = calendar.date(byAdding: .day, value: -(normalizedDayCount - 1), to: today) ?? today
+        let recent7Start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+        let bucketsByDate = Self.mergedDayBuckets(dayBuckets)
+        let days = (0..<normalizedDayCount).compactMap { offset -> CopyActivityDay? in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: firstDay) else {
+                return nil
+            }
+            return (bucketsByDate[date] ?? CopyStatisticsIndexDay(date: date)).activityDay
+        }
+        let activeDates = Set(dayBuckets.filter(\.hasActivity).map(\.date))
+        let activeProjects = projects.filter { $0.status == .running || $0.status == .cancelling }
+
+        return CopyStatisticsSummary(
+            days: days,
+            totalBytes: totalBytes,
+            recent7Bytes: days.filter { $0.date >= recent7Start }.reduce(0) { $0 + $1.bytes },
+            totalFiles: totalFiles,
+            totalReports: totalReports,
+            successfulReports: successfulReports,
+            activeBytes: activeProjects.reduce(0) { $0 + CopyStatisticsCalculations.activeProcessedBytes(for: $1) },
+            activeProjectCount: activeProjects.count,
+            peakDayBytes: peakDay?.bytes ?? 0,
+            peakDay: peakDay,
+            longestReportDuration: longestReportDuration,
+            currentStreakDays: CopyStatisticsCalculations.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: CopyStatisticsCalculations.longestStreakDays(activeDates: activeDates, calendar: calendar),
+            activeDayCount: activeDates.count,
+            backupReportCount: backupReportCount,
+            verificationModeCounts: verificationModeCounts.prefix(5).map { $0 },
+            sourceCounts: sourceCounts.prefix(5).map { $0 }
+        )
+    }
+
+    private static func incrementedCounts(_ value: String, counts: [CopyStatisticsCountItem]) -> [CopyStatisticsCountItem] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return counts }
+        var updated = counts
+        if let index = updated.firstIndex(where: { $0.title == trimmed }) {
+            updated[index] = CopyStatisticsCountItem(title: trimmed, count: updated[index].count + 1)
+        } else {
+            updated.append(CopyStatisticsCountItem(title: trimmed, count: 1))
+        }
+        return Self.sortedCounts(updated)
+    }
+
+    private mutating func updatePeakDay(for date: Date) {
+        guard let bucket = dayBuckets.first(where: { $0.date == date }) else { return }
+        let day = bucket.activityDay
+        guard day.hasActivity else { return }
+        guard let current = peakDay else {
+            peakDay = day
+            return
+        }
+        if day.date == current.date || day.bytes > current.bytes || (day.bytes == current.bytes && day.date > current.date) {
+            peakDay = day
+        }
+    }
+
+    private static func sortedCounts(_ counts: [CopyStatisticsCountItem]) -> [CopyStatisticsCountItem] {
+        counts.sorted {
+            if $0.count == $1.count {
+                return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            return $0.count > $1.count
+        }
+    }
+
+    private static func eligibleReports(
+        _ reports: [TransferReport],
+        calendar: Calendar,
+        now: Date
+    ) -> [TransferReport] {
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        return reports.filter { $0.finishedAt < endDay }
+    }
+
+    private static func isEligible(
+        _ report: TransferReport,
+        calendar: Calendar,
+        now: Date
+    ) -> Bool {
+        let today = calendar.startOfDay(for: now)
+        let endDay = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        return report.finishedAt < endDay
+    }
+
+    private static func mergedDayBuckets(
+        _ buckets: [CopyStatisticsIndexDay]
+    ) -> [Date: CopyStatisticsIndexDay] {
+        buckets.reduce(into: [:]) { result, bucket in
+            guard var existing = result[bucket.date] else {
+                result[bucket.date] = bucket
+                return
+            }
+            existing.bytes += bucket.bytes
+            existing.files += bucket.files
+            existing.reportCount += bucket.reportCount
+            existing.successCount += bucket.successCount
+            result[bucket.date] = existing
+        }
+    }
+
+    private static func identifier(for calendar: Calendar) -> String {
+        String(describing: calendar.identifier)
+    }
+}
+
+struct CopyStatisticsIndexDay: Codable, Equatable {
+    let date: Date
+    var bytes: Int64 = 0
+    var files: Int = 0
+    var reportCount: Int = 0
+    var successCount: Int = 0
+
+    var hasActivity: Bool {
+        bytes > 0 || reportCount > 0
+    }
+
+    var activityDay: CopyActivityDay {
+        CopyActivityDay(
+            date: date,
+            bytes: bytes,
+            files: files,
+            reportCount: reportCount,
+            successCount: successCount
+        )
+    }
+}
+
+struct CopyStatisticsHeatmap: Equatable {
+    let days: [CopyActivityDay]
+    let weeks: [[CopyActivityDay?]]
+    let peakDay: CopyActivityDay?
+    let maxBytes: Int64
+
+    static func make(days: [CopyActivityDay], calendar: Calendar = .current) -> CopyStatisticsHeatmap {
+        let peakDay = days.max { lhs, rhs in
+            if lhs.bytes == rhs.bytes {
+                return lhs.date < rhs.date
+            }
+            return lhs.bytes < rhs.bytes
+        }
+        let activePeakDay = peakDay?.hasActivity == true ? peakDay : nil
+
+        return CopyStatisticsHeatmap(
+            days: days,
+            weeks: calendarWeeks(from: days, calendar: calendar),
+            peakDay: activePeakDay,
+            maxBytes: max(peakDay?.bytes ?? 0, 1)
+        )
+    }
+
+    private static func calendarWeeks(from days: [CopyActivityDay], calendar: Calendar) -> [[CopyActivityDay?]] {
+        guard let firstDate = days.first?.date else { return [] }
+
+        let leadingEmptySlots = max(calendar.component(.weekday, from: firstDate) - 1, 0)
+        var slots = Array<CopyActivityDay?>(repeating: nil, count: leadingEmptySlots)
+        slots.append(contentsOf: days.map { Optional($0) })
+
+        while !slots.isEmpty && slots.count % 7 != 0 {
+            slots.append(nil)
+        }
+
+        return stride(from: 0, to: slots.count, by: 7).map { startIndex in
+            Array(slots[startIndex..<min(startIndex + 7, slots.count)])
+        }
+    }
+}
+
+struct CopyStatisticsHeatmaps: Equatable {
+    let daily: CopyStatisticsHeatmap
+    let weekly: CopyStatisticsHeatmap
+    let cumulative: CopyStatisticsHeatmap
+
+    static func make(days: [CopyActivityDay], calendar: Calendar = .current) -> CopyStatisticsHeatmaps {
+        let daily = CopyStatisticsHeatmap.make(days: days, calendar: calendar)
+        return CopyStatisticsHeatmaps(
+            daily: daily,
+            weekly: CopyStatisticsHeatmap.make(days: weeklyDays(from: daily.weeks), calendar: calendar),
+            cumulative: CopyStatisticsHeatmap.make(days: cumulativeDays(from: days), calendar: calendar)
+        )
+    }
+
+    func heatmap(for mode: StatisticsActivityMode) -> CopyStatisticsHeatmap {
+        switch mode {
+        case .daily:
+            return daily
+        case .weekly:
+            return weekly
+        case .cumulative:
+            return cumulative
+        }
+    }
+
+    private static func weeklyDays(from weeks: [[CopyActivityDay?]]) -> [CopyActivityDay] {
+        weeks.flatMap { week in
+            let realDays = week.compactMap { $0 }
+            let bytes = realDays.reduce(0) { $0 + $1.bytes }
+            let files = realDays.reduce(0) { $0 + $1.files }
+            let reportCount = realDays.reduce(0) { $0 + $1.reportCount }
+            let successCount = realDays.reduce(0) { $0 + $1.successCount }
+            return realDays.map { day in
+                CopyActivityDay(
+                    date: day.date,
+                    bytes: bytes,
+                    files: files,
+                    reportCount: reportCount,
+                    successCount: successCount
+                )
+            }
+        }
+    }
+
+    private static func cumulativeDays(from days: [CopyActivityDay]) -> [CopyActivityDay] {
+        var runningBytes: Int64 = 0
+        var runningFiles = 0
+        var runningReports = 0
+        var runningSuccess = 0
+
+        return days.map { day in
+            runningBytes += day.bytes
+            runningFiles += day.files
+            runningReports += day.reportCount
+            runningSuccess += day.successCount
+            return CopyActivityDay(
+                date: day.date,
+                bytes: runningBytes,
+                files: runningFiles,
+                reportCount: runningReports,
+                successCount: runningSuccess
+            )
+        }
+    }
+}
+
 private struct StatisticsDayAccumulator {
     var bytes: Int64 = 0
     var files: Int = 0
     var reportCount: Int = 0
     var successCount: Int = 0
+}
+
+/// 按内容可用宽度分栏，避免 680–730 pt 区间五列的最小宽度撑出窗口。
+enum StatisticsLayoutPolicy {
+    static func metricColumnCount(availableWidth: CGFloat) -> Int {
+        if availableWidth >= 800 { return 5 }
+        if availableWidth >= 560 { return 3 }
+        return 2
+    }
 }

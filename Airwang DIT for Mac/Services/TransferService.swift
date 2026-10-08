@@ -7,16 +7,28 @@ struct TransferService {
 
     enum TransferError: LocalizedError {
         case insufficientSpace(destination: String, available: Int64, required: Int64)
+        case capacityUnavailable(destination: String, path: String)
         case deviceUnavailable(role: String, path: String)
         case destinationNotWritable(role: String, path: String)
         case transferInterrupted(reason: String)
         case pathOverlap(String)
+        case destinationAlreadyExists(String)
         case copySizeMismatch(file: String, expected: Int64, actual: Int64)
+        /// 源根目录仍在,但单个源文件缺失。视为单文件失败(记录并继续),不致命中断整批。
+        case sourceFileMissing(path: String)
+        case sourceReadFailed(path: String, reason: String)
+        case destinationWriteFailed(path: String, reason: String)
+        case sourceVolumeChanged(path: String)
+        case resumeFileChanged(path: String)
+        case primaryReferenceUnavailable(reason: String)
+        case primaryCheckpointMismatch(file: String)
 
         var errorDescription: String? {
             switch self {
             case let .insufficientSpace(destination, available, required):
                 return "\(destination) 剩余空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))。"
+            case let .capacityUnavailable(destination, path):
+                return "\(destination) 容量不可读，为避免写满或中断，已阻止执行：\(path)"
             case let .deviceUnavailable(role, path):
                 return "\(role) 已断开或不可访问：\(path)"
             case let .destinationNotWritable(role, path):
@@ -25,8 +37,24 @@ struct TransferService {
                 return reason
             case let .pathOverlap(message):
                 return message
+            case let .destinationAlreadyExists(path):
+                return "目标文件已存在，为避免覆盖素材，已停止写入：\(path)"
             case let .copySizeMismatch(file, expected, actual):
                 return "\(file) 写入大小不一致：应为 \(ByteDisplayFormatter.string(fromByteCount: expected))，实际 \(ByteDisplayFormatter.string(fromByteCount: actual))。"
+            case let .sourceFileMissing(path):
+                return "源文件缺失，已记为单文件失败并跳过：\(path)"
+            case let .sourceReadFailed(path, reason):
+                return "源文件读取失败，已记为单文件失败并跳过：\(path)。\(reason)"
+            case let .destinationWriteFailed(path, reason):
+                return "目标盘写入失败，已停止当前阶段：\(path)。\(reason)"
+            case let .sourceVolumeChanged(path):
+                return "源设备标识与创建项目时不一致，已阻止恢复。请重新连接原始源设备：\(path)"
+            case let .resumeFileChanged(path):
+                return "恢复期间文件发生变化，已停止当前阶段并保留现有文件：\(path)"
+            case let .primaryReferenceUnavailable(reason):
+                return "独立备份重试缺少有效主盘完成记录，已阻止写入：\(reason)"
+            case let .primaryCheckpointMismatch(file):
+                return "主盘文件与原主盘报告不一致，已阻止独立备份重试并保留现有文件：\(file)"
             }
         }
     }
@@ -34,6 +62,41 @@ struct TransferService {
     struct Destination {
         let rootURL: URL
         let label: String
+        let volumeIdentifier: String?
+
+        init(rootURL: URL, label: String, volumeIdentifier: String? = nil) {
+            self.rootURL = rootURL
+            self.label = label
+            self.volumeIdentifier = volumeIdentifier
+                ?? (try? rootURL.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        }
+    }
+
+    private struct ResumeFileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+
+        static func capture(_ url: URL) throws -> Self {
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG else {
+                throw TransferError.destinationAlreadyExists(url.path)
+            }
+            return Self(
+                device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                modifiedSeconds: info.st_mtimespec.tv_sec,
+                modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                changedSeconds: info.st_ctimespec.tv_sec,
+                changedNanoseconds: info.st_ctimespec.tv_nsec
+            )
+        }
     }
 
     struct TransferResult {
@@ -85,6 +148,73 @@ struct TransferService {
         let finalState: TransferState
     }
 
+    struct BackupRetryReference {
+        let reportID: UUID
+        let verificationMode: VerificationMode
+        let records: [String: FileVerificationRecord]
+        let fileModes: [String: VerificationMode]
+    }
+
+    static func backupRetryReference(project: CopyProject, report: TransferReport?) throws -> BackupRetryReference {
+        let report = report ?? project.primaryCompletionReference?.report
+        guard project.primaryCopyState.isComplete, project.primaryVerifyState.isComplete,
+              let report, project.primaryReportID == report.id, report.success, !report.cancelled,
+              !report.reportDocumentWriteFailed, report.interruptionReason == nil,
+              report.failedFiles.isEmpty, report.copyFailedFiles.isEmpty, report.verificationFailedFiles.isEmpty else {
+            throw TransferError.primaryReferenceUnavailable(reason: "主盘成功报告缺失或状态不一致")
+        }
+        guard let reportSourceRoot = report.sourceRootPath,
+              PathSafety.normalizedPath(URL(fileURLWithPath: report.targetPath, isDirectory: true))
+                == PathSafety.normalizedPath(project.primaryImportURL),
+              PathSafety.normalizedPath(URL(fileURLWithPath: reportSourceRoot, isDirectory: true))
+                == PathSafety.normalizedPath(project.sourceRootURL) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告路径与项目主盘不一致")
+        }
+        let paths = project.selectedItems.map(\.relativePath)
+        guard !paths.isEmpty, Set(paths).count == paths.count,
+              report.selectedFileCount == paths.count, report.importedItems.count == paths.count,
+              Set(report.importedItems) == Set(paths), report.fileRecords.count == paths.count,
+              Set(report.fileRecords.map(\.relativePath)) == Set(paths),
+              Set(report.resumedFiles).count == report.resumedFiles.count,
+              Set(report.resumedFiles).isSubset(of: Set(paths)) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告文件清单缺失、重复或与项目不一致")
+        }
+        guard let mode = VerificationMode.allCases.first(where: {
+            [$0.rawValue, $0.title, $0.shortTitle,
+             AppLocalization.text($0.title, language: .english),
+             AppLocalization.text($0.shortTitle, language: .english)].contains(report.verificationMode)
+        }) else {
+            throw TransferError.primaryReferenceUnavailable(reason: "报告校验策略无法识别")
+        }
+        let resumed = Set(report.resumedFiles)
+        var fileModes: [String: VerificationMode] = [:]
+        for record in report.fileRecords {
+            // Recovery uses full SHA-256 for existing files even when the
+            // project's chosen mode is weaker. Retain that per-file evidence.
+            let fileMode: VerificationMode = resumed.contains(record.relativePath) ? .sha256 : mode
+            fileModes[record.relativePath] = fileMode
+            let validStatus = fileMode == .skipped ? ["跳过校验", "Skipped"] : ["通过", "Passed"]
+            guard record.size >= 0, validStatus.contains(record.status), record.backupChecksum == nil else {
+                throw TransferError.primaryReferenceUnavailable(reason: "报告包含未完成的主盘文件记录")
+            }
+            if fileMode == .sha256 || fileMode == .fastFingerprint {
+                guard let hash = record.targetChecksum, record.sourceChecksum == hash,
+                      (fileMode != .fastFingerprint || hash.hasPrefix("fingerprint-")) else {
+                    throw TransferError.primaryReferenceUnavailable(reason: "报告中的主盘校验值缺失或不一致")
+                }
+                let digest = fileMode == .fastFingerprint ? String(hash.dropFirst("fingerprint-".count)) : hash
+                guard digest.utf8.count == 64,
+                      digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                    throw TransferError.primaryReferenceUnavailable(reason: "报告中的主盘校验值格式无法识别")
+                }
+            }
+        }
+        return BackupRetryReference(
+            reportID: report.id, verificationMode: mode,
+            records: Dictionary(uniqueKeysWithValues: report.fileRecords.map { ($0.relativePath, $0) }), fileModes: fileModes
+        )
+    }
+
     private struct ReportDocumentWriteResult {
         let requestedTargetURL: URL?
         let targetURL: URL?
@@ -94,6 +224,14 @@ struct TransferService {
         var hasFailure: Bool {
             localURL == nil || (requestedTargetURL != nil && targetURL == nil)
         }
+    }
+
+    private struct PreflightReportDetails {
+        let failureType: String
+        let englishFailureType: String
+        let detail: String
+        let recommendation: String
+        let englishRecommendation: String
     }
 
     func runPrimaryStage(
@@ -113,6 +251,7 @@ struct TransferService {
 
     func runBackupStage(
         project: CopyProject,
+        primaryReferenceReport: TransferReport? = nil,
         interruptionToken: ImportInterruptionToken? = nil,
         language: AppLanguage = .chinese,
         progress: @escaping @Sendable (TransferState) async -> Void
@@ -122,6 +261,7 @@ struct TransferService {
             stage: .backup,
             interruptionToken: interruptionToken,
             language: language,
+            primaryReferenceReport: primaryReferenceReport,
             progress: progress
         )
     }
@@ -131,6 +271,7 @@ struct TransferService {
         stage: ProjectTransferStage,
         interruptionToken: ImportInterruptionToken?,
         language: AppLanguage,
+        primaryReferenceReport: TransferReport? = nil,
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> ProjectStageResult {
         let startedAt = Date()
@@ -159,7 +300,12 @@ struct TransferService {
             destinationFolderURL = backupImportURL
         }
 
-        let destination = Destination(rootURL: destinationRootURL, label: stage.destinationLabel)
+        let destination = Destination(
+            rootURL: destinationRootURL, label: stage.destinationLabel,
+            volumeIdentifier: stage == .primary ? project.targetVolumeIdentifier : project.backupVolumeIdentifier
+        )
+        let sourceVolumeIdentifier = (stage == .primary ? project.sourceVolumeIdentifier : project.targetVolumeIdentifier)
+            ?? (try? sourceBaseURL.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         // SHA-256 校验阶段独立重读源与目标各一遍(不复用拷贝时的内联哈希),
         // 因此工作量按两遍(源+目标)预估,prehashedPaths 留空。
         let verificationTotalWorkBytes = verificationWorkBytes(
@@ -202,18 +348,73 @@ struct TransferService {
         var copiedItemPaths = Set<String>()
         var fatalStopReason: String?
         var preflightFailureMessage: String?
+        var preflightReportDetails: PreflightReportDetails?
         var stageVerificationMode = project.verificationMode
+        var spacePreflightResults: [DestinationSpacePreflight] = []
+        var existingDestinations: [String: ResumeFileIdentity] = [:]
+        var resumedFiles: [String] = []
+        var newlyCopiedFiles = 0
+        var backupRetryReference: BackupRetryReference?
+        var primaryReferenceValidated = false
+        var primarySourceIdentities: [String: ResumeFileIdentity] = [:]
 
         do {
             try validateProjectStageSeparation(project: project, stage: stage)
             try validateRelativePaths(sources)
-            try ensureAvailable(sourceBaseURL, role: sourceLabel)
-            try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
+            if project.backupOnlyRetry, stage != .backup {
+                throw TransferError.primaryReferenceUnavailable(reason: "独立备份队列不能执行主盘拷贝")
+            }
+            try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: stage == .backup ? sourceVolumeIdentifier : nil)
+            if stage == .primary, let expectedID = project.sourceVolumeIdentifier {
+                let actualID = try sourceBaseURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+                guard actualID == expectedID else {
+                    throw TransferError.sourceVolumeChanged(path: sourceBaseURL.path)
+                }
+            }
+            if project.backupOnlyRetry {
+                let reference = try Self.backupRetryReference(project: project, report: primaryReferenceReport)
+                backupRetryReference = reference
+                primarySourceIdentities = try await validateBackupRetrySource(
+                    project: project, reference: reference, interruptionToken: interruptionToken,
+                    language: language, state: state, progress: progress
+                )
+                primaryReferenceValidated = true
+            }
+            existingDestinations = try existingProjectDestinations(
+                project: project,
+                destinationFolderURL: destinationFolderURL,
+                destinationRootURL: destinationRootURL
+            )
+            let spacePreflightPayloadBytes = try livePayloadBytes(
+                sources.filter { existingDestinations[$0.relativePath] == nil }
+                    .map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
+                under: sourceBaseURL
+            )
+            try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
             try ensureWritableDestination(destinationRootURL, role: stage.destinationLabel)
-            try preflightSpace(destinations: [destination], requiredBytes: totalBytes)
+            state.verificationTotalBytes = projectVerificationWorkBytes(
+                for: sources, mode: project.verificationMode, existingPaths: Set(existingDestinations.keys)
+            )
+            spacePreflightResults = makeSpacePreflightResults(
+                destinations: [destination],
+                payloadBytes: spacePreflightPayloadBytes
+            )
+            state.spacePreflightResults = spacePreflightResults
+            try validateSpacePreflight(spacePreflightResults)
+            if let result = spacePreflightResults.first,
+               let available = result.availableBytes {
+                state.phaseTitle = "空间预检通过：需要 \(ByteDisplayFormatter.string(fromByteCount: result.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))"
+                await progress(state)
+            }
             sweepStaleTempFiles(in: destinationFolderURL)
         } catch {
-            preflightFailureMessage = error.localizedDescription
+            let handledError: Error = error is CancellationError
+                ? TransferError.transferInterrupted(reason: Self.userCancellationReason) : error
+            preflightFailureMessage = handledError.localizedDescription
+            preflightReportDetails = makePreflightReportDetails(for: handledError)
+            if project.backupOnlyRetry || handledError.localizedDescription == Self.userCancellationReason {
+                fatalStopReason = handledError.localizedDescription
+            }
             failedFiles = sources.map(\.relativePath)
             skippedFiles = failedFiles
             fileRecords = sources.map { item in
@@ -224,14 +425,14 @@ struct TransferService {
                     targetChecksum: nil,
                     backupChecksum: nil,
                     status: "未执行",
-                    message: "阶段预检失败，未开始拷贝：\(error.localizedDescription)"
+                    message: "阶段预检失败，未开始拷贝：\(handledError.localizedDescription)"
                 )
             }
             state.phaseTitle = "预检失败，已生成报告"
             state.verificationStatus = "未开始拷贝"
             state.failedFiles = failedFiles
             state.skippedFiles = skippedFiles
-            state.reportSummary = "阶段预检失败：\(error.localizedDescription)"
+            state.reportSummary = "阶段预检失败：\(handledError.localizedDescription)"
             await progress(state)
         }
 
@@ -244,25 +445,44 @@ struct TransferService {
 
                 do {
                     try checkInterruption(interruptionToken)
-                    try ensureAvailable(sourceBaseURL, role: sourceLabel)
-                    try ensureAvailable(destinationRootURL, role: stage.destinationLabel)
+                    try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                    try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                     let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                     let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+                    if project.backupOnlyRetry {
+                        try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                    }
                     // SHA-256 校验阶段会独立重读源文件,拷贝时不再内联计算源哈希
                     // (内联哈希无法捕获读卡路径上的瞬时损坏,见校验阶段说明)。
-                    _ = try await copySourceFile(
-                        sourceURL: sourceFileURL,
-                        relativePath: item.relativePath,
-                        expectedSize: item.size,
-                        to: targetFileURL,
-                        destination: destination,
-                        sourceRoot: sourceBaseURL,
-                        sourceRole: sourceLabel,
-                        computeSourceHash: false,
-                        interruptionToken: interruptionToken,
-                        state: &state,
-                        progress: progress
-                    )
+                    if let existingIdentity = existingDestinations[item.relativePath] {
+                        try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                        guard try ResumeFileIdentity.capture(targetFileURL) == existingIdentity else {
+                            throw TransferError.resumeFileChanged(path: targetFileURL.path)
+                        }
+                        // This is provisional until full SHA-256 verification below succeeds.
+                        // Existing files are never opened for writing, replaced, or removed.
+                        state.processedBytes += existingIdentity.size
+                        state.phaseTitle = "已保留现有文件，等待 SHA-256 恢复复核"
+                        state.currentSpeedBytesPerSecond = 0
+                    } else {
+                        _ = try await copySourceFile(
+                            sourceURL: sourceFileURL,
+                            relativePath: item.relativePath,
+                            expectedSize: item.size,
+                            to: targetFileURL,
+                            destination: destination,
+                            sourceRoot: sourceBaseURL,
+                            sourceRole: sourceLabel,
+                            computeSourceHash: false,
+                            interruptionToken: interruptionToken,
+                            state: &state,
+                            progress: progress
+                        )
+                        newlyCopiedFiles += 1
+                    }
+                    if project.backupOnlyRetry {
+                        try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                    }
 
                     copiedItemPaths.insert(item.relativePath)
                     state.copiedFiles += 1
@@ -346,7 +566,9 @@ struct TransferService {
                 state.currentFile = "正在校验 \(stage.destinationLabel)"
                 state.currentSpeedBytesPerSecond = 0
                 state.verificationStartedAt = Date()
-                state.verificationTotalBytes = verificationWorkBytes(for: sources, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                state.verificationTotalBytes = projectVerificationWorkBytes(
+                    for: sources, mode: stageVerificationMode, existingPaths: Set(existingDestinations.keys)
+                )
                 state.verificationProcessedBytes = 0
                 state.currentVerificationSpeedBytesPerSecond = 0
                 await progress(state)
@@ -356,14 +578,19 @@ struct TransferService {
                     if effectiveVerificationMode != stageVerificationMode {
                         stageVerificationMode = effectiveVerificationMode
                         let remainingWorkBytes = sources.dropFirst(index).reduce(Int64(0)) {
-                            $0 + verificationWorkBytes(for: $1, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                            $0 + verificationWorkBytes(
+                                for: $1,
+                                mode: existingDestinations[$1.relativePath] == nil ? stageVerificationMode : .sha256,
+                                destinationCount: 1, prehashedPaths: []
+                            )
                         }
                         state.verificationTotalBytes = max(state.verificationProcessedBytes + remainingWorkBytes, state.verificationProcessedBytes)
                         state.verificationStatus = stageVerificationMode == .skipped ? "用户已跳过校验" : "校验中"
                         await progress(state)
                     }
 
-                    let itemWorkBytes = verificationWorkBytes(for: item, mode: stageVerificationMode, destinationCount: 1, prehashedPaths: [])
+                    let itemVerificationMode: VerificationMode = existingDestinations[item.relativePath] == nil ? stageVerificationMode : .sha256
+                    let itemWorkBytes = verificationWorkBytes(for: item, mode: itemVerificationMode, destinationCount: 1, prehashedPaths: [])
                     let itemStartBytes = state.verificationProcessedBytes
 
                     if copyFailedFiles.contains(item.relativePath) {
@@ -380,18 +607,35 @@ struct TransferService {
                     }
 
                     state.currentFile = item.relativePath
+                    state.verificationStatus = existingDestinations[item.relativePath] == nil
+                        ? (itemVerificationMode == .skipped ? "用户已跳过校验" : "校验中")
+                        : "恢复文件 SHA-256 全量核验"
                     await progress(state)
                     do {
                         try checkInterruption(interruptionToken)
+                        try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                        try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
                         let sourceFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceBaseURL)
                         let targetFileURL = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+                        if project.backupOnlyRetry {
+                            try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                        }
+                        var resumeSourceIdentity: ResumeFileIdentity?
+                        if let expectedIdentity = existingDestinations[item.relativePath] {
+                            try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                            try PathSafety.ensureSafeExistingFileTarget(for: sourceFileURL, under: sourceBaseURL)
+                            guard try ResumeFileIdentity.capture(targetFileURL) == expectedIdentity else {
+                                throw TransferError.resumeFileChanged(path: targetFileURL.path)
+                            }
+                            resumeSourceIdentity = try ResumeFileIdentity.capture(sourceFileURL)
+                        }
                         let record = try await verifyProjectFile(
                             item: item,
                             sourceURL: sourceFileURL,
                             targetURL: targetFileURL,
                             sourceRoot: sourceBaseURL,
                             destinationRoot: destination.rootURL,
-                            mode: stageVerificationMode,
+                            mode: itemVerificationMode,
                             stage: stage,
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
@@ -399,13 +643,31 @@ struct TransferService {
                             state: &state,
                             progress: progress
                         )
+                        try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                        try ensureAvailable(destinationRootURL, role: stage.destinationLabel, expectedVolumeIdentifier: destination.volumeIdentifier)
+                        if let reference = backupRetryReference {
+                            try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                            if reference.fileModes[item.relativePath] == .sha256, itemVerificationMode == .sha256,
+                               record.sourceChecksum != reference.records[item.relativePath]?.targetChecksum {
+                                throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                            }
+                        }
+                        if let expectedIdentity = existingDestinations[item.relativePath], let resumeSourceIdentity {
+                            try PathSafety.ensureSafeExistingFileTarget(for: targetFileURL, under: destinationRootURL)
+                            try PathSafety.ensureSafeExistingFileTarget(for: sourceFileURL, under: sourceBaseURL)
+                            guard try ResumeFileIdentity.capture(targetFileURL) == expectedIdentity,
+                                  try ResumeFileIdentity.capture(sourceFileURL) == resumeSourceIdentity else {
+                                throw TransferError.resumeFileChanged(path: item.relativePath)
+                            }
+                            resumedFiles.append(item.relativePath)
+                        }
                         fileRecords.append(record)
                         completeVerificationProgress(
                             itemStartBytes: itemStartBytes,
                             itemWorkBytes: itemWorkBytes,
                             state: &state
                         )
-                        if stageVerificationMode == .skipped {
+                        if itemVerificationMode == .skipped {
                             appendUnique(item.relativePath, to: &skippedFiles)
                             state.skippedFiles = skippedFiles
                         } else {
@@ -481,9 +743,36 @@ struct TransferService {
             }
         }
 
+        if preflightFailureMessage == nil, project.backupOnlyRetry, fatalStopReason == nil {
+            for item in sources {
+                do {
+                    try checkInterruption(interruptionToken)
+                    try ensureAvailable(sourceBaseURL, role: sourceLabel, expectedVolumeIdentifier: sourceVolumeIdentifier)
+                    try assertBackupRetrySource(item: item, project: project, identities: primarySourceIdentities)
+                } catch {
+                    let handledError: Error = error is CancellationError
+                        ? TransferError.transferInterrupted(reason: Self.userCancellationReason) : error
+                    appendUnique(item.relativePath, to: &failedFiles)
+                    appendUnique(item.relativePath, to: &verificationFailedFiles)
+                    fatalStopReason = handledError.localizedDescription
+                    let failureRecord = FileVerificationRecord(
+                        relativePath: item.relativePath, size: item.size,
+                        sourceChecksum: nil, targetChecksum: nil, backupChecksum: nil,
+                        status: "异常", message: handledError.localizedDescription
+                    )
+                    if let recordIndex = fileRecords.firstIndex(where: { $0.relativePath == item.relativePath }) {
+                        fileRecords[recordIndex] = failureRecord
+                    } else {
+                        fileRecords.append(failureRecord)
+                    }
+                    break
+                }
+            }
+        }
+
         let finishedAt = Date()
         let wasCancelled = fatalStopReason == Self.userCancellationReason
-        let verificationSummary = makeProjectVerificationSummary(
+        var verificationSummary = makeProjectVerificationSummary(
             stage: stage,
             mode: stageVerificationMode,
             totalFiles: totalFiles,
@@ -491,6 +780,19 @@ struct TransferService {
             preflightFailureMessage: preflightFailureMessage,
             fatalStopReason: fatalStopReason
         )
+        if project.resumeExistingFiles {
+            let resumeSummary = language == .english
+                ? "Resume: \(resumedFiles.count) existing files passed full SHA-256 verification; \(newlyCopiedFiles) files copied this attempt. Existing files were preserved."
+                : "恢复复核：\(resumedFiles.count) 个已有文件通过 SHA-256 全量核验，本次新增拷贝 \(newlyCopiedFiles) 个文件。现有文件均已保留。"
+            verificationSummary += " " + resumeSummary
+        }
+        if project.backupOnlyRetry {
+            let referenceID = project.primaryReportID?.uuidString ?? "Unavailable"
+            let mode = backupRetryReference?.verificationMode.rawValue ?? "unknown"
+            verificationSummary += language == .english
+                ? " Independent backup retry; primary report: \(referenceID); primary checkpoint policy: \(mode); validation: \(primaryReferenceValidated ? "passed" : "not completed"). The original source and primary copy stage were not rerun."
+                : " 独立备份重试；原主盘报告：\(referenceID)；主盘参考策略：\(mode)；复核：\(primaryReferenceValidated ? "已通过" : "未完成"). 本次未重新执行源卡和主盘拷贝阶段。"
+        }
         var reportProject = project
         reportProject.verificationMode = stageVerificationMode
         let reportDocumentWriteResult = writeProjectReportDocument(
@@ -508,9 +810,12 @@ struct TransferService {
             verificationFailedFiles: verificationFailedFiles,
             skippedFiles: skippedFiles,
             fileRecords: fileRecords,
+            resumedFiles: resumedFiles,
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            preflightReportDetails: preflightReportDetails,
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -560,7 +865,8 @@ struct TransferService {
             localReportDocumentPath: reportDocumentWriteResult.localURL?.path,
             reportDocumentWriteFailed: reportWriteFailed,
             importedItems: sources.map(\.relativePath),
-            fileRecords: fileRecords
+            fileRecords: fileRecords,
+            resumedFiles: resumedFiles
         )
 
         return ProjectStageResult(report: report, finalState: state)
@@ -610,12 +916,35 @@ struct TransferService {
         var fileRecords: [FileVerificationRecord] = []
         var copiedItemPaths: Set<String> = []
         var fatalStopReason: String?
+        var spacePreflightResults: [DestinationSpacePreflight] = []
 
         do {
             try validateDestinationSeparation(summary: summary)
             try validateRelativePaths(sources)
             try ensureRequiredLocations(summary: summary, destinations: destinations)
-            try preflightSpace(destinations: destinations, requiredBytes: totalBytes)
+            let spacePreflightPayloadBytes = try livePayloadBytes(
+                sources.map { (relativePath: $0.relativePath, fallbackSize: $0.size) },
+                under: summary.sourceRootURL
+            )
+            for destination in destinations {
+                let destinationFolderURL = destination.rootURL.appendingPathComponent(taskFolder, isDirectory: true)
+                try ensureDestinationFilesDoNotExist(
+                    relativePaths: sources.map(\.relativePath),
+                    destinationFolderURL: destinationFolderURL,
+                    destinationRootURL: destination.rootURL
+                )
+            }
+            spacePreflightResults = makeSpacePreflightResults(
+                destinations: destinations,
+                payloadBytes: spacePreflightPayloadBytes
+            )
+            state.spacePreflightResults = spacePreflightResults
+            try validateSpacePreflight(spacePreflightResults)
+            if let result = spacePreflightResults.first,
+               let available = result.availableBytes {
+                state.phaseTitle = "空间预检通过：需要 \(ByteDisplayFormatter.string(fromByteCount: result.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))"
+                await progress(state)
+            }
         } catch {
             let result = makePreflightFailureResult(
                 error: error,
@@ -627,6 +956,7 @@ struct TransferService {
                 primaryImportFolder: primaryImportFolder,
                 reportDocumentURL: reportDocumentURL,
                 fallbackReportDocumentURL: fallbackReportDocumentURL,
+                spacePreflightResults: spacePreflightResults,
                 language: language
             )
             await progress(state)
@@ -639,6 +969,7 @@ struct TransferService {
             state.verificationStatus = "等待整批校验"
             await progress(state)
 
+            let processedBytesAtItemStart = state.processedBytes
             var installedFiles: [URL] = []
             do {
                 try checkInterruption(interruptionToken)
@@ -665,6 +996,8 @@ struct TransferService {
                 copiedItemPaths.insert(item.relativePath)
                 await progress(state)
             } catch {
+                state.processedBytes = processedBytesAtItemStart
+                state.currentSpeedBytesPerSecond = 0
                 let cleanupMessage = cleanupInstalledCopies(installedFiles)
                 let handledError: Error = error is CancellationError
                     ? TransferError.transferInterrupted(reason: Self.userCancellationReason)
@@ -915,6 +1248,8 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: fatalStopReason,
             verificationSummary: verificationSummary,
+            preflightReportDetails: nil,
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -970,6 +1305,7 @@ struct TransferService {
         primaryImportFolder: URL,
         reportDocumentURL: URL,
         fallbackReportDocumentURL: URL,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> TransferResult {
         let finishedAt = Date()
@@ -1013,6 +1349,8 @@ struct TransferService {
             failedFiles: failedFiles,
             interruptionReason: nil,
             verificationSummary: verificationSummary,
+            preflightReportDetails: makePreflightReportDetails(for: error),
+            spacePreflightResults: spacePreflightResults,
             language: language
         )
         let finalVerificationSummary = [verificationSummary, reportDocumentWriteResult.note]
@@ -1083,9 +1421,18 @@ struct TransferService {
             if PathSafety.pathsShareVolume(project.targetRootURL, backupRootURL) {
                 throw TransferError.pathOverlap("备份盘不能与主目标盘位于同一个磁盘卷上，请选择独立备份盘。")
             }
-            if PathSafety.pathsOverlap(project.sourceRootURL, backupRootURL)
-                || PathSafety.pathsShareVolume(sourceVolumeURL, backupRootURL)
-                || PathSafety.pathsShareVolume(project.sourceRootURL, backupRootURL) {
+            let sharesOriginalSourceVolume: Bool
+            if project.backupOnlyRetry {
+                // An unmounted card's old path resolves to its ancestor volume.
+                // Compare recorded IDs instead of treating /Volumes as the card.
+                let backupID = try? backupRootURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+                sharesOriginalSourceVolume = project.sourceVolumeIdentifier != nil
+                    && project.sourceVolumeIdentifier == backupID
+            } else {
+                sharesOriginalSourceVolume = PathSafety.pathsShareVolume(sourceVolumeURL, backupRootURL)
+                    || PathSafety.pathsShareVolume(project.sourceRootURL, backupRootURL)
+            }
+            if PathSafety.pathsOverlap(project.sourceRootURL, backupRootURL) || sharesOriginalSourceVolume {
                 throw TransferError.pathOverlap("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
             }
         }
@@ -1117,36 +1464,65 @@ struct TransferService {
         }
     }
 
-    private func preflightSpace(destinations: [Destination], requiredBytes: Int64) throws {
-        for destination in destinations {
-            let available = availableCapacity(for: destination.rootURL)
-            if let available, available < requiredBytes {
+    private func livePayloadBytes(
+        _ items: [(relativePath: String, fallbackSize: Int64)],
+        under sourceRootURL: URL
+    ) throws -> Int64 {
+        var total: Int64 = 0
+
+        for item in items {
+            let sourceURL = try PathSafety.resolvedURL(for: item.relativePath, under: sourceRootURL)
+            let liveSize: Int64
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRootURL)
+                let values = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values?.isRegularFile == true, let fileSize = values?.fileSize {
+                    liveSize = Int64(fileSize)
+                } else {
+                    liveSize = max(item.fallbackSize, 0)
+                }
+            } else {
+                liveSize = max(item.fallbackSize, 0)
+            }
+
+            let (newTotal, overflowed) = total.addingReportingOverflow(liveSize)
+            total = overflowed ? Int64.max : newTotal
+        }
+
+        return total
+    }
+
+    private func makeSpacePreflightResults(
+        destinations: [Destination],
+        payloadBytes: Int64
+    ) -> [DestinationSpacePreflight] {
+        destinations.map { destination in
+            SpacePreflightPolicy.evaluate(
+                destinationLabel: destination.label,
+                destinationPath: destination.rootURL.path,
+                payloadBytes: payloadBytes,
+                availableBytes: availableCapacity(for: destination.rootURL)
+            )
+        }
+    }
+
+    private func validateSpacePreflight(_ results: [DestinationSpacePreflight]) throws {
+        for result in results {
+            switch result.status {
+            case .passed:
+                continue
+            case .insufficient:
                 throw TransferError.insufficientSpace(
-                    destination: destination.label,
-                    available: available,
-                    required: requiredBytes
+                    destination: result.destinationLabel,
+                    available: result.availableBytes ?? 0,
+                    required: result.requirement.requiredBytes
+                )
+            case .capacityUnavailable:
+                throw TransferError.capacityUnavailable(
+                    destination: result.destinationLabel,
+                    path: result.destinationPath
                 )
             }
-        }
-
-        let groupedByVolume = Dictionary(grouping: destinations) { destination in
-            DiskCapacityResolver.volumeRootPath(for: destination.rootURL) ?? destination.rootURL.path
-        }
-
-        for destinationsOnVolume in groupedByVolume.values where destinationsOnVolume.count > 1 {
-            let combinedRequired = requiredBytes * Int64(destinationsOnVolume.count)
-            guard let firstDestination = destinationsOnVolume.first,
-                  let available = availableCapacity(for: firstDestination.rootURL),
-                  available < combinedRequired else {
-                continue
-            }
-
-            let labels = destinationsOnVolume.map(\.label).joined(separator: " + ")
-            throw TransferError.insufficientSpace(
-                destination: labels,
-                available: available,
-                required: combinedRequired
-            )
         }
     }
 
@@ -1267,21 +1643,87 @@ struct TransferService {
     private func ensureRequiredLocations(summary: ImportSelectionSummary, destinations: [Destination]) throws {
         try ensureAvailable(summary.sourceVolume.url, role: "源设备")
         for destination in destinations {
-            try ensureAvailable(destination.rootURL, role: destination.label)
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
             try ensureWritableDestination(destination.rootURL, role: destination.label)
         }
     }
 
-    private func ensureAvailable(_ url: URL, role: String) throws {
+    private func ensureAvailable(_ url: URL, role: String, expectedVolumeIdentifier: String? = nil) throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw TransferError.deviceUnavailable(role: role, path: url.path)
         }
+        if let expectedVolumeIdentifier {
+            // Use a fresh URL so cached resource values cannot hide an unmounted/replaced volume.
+            let currentURL = URL(fileURLWithPath: url.path)
+            let currentID = try? currentURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+            guard currentID == expectedVolumeIdentifier else {
+                throw TransferError.deviceUnavailable(role: role, path: url.path)
+            }
+        }
+    }
+
+    /// 区分"单个源文件缺失"与"源根/源设备丢失":
+    /// - 源根仍在、仅单个文件缺失 → `.sourceFileMissing`(非致命,记单文件失败并继续)。
+    /// - 源根也不存在(拔卡/断盘)→ `.deviceUnavailable`(致命,中断整阶段)。
+    private func ensureSourceFileExists(_ url: URL, root: URL, sourceRole: String) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        if !FileManager.default.fileExists(atPath: root.path) {
+            throw TransferError.deviceUnavailable(role: sourceRole, path: root.path)
+        }
+        throw TransferError.sourceFileMissing(path: url.path)
     }
 
     private func ensureWritableDestination(_ url: URL, role: String) throws {
         let values = try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey, .isWritableKey])
         if values?.volumeIsReadOnly == true || values?.isWritable == false || !FileManager.default.isWritableFile(atPath: url.path) {
             throw TransferError.destinationNotWritable(role: role, path: url.path)
+        }
+    }
+
+    private func existingProjectDestinations(
+        project: CopyProject,
+        destinationFolderURL: URL,
+        destinationRootURL: URL
+    ) throws -> [String: ResumeFileIdentity] {
+        var existing: [String: ResumeFileIdentity] = [:]
+        for item in project.selectedItems {
+            let url = try PathSafety.resolvedURL(for: item.relativePath, under: destinationFolderURL)
+            try PathSafety.ensureSafeWritableFileTarget(for: url, under: destinationRootURL)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard project.resumeExistingFiles else { throw TransferError.destinationAlreadyExists(url.path) }
+            existing[item.relativePath] = try ResumeFileIdentity.capture(url)
+        }
+        return existing
+    }
+
+    private func projectVerificationWorkBytes(
+        for items: [ProjectMediaItem],
+        mode: VerificationMode,
+        existingPaths: Set<String>
+    ) -> Int64 {
+        items.reduce(Int64(0)) {
+            $0 + verificationWorkBytes(
+                for: $1, mode: existingPaths.contains($1.relativePath) ? .sha256 : mode,
+                destinationCount: 1, prehashedPaths: []
+            )
+        }
+    }
+
+    private func ensureDestinationFilesDoNotExist(
+        relativePaths: [String],
+        destinationFolderURL: URL,
+        destinationRootURL: URL
+    ) throws {
+        for relativePath in relativePaths {
+            let destinationURL = try PathSafety.resolvedURL(for: relativePath, under: destinationFolderURL)
+            try ensureDestinationDoesNotExist(destinationURL, under: destinationRootURL)
+        }
+    }
+
+    private func ensureDestinationDoesNotExist(_ url: URL, under rootURL: URL) throws {
+        try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
+        if FileManager.default.fileExists(atPath: url.path) {
+            throw TransferError.destinationAlreadyExists(url.path)
         }
     }
 
@@ -1297,11 +1739,25 @@ struct TransferService {
         summary: ImportSelectionSummary,
         destinations: [Destination]
     ) -> String? {
+        if let pathSafetyError = error as? PathSafety.Error {
+            return pathSafetyError.localizedDescription
+        }
         if let transferError = error as? TransferError {
             switch transferError {
-            case .deviceUnavailable, .transferInterrupted:
+            case .deviceUnavailable,
+                 .transferInterrupted,
+                 .insufficientSpace,
+                 .capacityUnavailable,
+                 .destinationNotWritable,
+                 .pathOverlap,
+                 .destinationAlreadyExists,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
+                 .primaryReferenceUnavailable,
+                 .primaryCheckpointMismatch,
+                 .destinationWriteFailed:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .copySizeMismatch:
+            case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
                 break
             }
         }
@@ -1323,11 +1779,25 @@ struct TransferService {
         destinations: [Destination],
         sourceRole: String
     ) -> String? {
+        if let pathSafetyError = error as? PathSafety.Error {
+            return pathSafetyError.localizedDescription
+        }
         if let transferError = error as? TransferError {
             switch transferError {
-            case .deviceUnavailable, .transferInterrupted:
+            case .deviceUnavailable,
+                 .transferInterrupted,
+                 .insufficientSpace,
+                 .capacityUnavailable,
+                 .destinationNotWritable,
+                 .pathOverlap,
+                 .destinationAlreadyExists,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
+                 .primaryReferenceUnavailable,
+                 .primaryCheckpointMismatch,
+                 .destinationWriteFailed:
                 return transferError.localizedDescription
-            case .insufficientSpace, .destinationNotWritable, .pathOverlap, .copySizeMismatch:
+            case .copySizeMismatch, .sourceFileMissing, .sourceReadFailed:
                 break
             }
         }
@@ -1423,22 +1893,51 @@ struct TransferService {
         progress: @escaping @Sendable (TransferState) async -> Void
     ) async throws -> String? {
         let folder = destinationURL.deletingLastPathComponent()
+        let safetyMarginBytes = state.spacePreflightResults
+            .first { $0.destinationPath == destination.rootURL.path }?
+            .requirement.safetyMarginBytes
+            ?? SpacePreflightPolicy.minimumSafetyMarginBytes
 
         try checkInterruption(interruptionToken)
+        let sourceRootVolumeIdentifier = (try? sourceRoot.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         try ensureAvailable(sourceRoot, role: sourceRole)
-        try ensureAvailable(sourceURL, role: "源文件")
-        try ensureAvailable(destination.rootURL, role: destination.label)
+        try ensureSourceFileExists(sourceURL, root: sourceRoot, sourceRole: sourceRole)
+        try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
         try ensureWritableDestination(destination.rootURL, role: destination.label)
         try PathSafety.ensureSafeExistingFileTarget(for: sourceURL, under: sourceRoot)
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destination.rootURL)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destination.rootURL)
-        let temporaryURL = try makeTemporaryCopyURL(in: folder)
+        try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            throw TransferError.destinationWriteFailed(
+                path: folder.path,
+                reason: error.localizedDescription
+            )
+        }
+        try ensureDestinationDoesNotExist(destinationURL, under: destination.rootURL)
+        let temporaryURL: URL
+        do {
+            temporaryURL = try makeTemporaryCopyURL(in: folder)
+        } catch {
+            throw TransferError.destinationWriteFailed(
+                path: folder.path,
+                reason: error.localizedDescription
+            )
+        }
         try PathSafety.ensureSafeWritableFileTarget(for: temporaryURL, under: destination.rootURL)
 
         var temporaryFileCreated = false
+        let processedBytesAtFileStart = state.processedBytes
         do {
-            let sourceHandle = try FileHandle(forReadingFrom: sourceURL)
+            let sourceHandle: FileHandle
+            do {
+                sourceHandle = try FileHandle(forReadingFrom: sourceURL)
+            } catch {
+                throw TransferError.sourceReadFailed(
+                    path: sourceURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             var destinationHandle: FileHandle?
             var sourceClosed = false
             var destinationClosed = false
@@ -1452,7 +1951,14 @@ struct TransferService {
                 }
             }
 
-            destinationHandle = try createExclusiveFileHandle(at: temporaryURL)
+            do {
+                destinationHandle = try createExclusiveFileHandle(at: temporaryURL)
+            } catch {
+                throw TransferError.destinationWriteFailed(
+                    path: temporaryURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             temporaryFileCreated = true
 
             let chunkSize = 16 * 1024 * 1024
@@ -1461,17 +1967,23 @@ struct TransferService {
             var bytesSinceLastUpdate: Int64 = 0
             var bytesCopiedForFile: Int64 = 0
             var lastUpdateAt = Date()
-            var lastAvailabilityCheckAt = Date()
+            var lastAvailabilityCheckAt = Date.distantPast
             var sourceHasher = computeSourceHash ? SHA256() : nil
 
             while true {
                 try checkInterruption(interruptionToken)
                 let availabilityCheckAt = Date()
                 if availabilityCheckAt.timeIntervalSince(lastAvailabilityCheckAt) >= availabilityCheckInterval {
-                    try ensureAvailable(sourceRoot, role: sourceRole)
-                    try ensureAvailable(destination.rootURL, role: destination.label)
-                    let remainingBytes = max(expectedSize - bytesCopiedForFile, 0)
-                    try ensureEnoughAvailableSpace(destination.rootURL, role: destination.label, requiredBytes: remainingBytes)
+                    try ensureAvailable(sourceRoot, role: sourceRole, expectedVolumeIdentifier: sourceRootVolumeIdentifier)
+                    try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
+                    let currentSourceSize = fileSize(at: sourceURL) ?? max(expectedSize, bytesCopiedForFile)
+                    let remainingBytes = max(currentSourceSize - bytesCopiedForFile, 0)
+                    let (requiredWithMargin, overflowed) = remainingBytes.addingReportingOverflow(safetyMarginBytes)
+                    try ensureEnoughAvailableSpace(
+                        destination.rootURL,
+                        role: destination.label,
+                        requiredBytes: overflowed ? Int64.max : requiredWithMargin
+                    )
                     lastAvailabilityCheckAt = availabilityCheckAt
                 }
 
@@ -1480,10 +1992,26 @@ struct TransferService {
                 // 排水点(await)间隔 0.5s,16MB 块不及时排水会让内存峰值飙到数百 MB。
                 var chunkBytes: Int64 = 0
                 try autoreleasepool {
-                    guard let data = try sourceHandle.read(upToCount: chunkSize), !data.isEmpty else {
+                    let data: Data?
+                    do {
+                        data = try sourceHandle.read(upToCount: chunkSize)
+                    } catch {
+                        throw TransferError.sourceReadFailed(
+                            path: sourceURL.path,
+                            reason: error.localizedDescription
+                        )
+                    }
+                    guard let data, !data.isEmpty else {
                         return
                     }
-                    try destinationHandle?.write(contentsOf: data)
+                    do {
+                        try destinationHandle?.write(contentsOf: data)
+                    } catch {
+                        throw TransferError.destinationWriteFailed(
+                            path: temporaryURL.path,
+                            reason: error.localizedDescription
+                        )
+                    }
                     sourceHasher?.update(data: data)
                     chunkBytes = Int64(data.count)
                 }
@@ -1507,7 +2035,15 @@ struct TransferService {
 
             state.phaseTitle = "正在确认写入到\(destination.label)"
             await progress(state)
-            try destinationHandle?.synchronize()
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
+            do {
+                try destinationHandle?.synchronize()
+            } catch {
+                throw TransferError.destinationWriteFailed(
+                    path: temporaryURL.path,
+                    reason: error.localizedDescription
+                )
+            }
             try? sourceHandle.close()
             sourceClosed = true
             try? destinationHandle?.close()
@@ -1522,12 +2058,15 @@ struct TransferService {
                 throw TransferError.copySizeMismatch(file: relativePath, expected: bytesCopiedForFile, actual: actualSize)
             }
 
+            try ensureAvailable(destination.rootURL, role: destination.label, expectedVolumeIdentifier: destination.volumeIdentifier)
             try installCopiedFile(from: temporaryURL, to: destinationURL, under: destination.rootURL)
             await progress(state)
             return sourceHasher.map { hasher in
                 hasher.finalize().map { String(format: "%02x", $0) }.joined()
             }
         } catch {
+            state.processedBytes = processedBytesAtFileStart
+            state.currentSpeedBytesPerSecond = 0
             if temporaryFileCreated {
                 try? FileManager.default.removeItem(at: temporaryURL)
             }
@@ -1536,28 +2075,17 @@ struct TransferService {
     }
 
     private func installCopiedFile(from temporaryURL: URL, to destinationURL: URL, under destinationRootURL: URL) throws {
-        try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            let replacementURL = destinationURL
-                .deletingLastPathComponent()
-                .appendingPathComponent(".airwang-replacement-\(UUID().uuidString)", isDirectory: false)
-            try PathSafety.ensureSafeWritableFileTarget(for: replacementURL, under: destinationRootURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: replacementURL)
-            do {
-                try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
-                _ = try FileManager.default.replaceItemAt(
-                    destinationURL,
-                    withItemAt: replacementURL,
-                    backupItemName: nil,
-                    options: []
-                )
-            } catch {
-                try? FileManager.default.removeItem(at: replacementURL)
-                throw error
-            }
-        } else {
-            try PathSafety.ensureSafeWritableFileTarget(for: destinationURL, under: destinationRootURL)
+        try ensureDestinationDoesNotExist(destinationURL, under: destinationRootURL)
+        do {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        } catch {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                throw TransferError.destinationAlreadyExists(destinationURL.path)
+            }
+            throw TransferError.destinationWriteFailed(
+                path: destinationURL.path,
+                reason: error.localizedDescription
+            )
         }
     }
 
@@ -1569,7 +2097,12 @@ struct TransferService {
         ) else { return }
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
-            if name.hasPrefix(".airwang-") && (name.hasSuffix(".part") || name.hasSuffix(".tmp")) {
+            // .airwang-<UUID>.part / .tmp 来自分块拷贝;.airwang-replacement-<UUID> 来自
+            // installCopiedFile 的覆盖中转(无扩展名),进程在 move→replace 间被杀会残留,
+            // 此前清扫只匹配 .part/.tmp 会漏掉它。
+            let isPartTemp = name.hasPrefix(".airwang-") && (name.hasSuffix(".part") || name.hasSuffix(".tmp"))
+            let isReplacementTemp = name.hasPrefix(".airwang-replacement-")
+            if isPartTemp || isReplacementTemp {
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -1595,6 +2128,75 @@ struct TransferService {
         return FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
     }
 
+    private func validateBackupRetrySource(
+        project: CopyProject, reference: BackupRetryReference,
+        interruptionToken: ImportInterruptionToken?, language: AppLanguage,
+        state initialState: TransferState,
+        progress: @escaping @Sendable (TransferState) async -> Void
+    ) async throws -> [String: ResumeFileIdentity] {
+        var identities: [String: ResumeFileIdentity] = [:]
+        var state = initialState
+        state.phaseTitle = language == .english ? "Checking the primary against its original report" : "正在按原报告复核主盘"
+        state.verificationStatus = state.phaseTitle
+        state.verificationProcessedBytes = 0
+        state.verificationTotalBytes = reference.records.values.reduce(Int64(0)) {
+            let sum = $0.addingReportingOverflow($1.size)
+            return sum.overflow ? Int64.max : sum.partialValue
+        }
+        for item in project.selectedItems {
+            try checkInterruption(interruptionToken)
+            try ensureAvailable(project.primaryImportURL, role: "主目标盘", expectedVolumeIdentifier: project.targetVolumeIdentifier)
+            let url = try PathSafety.resolvedURL(for: item.relativePath, under: project.primaryImportURL)
+            try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+            guard let record = reference.records[item.relativePath] else {
+                throw TransferError.primaryReferenceUnavailable(reason: "主盘记录缺少 \(item.relativePath)")
+            }
+            let before = try ResumeFileIdentity.capture(url)
+            state.currentFile = item.relativePath
+            await progress(state)
+            switch reference.fileModes[item.relativePath] ?? reference.verificationMode {
+            case .sha256:
+                let actual = try await checksum(for: url, interruptionToken: interruptionToken, state: &state, progress: progress)
+                guard actual == record.targetChecksum else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            case .fastFingerprint:
+                guard before.size == record.size else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+                let actual = try await fingerprint(for: url, fileSize: record.size, interruptionToken: interruptionToken, state: &state, progress: progress)
+                guard actual == record.targetChecksum else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            case .sizeOnly, .skipped:
+                guard before.size == record.size else {
+                    throw TransferError.primaryCheckpointMismatch(file: item.relativePath)
+                }
+            }
+            try checkInterruption(interruptionToken)
+            try ensureAvailable(project.primaryImportURL, role: "主目标盘", expectedVolumeIdentifier: project.targetVolumeIdentifier)
+            try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+            guard try ResumeFileIdentity.capture(url) == before else {
+                throw TransferError.resumeFileChanged(path: item.relativePath)
+            }
+            identities[item.relativePath] = before
+        }
+        return identities
+    }
+
+    private func assertBackupRetrySource(
+        item: ProjectMediaItem, project: CopyProject, identities: [String: ResumeFileIdentity]
+    ) throws {
+        guard let expected = identities[item.relativePath] else {
+            throw TransferError.primaryReferenceUnavailable(reason: "主盘复核未完成")
+        }
+        let url = try PathSafety.resolvedURL(for: item.relativePath, under: project.primaryImportURL)
+        try PathSafety.ensureSafeExistingFileTarget(for: url, under: project.primaryImportURL)
+        guard try ResumeFileIdentity.capture(url) == expected else {
+            throw TransferError.resumeFileChanged(path: item.relativePath)
+        }
+    }
+
     private func checksum(
         for url: URL,
         interruptionToken: ImportInterruptionToken?,
@@ -1607,7 +2209,9 @@ struct TransferService {
         var hasher = SHA256()
         // 8MB 块:1MB 块在快速 SSD 上 syscall 频率过高,拖低校验吞吐。
         let chunkSize = 8 * 1024 * 1024
-        let minimumUpdateInterval: TimeInterval = 0.15
+        // 每次进度发布都会让主界面整棵视图树重算一遍;0.15s(≈6.7Hz)在校验
+        // 期间足以让滚动和交互发闷。0.4s(2.5Hz)的进度条肉眼依然连续。
+        let minimumUpdateInterval: TimeInterval = 0.4
         var lastUpdateAt = Date()
         while true {
             try checkInterruption(interruptionToken)
@@ -1669,7 +2273,7 @@ struct TransferService {
             )
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: nil,
                 targetChecksum: nil,
                 backupChecksum: nil,
@@ -1684,7 +2288,7 @@ struct TransferService {
             )
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: nil,
                 targetChecksum: nil,
                 backupChecksum: nil,
@@ -1714,7 +2318,7 @@ struct TransferService {
             }
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: sourceHash,
                 targetChecksum: stage == .primary ? targetHash : nil,
                 backupChecksum: stage == .backup ? targetHash : nil,
@@ -1724,14 +2328,14 @@ struct TransferService {
         case .fastFingerprint:
             let sourceFingerprint = try await fingerprint(
                 for: sourceURL,
-                fileSize: item.size,
+                fileSize: sourceSize,
                 interruptionToken: interruptionToken,
                 state: &state,
                 progress: progress
             )
             let targetFingerprint = try await fingerprint(
                 for: targetURL,
-                fileSize: item.size,
+                fileSize: sourceSize,
                 interruptionToken: interruptionToken,
                 state: &state,
                 progress: progress
@@ -1741,7 +2345,7 @@ struct TransferService {
             }
             return FileVerificationRecord(
                 relativePath: item.relativePath,
-                size: item.size,
+                size: sourceSize,
                 sourceChecksum: sourceFingerprint,
                 targetChecksum: stage == .primary ? targetFingerprint : nil,
                 backupChecksum: stage == .backup ? targetFingerprint : nil,
@@ -1762,7 +2366,8 @@ struct TransferService {
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        let minimumUpdateInterval: TimeInterval = 0.15
+        // 与 SHA-256 全量校验同一理由:进度发布节流到 2.5Hz,降低主线程视图重算压力。
+        let minimumUpdateInterval: TimeInterval = 0.4
         let chunkSize = 1_048_576
         var lastUpdateAt = Date()
 
@@ -1863,6 +2468,8 @@ struct TransferService {
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        preflightReportDetails: PreflightReportDetails?,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
         let isEnglish = language == .english
@@ -1870,158 +2477,152 @@ struct TransferService {
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        let fileLines = summary.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
-        }
-
-        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
-        let recordLines = fileRecords.enumerated().map { index, record in
-            if isEnglish {
-                return """
-                \(index + 1). \(record.relativePath)
-                   Status: \(record.status)
-                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-                   Source SHA-256: \(record.sourceChecksum ?? "-")
-                   Primary SHA-256: \(record.targetChecksum ?? "-")
-                   Backup SHA-256: \(record.backupChecksum ?? "-")
-                   Note: \(record.message)
-                """
-            }
-            return """
-            \(index + 1). \(record.relativePath)
-               状态: \(record.status)
-               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-               源 SHA-256: \(record.sourceChecksum ?? "-")
-               主目标 SHA-256: \(record.targetChecksum ?? "-")
-               备份 SHA-256: \(record.backupChecksum ?? "-")
-               说明: \(record.message)
-            """
-        }.joined(separator: "\n")
-
-        let content: String
-        if isEnglish {
-            content = """
-            Airwang DIT for Mac Copy Report
-            ========================================
-
-            [Task Summary]
-            Copy ID: \(taskFolder)
-            Started At: \(formatter.string(from: startedAt))
-            Finished At: \(formatter.string(from: finishedAt))
-            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-            Import Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
-            Bundle ID: \(AppStorageScope.bundleIdentifier)
-            Local Storage: \(AppStorageScope.displayName)
-            Verification Mode: \(summary.verificationMode)
-            Naming Rule: \(summary.namingRule)
-            Verification Summary: \(verificationSummary)
-            Safety Event: \(interruptionReason ?? "None")
-
-            [Paths]
-            Source Device Name: \(summary.sourceVolume.name)
-            Source Device Path: \(summary.sourceVolume.url.path)
-            Actual Scan Folder: \(summary.sourceRootURL.path)
-            Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
-            Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
-            Target Capacity: \(capacityLines(for: destinations))
-
-            [Media Stats]
-            File Count: \(summary.selectedItems.count)
-            Total Size: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
-            Copy Failures: \(copyFailedFiles.count)
-            Verification Failures: \(verificationFailedFiles.count)
-            Skipped Verification: \(skippedFiles.count)
-
-            [Media List]
-            \(fileLines.joined(separator: "\n"))
-
-            [Copy Failures]
-            \(copyFailedSection)
-
-            [Verification Failures]
-            \(verificationFailedSection)
-
-            [Skipped Files]
-            \(skippedSection)
-
-            [Verification Details]
-            \(recordLines.isEmpty ? "No verification details" : recordLines)
-
-            [Issue Files]
-            \(failedSection)
-
-            [Handoff Confirmation]
-            DIT/Media Manager Signature:
-            Receiver Signature:
-            Notes:
-            """
-        } else {
-            content = """
-        Airwang DIT for Mac 拷贝报告
-        ========================================
-
-        [任务概要]
-        拷贝 ID: \(taskFolder)
-        开始时间: \(formatter.string(from: startedAt))
-        完成时间: \(formatter.string(from: finishedAt))
-        拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-        导入状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
-        应用标识: \(AppStorageScope.bundleIdentifier)
-        本地存储: \(AppStorageScope.displayName)
-        校验方式: \(summary.verificationMode)
-        命名规则: \(summary.namingRule)
-        校验结论: \(verificationSummary)
-        安全事件: \(interruptionReason ?? "无")
-
-        [路径信息]
-        源设备名称: \(summary.sourceVolume.name)
-        源设备地址: \(summary.sourceVolume.url.path)
-        实际扫描目录: \(summary.sourceRootURL.path)
-        主目标地址: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
-        备份地址: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "未启用")
-        目标容量: \(capacityLines(for: destinations))
-
-        [素材统计]
-        文件数量: \(summary.selectedItems.count)
-        总容量: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
-        拷贝失败: \(copyFailedFiles.count)
-        校验失败: \(verificationFailedFiles.count)
-        跳过校验: \(skippedFiles.count)
-
-        [素材清单]
-        \(fileLines.joined(separator: "\n"))
-
-        [拷贝失败文件]
-        \(copyFailedSection)
-
-        [校验失败文件]
-        \(verificationFailedSection)
-
-        [跳过校验文件]
-        \(skippedSection)
-
-        [文件校验明细]
-        \(recordLines.isEmpty ? "无校验明细" : recordLines)
-
-        [异常文件]
-        \(failedSection)
-
-        [交接确认]
-        DIT/素材管理员签名:
-        接收方签名:
-        备注:
-        """
-        }
-
         return writeReportContent(
-            content,
-            targetURL: url,
-            targetRootURL: targetRootURL,
-            localURL: fallbackURL
-        )
+            targetURL: url, targetRootURL: targetRootURL,
+            targetVolumeIdentifier: destinations.first?.volumeIdentifier, localURL: fallbackURL
+        ) { writer in
+            if isEnglish {
+                try writer.write("""
+                Airwang DIT for Mac Copy Report
+                ========================================
+
+                [Task Summary]
+                Copy ID: \(taskFolder)
+                Started At: \(formatter.string(from: startedAt))
+                Finished At: \(formatter.string(from: finishedAt))
+                Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                Import Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+                Bundle ID: \(AppStorageScope.bundleIdentifier)
+                Local Storage: \(AppStorageScope.displayName)
+                Verification Mode: \(summary.verificationMode)
+                Naming Rule: \(summary.namingRule)
+                Verification Summary: \(verificationSummary)
+                Safety Event: \(interruptionReason ?? "None")
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: true))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
+
+                [Paths]
+                Source Device Name: \(summary.sourceVolume.name)
+                Source Device Path: \(summary.sourceVolume.url.path)
+                Actual Scan Folder: \(summary.sourceRootURL.path)
+                Primary Target Path: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
+                Backup Path: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "Disabled")
+                Target Capacity: \(capacityLines(for: destinations))
+
+                [Media Stats]
+                File Count: \(summary.selectedItems.count)
+                Total Size: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
+                Copy Failures: \(copyFailedFiles.count)
+                Verification Failures: \(verificationFailedFiles.count)
+                Skipped Verification: \(skippedFiles.count)
+
+                [Media List]
+
+                """)
+                for (index, item) in summary.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[Copy Failures]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "No copy failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Failures]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "No verification failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Skipped Files]")
+                try writeNumberedSection(skippedFiles, emptyText: "No skipped files", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Details]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: true,
+                    sourceLabel: "Source SHA-256",
+                    primaryLabel: "Primary SHA-256",
+                    backupLabel: "Backup SHA-256",
+                    emptyText: "No verification details",
+                    to: writer
+                )
+                try writer.writeLine("[Issue Files]")
+                try writeNumberedSection(failedFiles, emptyText: "No issue files", to: writer)
+                try writer.write("""
+
+                [Handoff Confirmation]
+                DIT/Media Manager Signature:
+                Receiver Signature:
+                Notes:
+                """)
+            } else {
+                try writer.write("""
+                Airwang DIT for Mac 拷贝报告
+                ========================================
+
+                [任务概要]
+                拷贝 ID: \(taskFolder)
+                开始时间: \(formatter.string(from: startedAt))
+                完成时间: \(formatter.string(from: finishedAt))
+                拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                导入状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
+                应用标识: \(AppStorageScope.bundleIdentifier)
+                本地存储: \(AppStorageScope.displayName)
+                校验方式: \(summary.verificationMode)
+                命名规则: \(summary.namingRule)
+                校验结论: \(verificationSummary)
+                安全事件: \(interruptionReason ?? "无")
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: false))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
+
+                [路径信息]
+                源设备名称: \(summary.sourceVolume.name)
+                源设备地址: \(summary.sourceVolume.url.path)
+                实际扫描目录: \(summary.sourceRootURL.path)
+                主目标地址: \(summary.targetURL.appendingPathComponent(taskFolder, isDirectory: true).path)
+                备份地址: \(summary.backupURL?.appendingPathComponent(taskFolder, isDirectory: true).path ?? "未启用")
+                目标容量: \(capacityLines(for: destinations))
+
+                [素材统计]
+                文件数量: \(summary.selectedItems.count)
+                总容量: \(ByteDisplayFormatter.string(fromByteCount: summary.totalSize))
+                拷贝失败: \(copyFailedFiles.count)
+                校验失败: \(verificationFailedFiles.count)
+                跳过校验: \(skippedFiles.count)
+
+                [素材清单]
+
+                """)
+                for (index, item) in summary.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[拷贝失败文件]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[校验失败文件]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[跳过校验文件]")
+                try writeNumberedSection(skippedFiles, emptyText: "无跳过文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[文件校验明细]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: false,
+                    sourceLabel: "源 SHA-256",
+                    primaryLabel: "主目标 SHA-256",
+                    backupLabel: "备份 SHA-256",
+                    emptyText: "无校验明细",
+                    to: writer
+                )
+                try writer.writeLine("[异常文件]")
+                try writeNumberedSection(failedFiles, emptyText: "无异常文件", to: writer)
+                try writer.write("""
+
+                [交接确认]
+                DIT/素材管理员签名:
+                接收方签名:
+                备注:
+                """)
+            }
+        }
     }
 
     private func writeProjectReportDocument(
@@ -2039,45 +2640,18 @@ struct TransferService {
         verificationFailedFiles: [String],
         skippedFiles: [String],
         fileRecords: [FileVerificationRecord],
+        resumedFiles: [String],
         failedFiles: [String],
         interruptionReason: String?,
         verificationSummary: String,
+        preflightReportDetails: PreflightReportDetails?,
+        spacePreflightResults: [DestinationSpacePreflight],
         language: AppLanguage
     ) -> ReportDocumentWriteResult {
         let isEnglish = language == .english
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-
-        let fileLines = project.selectedItems.enumerated().map { index, item in
-            "\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))"
-        }
-        let failedSection = makeNumberedSection(failedFiles, emptyText: isEnglish ? "No issue files" : "无异常文件")
-        let copyFailedSection = makeNumberedSection(copyFailedFiles, emptyText: isEnglish ? "No copy failures" : "无拷贝失败文件")
-        let verificationFailedSection = makeNumberedSection(verificationFailedFiles, emptyText: isEnglish ? "No verification failures" : "无校验失败文件")
-        let skippedSection = makeNumberedSection(skippedFiles, emptyText: isEnglish ? "No skipped files" : "无跳过文件")
-        let recordLines = fileRecords.enumerated().map { index, record in
-            if isEnglish {
-                return """
-                \(index + 1). \(record.relativePath)
-                   Status: \(record.status)
-                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-                   Source Checksum: \(record.sourceChecksum ?? "-")
-                   Primary Checksum: \(record.targetChecksum ?? "-")
-                   Backup Checksum: \(record.backupChecksum ?? "-")
-                   Note: \(record.message)
-                """
-            }
-            return """
-            \(index + 1). \(record.relativePath)
-               状态: \(record.status)
-               大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
-               源校验值: \(record.sourceChecksum ?? "-")
-               主目标校验值: \(record.targetChecksum ?? "-")
-               备份校验值: \(record.backupChecksum ?? "-")
-               说明: \(record.message)
-            """
-        }.joined(separator: "\n")
 
         let routeLine: String
         switch stage {
@@ -2087,137 +2661,168 @@ struct TransferService {
             routeLine = isEnglish ? "Stage Route: primary target path -> backup path. Backup reads from the primary target." : "本阶段路径: 主目标地址 -> 备份地址（备份来源为主目标盘）"
         }
 
-        let content: String
-        if isEnglish {
-            content = """
-            \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
-            ========================================
-
-            [Task Summary]
-            Copy ID: \(project.taskFolderName)
-            Project Name: \(project.name)
-            Report Type: \(stage == .primary ? "Primary report" : "Backup report")
-            Started At: \(formatter.string(from: startedAt))
-            Finished At: \(formatter.string(from: finishedAt))
-            Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-            Stage Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
-            Bundle ID: \(AppStorageScope.bundleIdentifier)
-            Local Storage: \(AppStorageScope.displayName)
-            Verification Mode: \(project.verificationMode.title)
-            Verification Risk Note: \(project.verificationMode.reportWarning)
-            Verification Summary: \(verificationSummary)
-            Safety Event: \(interruptionReason ?? "None")
-
-            [Paths]
-            \(routeLine)
-            Original Source Name: \(project.sourceName)
-            Original Source Path: \(project.sourceVolumePath)
-            Original Scan Folder: \(project.sourceRootPath)
-            Stage Read Path: \(sourceBaseURL.path)
-            Primary Target Path: \(project.primaryImportURL.path)
-            Backup Path: \(project.backupImportURL?.path ?? "Disabled")
-            Stage Write Path: \(destinationFolderURL.path)
-            Target Capacity: \(capacityLines(for: [destination]))
-
-            [Media Stats]
-            File Count: \(project.selectedItems.count)
-            Total Size: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
-            Copy Failures: \(copyFailedFiles.count)
-            Verification Failures: \(verificationFailedFiles.count)
-            Skipped Verification: \(skippedFiles.count)
-
-            [Media List]
-            \(fileLines.joined(separator: "\n"))
-
-            [Copy Failures]
-            \(copyFailedSection)
-
-            [Verification Failures]
-            \(verificationFailedSection)
-
-            [Skipped Files]
-            \(skippedSection)
-
-            [Verification Details]
-            \(recordLines.isEmpty ? "No verification details" : recordLines)
-
-            [Issue Files]
-            \(failedSection)
-
-            [Handoff Confirmation]
-            DIT/Media Manager Signature:
-            Receiver Signature:
-            Notes:
-            """
-        } else {
-            content = """
-        \(stage.reportTitle)
-        ========================================
-
-        [任务概要]
-        拷贝 ID: \(project.taskFolderName)
-        项目名称: \(project.name)
-        报告类型: \(stage == .primary ? "第一份主盘报告" : "第二份备份报告")
-        开始时间: \(formatter.string(from: startedAt))
-        完成时间: \(formatter.string(from: finishedAt))
-        拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
-        阶段状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
-        应用标识: \(AppStorageScope.bundleIdentifier)
-        本地存储: \(AppStorageScope.displayName)
-        校验方式: \(project.verificationMode.title)
-        校验风险说明: \(project.verificationMode.reportWarning)
-        校验结论: \(verificationSummary)
-        安全事件: \(interruptionReason ?? "无")
-
-        [路径信息]
-        \(routeLine)
-        原始源设备名称: \(project.sourceName)
-        原始源地址: \(project.sourceVolumePath)
-        原始扫描目录: \(project.sourceRootPath)
-        本阶段读取地址: \(sourceBaseURL.path)
-        主目标地址: \(project.primaryImportURL.path)
-        备份地址: \(project.backupImportURL?.path ?? "未启用")
-        本阶段写入地址: \(destinationFolderURL.path)
-        目标容量: \(capacityLines(for: [destination]))
-
-        [素材统计]
-        文件数量: \(project.selectedItems.count)
-        总容量: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
-        拷贝失败: \(copyFailedFiles.count)
-        校验失败: \(verificationFailedFiles.count)
-        跳过校验: \(skippedFiles.count)
-
-        [素材清单]
-        \(fileLines.joined(separator: "\n"))
-
-        [拷贝失败文件]
-        \(copyFailedSection)
-
-        [校验失败文件]
-        \(verificationFailedSection)
-
-        [跳过校验文件]
-        \(skippedSection)
-
-        [文件校验明细]
-        \(recordLines.isEmpty ? "无校验明细" : recordLines)
-
-        [异常文件]
-        \(failedSection)
-
-        [交接确认]
-        DIT/素材管理员签名:
-        接收方签名:
-        备注:
-        """
-        }
-
         return writeReportContent(
-            content,
-            targetURL: url,
-            targetRootURL: targetRootURL,
-            localURL: fallbackURL
-        )
+            targetURL: url, targetRootURL: targetRootURL,
+            targetVolumeIdentifier: destination.volumeIdentifier, localURL: fallbackURL
+        ) { writer in
+            if isEnglish {
+                try writer.write("""
+                \(stage == .primary ? "Airwang DIT for Mac Primary Copy Report" : "Airwang DIT for Mac Backup Report")
+                ========================================
+
+                [Task Summary]
+                Copy ID: \(project.taskFolderName)
+                Project Name: \(project.name)
+                Report Type: \(stage == .primary ? "Primary report" : "Backup report")
+                Started At: \(formatter.string(from: startedAt))
+                Finished At: \(formatter.string(from: finishedAt))
+                Duration: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                Stage Status: \(failedFiles.isEmpty ? "Success" : "Issues Found")
+                Bundle ID: \(AppStorageScope.bundleIdentifier)
+                Local Storage: \(AppStorageScope.displayName)
+                Verification Mode: \(project.verificationMode.title)
+                Verification Risk Note: \(project.verificationMode.reportWarning)
+                Verification Summary: \(verificationSummary)
+                Safety Event: \(interruptionReason ?? "None")
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: true))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: true))
+
+                [Paths]
+                \(routeLine)
+                Original Source Name: \(project.sourceName)
+                Original Source Path: \(project.sourceVolumePath)
+                Original Scan Folder: \(project.sourceRootPath)
+                Stage Read Path: \(sourceBaseURL.path)
+                Primary Target Path: \(project.primaryImportURL.path)
+                Backup Path: \(project.backupImportURL?.path ?? "Disabled")
+                Stage Write Path: \(destinationFolderURL.path)
+                Target Capacity: \(capacityLines(for: [destination]))
+
+                [Media Stats]
+                File Count: \(project.selectedItems.count)
+                Total Size: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
+                Copy Failures: \(copyFailedFiles.count)
+                Verification Failures: \(verificationFailedFiles.count)
+                Skipped Verification: \(skippedFiles.count)
+                Existing Files Reused After SHA-256: \(resumedFiles.count)
+
+                [Media List]
+
+                """)
+                for (index, item) in project.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[Copy Failures]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "No copy failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Failures]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "No verification failures", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Skipped Files]")
+                try writeNumberedSection(skippedFiles, emptyText: "No skipped files", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[Verification Details]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: true,
+                    sourceLabel: "Source Checksum",
+                    primaryLabel: "Primary Checksum",
+                    backupLabel: "Backup Checksum",
+                    emptyText: "No verification details",
+                    to: writer
+                )
+                try writer.writeLine("[Files Reused After Full SHA-256 Verification]")
+                try writeNumberedSection(resumedFiles, emptyText: "No reused files", to: writer)
+                try writer.writeLine("[Issue Files]")
+                try writeNumberedSection(failedFiles, emptyText: "No issue files", to: writer)
+                try writer.write("""
+
+                [Handoff Confirmation]
+                DIT/Media Manager Signature:
+                Receiver Signature:
+                Notes:
+                """)
+            } else {
+                try writer.write("""
+                \(stage.reportTitle)
+                ========================================
+
+                [任务概要]
+                拷贝 ID: \(project.taskFolderName)
+                项目名称: \(project.name)
+                报告类型: \(stage == .primary ? "第一份主盘报告" : "第二份备份报告")
+                开始时间: \(formatter.string(from: startedAt))
+                完成时间: \(formatter.string(from: finishedAt))
+                拷贝时长: \(formatDuration(finishedAt.timeIntervalSince(startedAt)))
+                阶段状态: \(failedFiles.isEmpty ? "成功" : "存在异常")
+                应用标识: \(AppStorageScope.bundleIdentifier)
+                本地存储: \(AppStorageScope.displayName)
+                校验方式: \(project.verificationMode.title)
+                校验风险说明: \(project.verificationMode.reportWarning)
+                校验结论: \(verificationSummary)
+                安全事件: \(interruptionReason ?? "无")
+                \(preflightReportSection(details: preflightReportDetails, isEnglish: false))
+                \(spacePreflightReportSection(spacePreflightResults, isEnglish: false))
+
+                [路径信息]
+                \(routeLine)
+                原始源设备名称: \(project.sourceName)
+                原始源地址: \(project.sourceVolumePath)
+                原始扫描目录: \(project.sourceRootPath)
+                本阶段读取地址: \(sourceBaseURL.path)
+                主目标地址: \(project.primaryImportURL.path)
+                备份地址: \(project.backupImportURL?.path ?? "未启用")
+                本阶段写入地址: \(destinationFolderURL.path)
+                目标容量: \(capacityLines(for: [destination]))
+
+                [素材统计]
+                文件数量: \(project.selectedItems.count)
+                总容量: \(ByteDisplayFormatter.string(fromByteCount: project.totalBytes))
+                拷贝失败: \(copyFailedFiles.count)
+                校验失败: \(verificationFailedFiles.count)
+                跳过校验: \(skippedFiles.count)
+                SHA-256 复核后复用: \(resumedFiles.count)
+
+                [素材清单]
+
+                """)
+                for (index, item) in project.selectedItems.enumerated() {
+                    try writer.writeLine("\(index + 1). \(item.relativePath) | \(ByteDisplayFormatter.string(fromByteCount: item.size)) | \(formatter.string(from: item.createdAt))")
+                }
+                try writer.writeLine()
+                try writer.writeLine("[拷贝失败文件]")
+                try writeNumberedSection(copyFailedFiles, emptyText: "无拷贝失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[校验失败文件]")
+                try writeNumberedSection(verificationFailedFiles, emptyText: "无校验失败文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[跳过校验文件]")
+                try writeNumberedSection(skippedFiles, emptyText: "无跳过文件", to: writer)
+                try writer.writeLine()
+                try writer.writeLine("[文件校验明细]")
+                try writeVerificationDetails(
+                    fileRecords,
+                    isEnglish: false,
+                    sourceLabel: "源校验值",
+                    primaryLabel: "主目标校验值",
+                    backupLabel: "备份校验值",
+                    emptyText: "无校验明细",
+                    to: writer
+                )
+                try writer.writeLine("[SHA-256 全量复核后复用文件]")
+                try writeNumberedSection(resumedFiles, emptyText: "无复用文件", to: writer)
+                try writer.writeLine("[异常文件]")
+                try writeNumberedSection(failedFiles, emptyText: "无异常文件", to: writer)
+                try writer.write("""
+
+                [交接确认]
+                DIT/素材管理员签名:
+                接收方签名:
+                备注:
+                """)
+            }
+        }
     }
 
     private func makeProjectVerificationSummary(
@@ -2246,6 +2851,170 @@ struct TransferService {
         return "\(stage.destinationLabel)阶段完成但存在异常：发现 \(failedFiles.count) 个异常文件，请复核明细。"
     }
 
+    private func preflightReportSection(details: PreflightReportDetails?, isEnglish: Bool) -> String {
+        guard let details else {
+            return isEnglish
+                ? "[Preflight]\nResult: Passed"
+                : "[预检]\n结果: 通过"
+        }
+
+        if isEnglish {
+            return """
+            [Preflight]
+            Failure Type: \(details.englishFailureType)
+            Failure Detail: \(details.detail)
+            Recommendation: \(details.englishRecommendation)
+            """
+        }
+        return """
+        [预检]
+        失败类型: \(details.failureType)
+        失败详情: \(details.detail)
+        处理建议: \(details.recommendation)
+        """
+    }
+
+    private func makePreflightReportDetails(for error: Error) -> PreflightReportDetails {
+        let detail = error.localizedDescription
+
+        if let pathSafetyError = error as? PathSafety.Error {
+            return PreflightReportDetails(
+                failureType: "路径安全检查失败",
+                englishFailureType: "Path safety check failed",
+                detail: pathSafetyError.localizedDescription,
+                recommendation: "检查目标路径、符号链接和目录结构后重试",
+                englishRecommendation: "Review the destination path, symbolic links, and directory structure before retrying"
+            )
+        }
+
+        if let transferError = error as? TransferError {
+            switch transferError {
+            case .destinationAlreadyExists:
+                return PreflightReportDetails(
+                    failureType: "目标文件已存在",
+                    englishFailureType: "Destination already exists",
+                    detail: detail,
+                    recommendation: "改项目名、更换目标目录或人工确认后重试",
+                    englishRecommendation: "Rename the project, choose another destination folder, or review the existing file manually before retrying"
+                )
+            case .insufficientSpace:
+                return PreflightReportDetails(
+                    failureType: "目标盘空间不足",
+                    englishFailureType: "Insufficient destination space",
+                    detail: detail,
+                    recommendation: "释放目标盘空间或更换容量充足的目标盘后重试",
+                    englishRecommendation: "Free destination space or choose a destination with sufficient capacity before retrying"
+                )
+            case .capacityUnavailable:
+                return PreflightReportDetails(
+                    failureType: "目标盘容量不可读",
+                    englishFailureType: "Destination capacity unavailable",
+                    detail: detail,
+                    recommendation: "重新连接目标盘并确认系统能够读取容量后重试",
+                    englishRecommendation: "Reconnect the destination and confirm its capacity is readable before retrying"
+                )
+            case .destinationNotWritable, .destinationWriteFailed:
+                return PreflightReportDetails(
+                    failureType: "目标盘不可写",
+                    englishFailureType: "Destination is not writable",
+                    detail: detail,
+                    recommendation: "检查目标盘权限、只读状态和连接状态后重试",
+                    englishRecommendation: "Check destination permissions, read-only status, and connection before retrying"
+                )
+            case .pathOverlap:
+                return PreflightReportDetails(
+                    failureType: "路径关系不安全",
+                    englishFailureType: "Unsafe path relationship",
+                    detail: detail,
+                    recommendation: "重新选择相互独立的源盘、主目标盘和备份盘",
+                    englishRecommendation: "Choose independent source, primary, and backup volumes before retrying"
+                )
+            case .deviceUnavailable:
+                return PreflightReportDetails(
+                    failureType: "设备不可访问",
+                    englishFailureType: "Device unavailable",
+                    detail: detail,
+                    recommendation: "重新连接设备并确认路径可访问后重试",
+                    englishRecommendation: "Reconnect the device and confirm the path is accessible before retrying"
+                )
+            case .primaryReferenceUnavailable, .primaryCheckpointMismatch:
+                return PreflightReportDetails(
+                    failureType: "主盘参考复核失败", englishFailureType: "Primary checkpoint validation failed",
+                    detail: detail,
+                    recommendation: "检查原主盘报告和当前主盘内容，保留现有文件后再决定恢复方式",
+                    englishRecommendation: "Review the original primary report and current primary files; preserve them before choosing a recovery route"
+                )
+            case .transferInterrupted,
+                 .sourceVolumeChanged,
+                 .resumeFileChanged,
+                 .copySizeMismatch,
+                 .sourceFileMissing,
+                 .sourceReadFailed:
+                break
+            }
+        }
+
+        return PreflightReportDetails(
+            failureType: "预检失败",
+            englishFailureType: "Preflight failed",
+            detail: detail,
+            recommendation: "检查报告中的失败详情并排除问题后重试",
+            englishRecommendation: "Review the failure details, resolve the issue, and retry"
+        )
+    }
+
+    private func spacePreflightReportSection(
+        _ results: [DestinationSpacePreflight],
+        isEnglish: Bool
+    ) -> String {
+        guard !results.isEmpty else {
+            return isEnglish
+                ? "[Space Preflight]\nResult: Not completed"
+                : "[空间预检]\n预检结果: 未完成"
+        }
+
+        let sections = results.map { result in
+            let requirement = result.requirement
+            let available = result.availableBytes.map { ByteDisplayFormatter.string(fromByteCount: $0) }
+                ?? (isEnglish ? "Unavailable" : "容量不可读")
+            let status: String
+            switch result.status {
+            case .passed:
+                status = isEnglish ? "Passed" : "通过"
+            case .insufficient:
+                status = isEnglish ? "Insufficient space" : "空间不足"
+            case .capacityUnavailable:
+                status = isEnglish ? "Capacity unavailable" : "容量不可读"
+            }
+
+            if isEnglish {
+                return """
+                Destination: \(result.destinationLabel)
+                Path: \(result.destinationPath)
+                Payload Size: \(ByteDisplayFormatter.string(fromByteCount: requirement.payloadBytes))
+                Safety Margin: \(ByteDisplayFormatter.string(fromByteCount: requirement.safetyMarginBytes))
+                Minimum Required: \(ByteDisplayFormatter.string(fromByteCount: requirement.requiredBytes))
+                Available Space: \(available)
+                Preflight Result: \(status)
+                """
+            }
+
+            return """
+            目标: \(result.destinationLabel)
+            路径: \(result.destinationPath)
+            素材总量: \(ByteDisplayFormatter.string(fromByteCount: requirement.payloadBytes))
+            安全冗余: \(ByteDisplayFormatter.string(fromByteCount: requirement.safetyMarginBytes))
+            最低需求: \(ByteDisplayFormatter.string(fromByteCount: requirement.requiredBytes))
+            可用空间: \(available)
+            预检结果: \(status)
+            """
+        }
+
+        return (isEnglish ? "[Space Preflight]" : "[空间预检]")
+            + "\n"
+            + sections.joined(separator: "\n\n")
+    }
+
     private func finalProjectPhaseTitle(
         stage: ProjectTransferStage,
         failedFiles: [String],
@@ -2269,6 +3038,7 @@ struct TransferService {
         _ content: String,
         targetURL: URL?,
         targetRootURL: URL?,
+        targetVolumeIdentifier: String? = nil,
         localURL: URL
     ) -> ReportDocumentWriteResult {
         var writtenTargetURL: URL?
@@ -2278,8 +3048,10 @@ struct TransferService {
         if let targetURL {
             if let targetRootURL {
                 do {
-                    try writeText(content, to: targetURL, under: targetRootURL)
-                    writtenTargetURL = targetURL
+                    try ensureAvailable(targetRootURL, role: "报告目标盘", expectedVolumeIdentifier: targetVolumeIdentifier)
+                    let outputURL = nonCollidingReportURL(for: targetURL)
+                    try writeText(content, to: outputURL, under: targetRootURL)
+                    writtenTargetURL = outputURL
                 } catch {
                     notes.append("目标盘报告写入失败：\(error.localizedDescription)")
                 }
@@ -2291,8 +3063,54 @@ struct TransferService {
         }
 
         do {
-            try writeText(content, to: localURL, under: AppStorageScope.applicationSupportURL)
-            writtenLocalURL = localURL
+            let outputURL = nonCollidingReportURL(for: localURL)
+            try writeText(content, to: outputURL, under: AppStorageScope.applicationSupportURL)
+            writtenLocalURL = outputURL
+        } catch {
+            notes.append("本地备份报告写入失败：\(error.localizedDescription)")
+        }
+
+        let note = notes.isEmpty ? nil : notes.joined(separator: "；")
+        return ReportDocumentWriteResult(
+            requestedTargetURL: targetURL,
+            targetURL: writtenTargetURL,
+            localURL: writtenLocalURL,
+            note: note
+        )
+    }
+
+    private func writeReportContent(
+        targetURL: URL?,
+        targetRootURL: URL?,
+        targetVolumeIdentifier: String? = nil,
+        localURL: URL,
+        body: (ReportTextWriter) throws -> Void
+    ) -> ReportDocumentWriteResult {
+        var writtenTargetURL: URL?
+        var writtenLocalURL: URL?
+        var notes: [String] = []
+
+        if let targetURL {
+            if let targetRootURL {
+                do {
+                    try ensureAvailable(targetRootURL, role: "报告目标盘", expectedVolumeIdentifier: targetVolumeIdentifier)
+                    let outputURL = nonCollidingReportURL(for: targetURL)
+                    try writeText(to: outputURL, under: targetRootURL, body: body)
+                    writtenTargetURL = outputURL
+                } catch {
+                    notes.append("目标盘报告写入失败：\(error.localizedDescription)")
+                }
+            } else {
+                notes.append("目标盘报告缺少安全根目录，已拒绝写入。")
+            }
+        } else {
+            notes.append("因预检安全拦截，未向目标盘写入报告，仅保存 App 本地报告。")
+        }
+
+        do {
+            let outputURL = nonCollidingReportURL(for: localURL)
+            try writeText(to: outputURL, under: AppStorageScope.applicationSupportURL, body: body)
+            writtenLocalURL = outputURL
         } catch {
             notes.append("本地备份报告写入失败：\(error.localizedDescription)")
         }
@@ -2307,6 +3125,16 @@ struct TransferService {
     }
 
     private func writeText(_ content: String, to url: URL, under rootURL: URL) throws {
+        try writeText(to: url, under: rootURL) { writer in
+            try writer.write(content)
+        }
+    }
+
+    private func writeText(
+        to url: URL,
+        under rootURL: URL,
+        body: (ReportTextWriter) throws -> Void
+    ) throws {
         try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -2314,7 +3142,96 @@ struct TransferService {
             attributes: nil
         )
         try PathSafety.ensureSafeWritableFileTarget(for: url, under: rootURL)
-        try content.write(to: url, atomically: true, encoding: .utf8)
+
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp", isDirectory: false)
+        try PathSafety.ensureSafeWritableFileTarget(for: temporaryURL, under: rootURL)
+        FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        let writer = ReportTextWriter(handle: handle)
+        do {
+            try body(writer)
+            try handle.synchronize()
+            try handle.close()
+            try ensureDestinationDoesNotExist(url, under: rootURL)
+            do {
+                try FileManager.default.moveItem(at: temporaryURL, to: url)
+            } catch {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    throw TransferError.destinationAlreadyExists(url.path)
+                }
+                throw error
+            }
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+    }
+
+    private func nonCollidingReportURL(for preferredURL: URL) -> URL {
+        guard FileManager.default.fileExists(atPath: preferredURL.path) else {
+            return preferredURL
+        }
+
+        let pathExtension = preferredURL.pathExtension
+        let stem = preferredURL.deletingPathExtension().lastPathComponent
+        let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+        let fileName = pathExtension.isEmpty
+            ? "\(stem)_\(suffix)"
+            : "\(stem)_\(suffix).\(pathExtension)"
+        return preferredURL.deletingLastPathComponent().appendingPathComponent(fileName, isDirectory: false)
+    }
+
+    private func writeNumberedSection(_ items: [String], emptyText: String, to writer: ReportTextWriter) throws {
+        guard !items.isEmpty else {
+            try writer.writeLine(emptyText)
+            return
+        }
+        for (index, item) in items.enumerated() {
+            try writer.writeLine("\(index + 1). \(item)")
+        }
+    }
+
+    private func writeVerificationDetails(
+        _ fileRecords: [FileVerificationRecord],
+        isEnglish: Bool,
+        sourceLabel: String,
+        primaryLabel: String,
+        backupLabel: String,
+        emptyText: String,
+        to writer: ReportTextWriter
+    ) throws {
+        guard !fileRecords.isEmpty else {
+            try writer.writeLine(emptyText)
+            return
+        }
+
+        for (index, record) in fileRecords.enumerated() {
+            if isEnglish {
+                try writer.write("""
+                \(index + 1). \(record.relativePath)
+                   Status: \(record.status)
+                   Size: \(ByteDisplayFormatter.string(fromByteCount: record.size))
+                   \(sourceLabel): \(record.sourceChecksum ?? "-")
+                   \(primaryLabel): \(record.targetChecksum ?? "-")
+                   \(backupLabel): \(record.backupChecksum ?? "-")
+                   Note: \(record.message)
+
+                """)
+            } else {
+                try writer.write("""
+                \(index + 1). \(record.relativePath)
+                   状态: \(record.status)
+                   大小: \(ByteDisplayFormatter.string(fromByteCount: record.size))
+                   \(sourceLabel): \(record.sourceChecksum ?? "-")
+                   \(primaryLabel): \(record.targetChecksum ?? "-")
+                   \(backupLabel): \(record.backupChecksum ?? "-")
+                   说明: \(record.message)
+
+                """)
+            }
+        }
     }
 
     private func formatDuration(_ value: TimeInterval) -> String {
@@ -2329,11 +3246,6 @@ struct TransferService {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func makeNumberedSection(_ items: [String], emptyText: String) -> String {
-        guard !items.isEmpty else { return emptyText }
-        return items.enumerated().map { index, item in "\(index + 1). \(item)" }.joined(separator: "\n")
-    }
-
     private func capacityLines(for destinations: [Destination]) -> String {
         destinations.map { destination in
             let capacity = DiskCapacityResolver.capacity(for: destination.rootURL)
@@ -2342,5 +3254,19 @@ struct TransferService {
             return "\(destination.label) 可用 \(free) / 总计 \(total)"
         }
         .joined(separator: " | ")
+    }
+}
+
+private struct ReportTextWriter {
+    let handle: FileHandle
+
+    func write(_ text: String) throws {
+        if let data = text.data(using: .utf8) {
+            try handle.write(contentsOf: data)
+        }
+    }
+
+    func writeLine(_ text: String = "") throws {
+        try write(text + "\n")
     }
 }

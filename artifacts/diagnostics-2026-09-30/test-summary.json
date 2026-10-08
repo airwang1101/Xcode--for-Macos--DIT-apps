@@ -1,0 +1,15 @@
+{
+  "result": "Passed",
+  "passedTests": 118,
+  "failedTests": 0,
+  "skippedTests": 0,
+  "expectedFailures": 0,
+  "totalTestCount": 118,
+  "runtimeWarnings": [],
+  "testFailures": [],
+  "testedEnvironment": {
+    "architecture": "arm64",
+    "macOS": "27.2",
+    "xcode": "27.0"
+  }
+}

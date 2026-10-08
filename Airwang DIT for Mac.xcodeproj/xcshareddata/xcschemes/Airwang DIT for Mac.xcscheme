@@ -27,8 +27,20 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldUseLaunchSchemeArgsEnv = "NO"
       shouldAutocreateTestPlan = "YES">
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "AIRWANG_DIT_UNIT_TESTING"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "AIRWANG_DIT_APP_SUPPORT_DIR"
+            value = "/tmp/airwang-dit-unit-tests"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
       <Testables>
          <TestableReference
             skipped = "NO"
@@ -41,7 +53,27 @@
                ReferencedContainer = "container:Airwang DIT for Mac.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "YES"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A30000000000000000000009"
+               BuildableName = "Airwang DIT for MacUITests.xctest"
+               BlueprintName = "Airwang DIT for MacUITests"
+               ReferencedContainer = "container:Airwang DIT for Mac.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "A10000000000000000000009"
+            BuildableName = "Airwang DIT for Mac.app"
+            BlueprintName = "Airwang DIT for Mac"
+            ReferencedContainer = "container:Airwang DIT for Mac.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

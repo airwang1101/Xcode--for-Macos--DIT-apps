@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "mode": "preview",
+  "version": "0.1.1",
+  "build": "2026093003",
+  "createdAt": "2026-09-30T09:19:10.591330+00:00",
+  "source": {
+    "revision": "505d7a0d06e908ecad947b271315c3f3bd37bf34",
+    "dirty": true,
+    "inputSha256": "806074d62462bad20550119a06df0769e82db84d2415d7d311b2dc182a2a7f07"
+  },
+  "embeddedProvenance": true,
+  "status": "verified-unsigned-preview",
+  "commercialAcceptance": "unverified",
+  "uiTests": "excluded-by-scheme",
+  "signature": "unsigned-preview",
+  "notarization": "not-requested",
+  "gatekeeper": "not-assessed",
+  "xcode": "Xcode 27.0\nBuild version 27A266a",
+  "unitTests": {
+    "result": "Passed",
+    "passedTests": 132,
+    "failedTests": 0,
+    "skippedTests": 0
+  },
+  "coverage": {
+    "applicationLineCoverage": 0.301549617991108,
+    "groups": {
+      "models": {
+        "coveredLines": 1744,
+        "executableLines": 2353,
+        "lineCoverage": 0.7411814704632385
+      },
+      "services": {
+        "coveredLines": 3500,
+        "executableLines": 5030,
+        "lineCoverage": 0.6958250497017893
+      },
+      "businessCore": {
+        "coveredLines": 6115,
+        "executableLines": 10758,
+        "lineCoverage": 0.5684142033835285
+      }
+    }
+  },
+  "compilerWarnings": {
+    "Debug": 0,
+    "Release": 0
+  },
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "minimumMacOS": "14.0",
+  "artifact": {
+    "file": "Airwang-DIT-0.1.1-2026093003-UNSIGNED-PREVIEW.dmg",
+    "sha256": "262c580daa450714f6d77eb6725eed3b173a7ee40e1fe80dc88bc6632958eb36",
+    "bytes": 3908661
+  }
+}

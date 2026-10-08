@@ -2,22 +2,29 @@ import Foundation
 
 final class SettingsStore {
     private let fileManager = FileManager.default
+    private let preferencesURL: URL
+    private let uiSettingsURL: URL
     private(set) var lastLoadWarning: String?
 
+    init(preferencesURL: URL = AppStorageScope.preferencesURL, uiSettingsURL: URL = AppStorageScope.uiSettingsURL) {
+        self.preferencesURL = preferencesURL
+        self.uiSettingsURL = uiSettingsURL
+    }
+
     func load() -> AppPreferences {
-        load(AppPreferences.self, from: AppStorageScope.preferencesURL, fallback: .default, dataName: "工作预设")
+        load(AppPreferences.self, from: preferencesURL, fallback: .default, dataName: "工作预设")
     }
 
     func save(_ preferences: AppPreferences) throws {
-        try save(preferences, to: AppStorageScope.preferencesURL)
+        try JSONPersistence.writeSettings(preferences, to: preferencesURL)
     }
 
     func loadUISettings() -> AppUISettings {
-        load(AppUISettings.self, from: AppStorageScope.uiSettingsURL, fallback: .default, dataName: "界面设置")
+        load(AppUISettings.self, from: uiSettingsURL, fallback: .default, dataName: "界面设置")
     }
 
     func saveUISettings(_ settings: AppUISettings) throws {
-        try save(settings, to: AppStorageScope.uiSettingsURL)
+        try JSONPersistence.writeSettings(settings, to: uiSettingsURL)
     }
 
     private func load<T: Decodable>(_ type: T.Type, from url: URL, fallback: T, dataName: String) -> T {
@@ -27,8 +34,14 @@ final class SettingsStore {
 
         do {
             let data = try Data(contentsOf: url)
+            try PersistentSchema.validateDataVersion(data)
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
+            if let data = try? Data(contentsOf: url),
+               (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {
+                lastLoadWarning = "\(dataName) 格式无法识别：\(error.localizedDescription)。文件已保留，保存时将检查并保护原文件。"
+                return fallback
+            }
             let backupURL = backupCorruptFile(at: url)
             let backupMessage = backupURL.map { "已备份到：\($0.path)" } ?? "备份损坏文件失败"
             lastLoadWarning = "\(dataName) JSON 无法读取：\(error.localizedDescription)。\(backupMessage)。"
@@ -36,26 +49,13 @@ final class SettingsStore {
         }
     }
 
-    private func save<T: Encodable>(_ value: T, to url: URL) throws {
-        let data = try JSONEncoder().encode(value)
-        try fileManager.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        try data.write(to: url, options: .atomic)
-    }
-
     private func backupCorruptFile(at url: URL) -> URL? {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let backupURL = url.deletingLastPathComponent()
-            .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".corrupt-\(formatter.string(from: Date()))")
+            .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".corrupt-\(formatter.string(from: Date()))-\(UUID().uuidString)")
             .appendingPathExtension(url.pathExtension)
         do {
-            if fileManager.fileExists(atPath: backupURL.path) {
-                try fileManager.removeItem(at: backupURL)
-            }
             try fileManager.copyItem(at: url, to: backupURL)
             return backupURL
         } catch {

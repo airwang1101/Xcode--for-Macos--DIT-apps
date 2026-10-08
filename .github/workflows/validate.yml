@@ -1,6 +1,3 @@
-# Register the manual entry on the default branch without porting development code.
-# In Run workflow, select a development branch that contains this workflow's tests.
-# This placeholder is always skipped and never allocates a hosted runner.
 name: Validate macOS distribution preview
 
 on:
@@ -9,10 +6,38 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: dit-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  select-development-branch:
-    name: Select a development branch in Run workflow to run its existing tests
-    if: ${{ false }}
-    runs-on: ubuntu-latest
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
-      - run: echo "Select a development branch in Run workflow."
+      - name: Checkout source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Validate release tool gates
+        run: python3 -m unittest discover -s script/tests -v
+      - name: Check source whitespace
+        run: git diff --check HEAD^
+      - name: Build and inspect unsigned preview
+        env:
+          DIT_CI_BUILD: ${{ github.run_number }}
+          DIT_CI_OUTPUT: ${{ runner.temp }}/airwang-distribution
+        run: bash script/build-release.sh preview --version 0.1.1 --build "$DIT_CI_BUILD" --output "$DIT_CI_OUTPUT"
+      - name: Retain preview and validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-preview-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/airwang-distribution/*/*.dmg
+            ${{ runner.temp }}/airwang-distribution/*/manifest.json
+            ${{ runner.temp }}/airwang-distribution/*/SHA256SUMS
+            ${{ runner.temp }}/airwang-distribution/*/evidence/

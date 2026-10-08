@@ -1,0 +1,110 @@
+{
+  "verifiedOn": "2026-10-01",
+  "packageBuild": "2026093003",
+  "unitTests": {
+    "result": "Passed",
+    "passedTests": 132,
+    "failedTests": 0,
+    "skippedTests": 0
+  },
+  "backupRetryAndMigrationTests": [
+    {
+      "test": "testBackupRetryQueueAfterReloadPreservesPrimaryAndRenameFolder()",
+      "result": "Passed"
+    },
+    {
+      "test": "testBackupRetryRemovalRestoresCompletedPrimaryAndFailedPreflightDoesNotCompleteCopy()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupAllowsInternalBackupAfterExternalCardDisconnect()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupCancellationAndPrimaryIdentityFailBeforeWrites()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupDetectsMutationDuringReferenceCopyAndFinalCheck()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupKeepsFullHashEvidenceForResumedPrimaryFiles()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupRejectsChangedPrimaryBeforeAnyBackupWrites()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupRejectsIncompleteOrInconsistentEvidence()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupRejectsMissingOrSymlinkPrimaryAndPreservesExistingBackup()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupRoundTripsAndResumesWithoutSourceInEveryMode()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupTaskCancellationDuringReferenceCreatesCancelledReport()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupPreparationRejectsUnsafeStatesWithoutMutation()",
+      "result": "Passed"
+    },
+    {
+      "test": "testIndependentBackupStatePreservesPrimaryAndRoundTrips()",
+      "result": "Passed"
+    },
+    {
+      "test": "testProjectV2MigrationRetainsOriginalBeyondRollingBackups()",
+      "result": "Passed"
+    }
+  ],
+  "releaseToolTests": {
+    "passed": 17,
+    "failed": 0
+  },
+  "coverage": {
+    "applicationLineCoverage": 0.301549617991108,
+    "groups": {
+      "models": {
+        "coveredLines": 1744,
+        "executableLines": 2353,
+        "lineCoverage": 0.7411814704632385
+      },
+      "services": {
+        "coveredLines": 3500,
+        "executableLines": 5030,
+        "lineCoverage": 0.6958250497017893
+      },
+      "businessCore": {
+        "coveredLines": 6115,
+        "executableLines": 10758,
+        "lineCoverage": 0.5684142033835285
+      }
+    }
+  },
+  "compilerWarnings": {
+    "Debug": 0,
+    "Release": 0
+  },
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "minimumMacOS": "14.0",
+  "runtime": {
+    "architecture": "arm64",
+    "macOS": "27.2",
+    "xcode": "27.0"
+  },
+  "uiTests": "excluded-by-scheme",
+  "manualBackupRetryUI": "unverified",
+  "actualOlderAppRollback": "unverified",
+  "commercialAcceptance": "unverified"
+}

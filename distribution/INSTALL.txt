@@ -1,0 +1,34 @@
+Airwang DIT for Mac
+Requires macOS 14.0 or later. Supports Apple Silicon and Intel Macs.
+
+INSTALL
+1. Drag Airwang DIT for Mac.app onto the Applications shortcut.
+2. Open the app from Applications after the copy finishes.
+3. Select source media and a primary destination. Use a separate volume for backup.
+4. Keep the original media until all required copies and verification have completed.
+
+RECOVERY
+If a copy is interrupted, reconnect the original source and destination volumes.
+Retry the project manually. Existing files are reused only after full SHA-256
+verification. Files with different content are preserved and reported as errors.
+
+UNSIGNED PREVIEWS
+Packages labelled UNSIGNED-PREVIEW are internal test builds. They have not passed
+Developer ID signing or Apple notarization. Gatekeeper may block them.
+Use the signed, notarized build for customer distribution.
+
+DATA
+The production app keeps settings, project history and local reports in:
+~/Library/Application Support/com.airwang.ditformac/
+Replacing the app does not require deleting this directory.
+
+安装
+将 Airwang DIT for Mac.app 拖入 Applications，等待复制完成后从应用程序打开。
+系统要求 macOS 14.0 或更新版本，支持 Apple Silicon 和 Intel。
+备份请选择独立存储卷。保留原始素材，直到所需副本和校验均已完成。
+
+恢复
+重新连接原始源设备和目标盘，手动重试项目。已有文件通过完整 SHA-256
+校验后复用；内容不一致的文件会保留并报告异常。
+
+UNSIGNED-PREVIEW 表示内部测试构建，尚未签名公证，不能作为客户发布包。

@@ -1,0 +1,228 @@
+{
+  "baselineCommit": "289f18f438f33333e444b3b7cc1fd61fddc39087",
+  "branchParentBeforeSubmission": "c4158374d8bb5b33d39186e028629519fd57355c",
+  "configuration": "Debug arm64, Xcode 27.0, macOS 27.2 (26B5101f)",
+  "finalUnitTests": {
+    "result": "Passed",
+    "passedTests": 152,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "totalTestCount": 152
+  },
+  "releaseBuild": "Release arm64, signing disabled, BUILD SUCCEEDED",
+  "releaseToolTests": {
+    "passed": 17,
+    "failed": 0
+  },
+  "netProductionLinesRemoved": 308,
+  "meanClockMilliseconds": {
+    "original": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": 4993.7485449999995,
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": 1.6078314,
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": 283.85228240000004,
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": 27.837335400000004
+    },
+    "selection": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": 0.0071422000000000005,
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": 1.5316124,
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": 279.595441,
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": 27.743953800000003
+    },
+    "heatmap": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": 4745.0191012000005,
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": 1.5770568,
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": 182.3646462,
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": 26.540054400000002
+    },
+    "combined": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": 0.005699000000000001,
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": 1.575671,
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": 181.88554480000002,
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": 27.078564800000002
+    }
+  },
+  "sourceSHA256": {
+    "Airwang DIT for Mac/AirwangDITForMacApp.swift": "b25d4351eab85985e49bb2f29283f3de916f3428a107646fe626631d2231792b",
+    "Airwang DIT for Mac/Models/Models.swift": "dbe1e06b3dfe4900a255cfc28af3b8de3b9b2ba7ab202ec8013c6978a78fa13e",
+    "Airwang DIT for Mac/Models/OrganizerModels.swift": "34af1cab387b5800f7957942be2757a2d1f53b303db3ace71790aeecacc5bb3f",
+    "Airwang DIT for Mac/Models/StoreFiles.swift": "479a12ee18bbb0b74331e53392b4fe5155e2b33814eaeb77d979219c088fff00",
+    "Airwang DIT for Mac/Services/MediaScanner.swift": "3c024a7ab5e63438e4aa68dbd84b0b7047fb6a72ca8f3d052f2565b8a80c2a74",
+    "Airwang DIT for Mac/Services/OrganizerService.swift": "d9080e8aade16db33921696556152d3d62c849758a4bcf1b3e776715f07a1e2b",
+    "Airwang DIT for Mac/Services/PathSafety.swift": "70b7bc649da3635f5db0163aa3d966b9681a05fc6862a3c5bf3e8128e31bdd7f",
+    "Airwang DIT for Mac/Services/ReportPDFExporter.swift": "68a4535fa63b65027226c9602caa3d43b09184fb2c9027e403663b8758ca6ec9",
+    "Airwang DIT for Mac/Services/SettingsStore.swift": "47fbdea36b78080bdb3c3b712957f47b259c7ca52a497a64c56f5f09c30faeb6",
+    "Airwang DIT for Mac/Services/SupportDiagnostics.swift": "4b6f1fbb509ff47dcbbaef16c907ae98a507defe06c0534e5a84f7aab21081f8",
+    "Airwang DIT for Mac/Services/TransferService.swift": "3a25c39746e9ea27bf67a2422b94921f6f8c9d7d1d4c5898f3be2138587f9b57",
+    "Airwang DIT for Mac/Services/VolumeMonitor.swift": "b5068a137233632391f2e5e9c37c41f76b8c0130a1909f9c3fdb80cd53d65998",
+    "Airwang DIT for Mac/ViewModels/AppViewModel.swift": "76f3db35b62af85b975cf5b9f00c9069a53fb79cd5df26ffcdb80a1da1bff490",
+    "Airwang DIT for Mac/Views/AirwangComponents.swift": "c990ef49f7103602c5716a71dce7fc9fbb94ca8f284443e56e9f9989194e17eb",
+    "Airwang DIT for Mac/Views/AirwangPalette.swift": "fce0a6145f61a79d743dbe8de8a82c9e803134df27035c77c7c6c348125033aa",
+    "Airwang DIT for Mac/Views/ContentView+CopyWorkspace.swift": "1befbf251735b9056d02f48b88def0016a3ae39225c1e4859460e0cef8500ba1",
+    "Airwang DIT for Mac/Views/ContentView+OrganizeWorkspace.swift": "a104170bad0add3fc6962145f515c4a1ed1e6c553aeb7e451bb9a30e87632bf7",
+    "Airwang DIT for Mac/Views/ContentView+StatisticsWorkspace.swift": "3770b5a679f422bfea42da2065483310f6f63c4b304480b2f67d2fe73bfa303d",
+    "Airwang DIT for Mac/Views/ContentView.swift": "36286645cda8cfdf28fc28e4c5d79cb3b410d97d7a78504c12d9bc3fed342cc0",
+    "Airwang DIT for Mac/Views/FolderPickerSheet.swift": "c1b8f1d78401245f35098f81488304908b1935341e6b685a546bf005b8bf6895",
+    "Airwang DIT for Mac/Views/ImportSheet.swift": "c79059e88fcab50c12e4c6579b1d83fc52c2c01bc6f352afcd6813d14cb65aff",
+    "Airwang DIT for MacTests/MediaScannerTests.swift": "7d43a971d41cd75085ca750999714803043cc859d0ff884d9ab776764604fc1e",
+    "Airwang DIT for MacTests/ModelPolicyTests.swift": "1b7ce036f944450e811797b897bf120ef822de027c0ea4b4d39834049de4cf7f",
+    "Airwang DIT for MacTests/OrganizerServiceTests.swift": "71588748efc4e728e7e692811098925930f23528bdffff462b4fb778fdb0decd",
+    "Airwang DIT for MacTests/PathSafetyTests.swift": "1bd31394197a7dcb5b96e16eb7857beb4894c5b5fcb5157f76b2cdf2415e96b6",
+    "Airwang DIT for MacTests/PersistenceCompatibilityTests.swift": "5b1530ea4eb195c0ae16d1eda730c1ebf111d64934cff8c8bd88c04ba84ffef5",
+    "Airwang DIT for MacTests/ReportPDFExporterTests.swift": "1b032cff4fdd0266fadea5c8c46b80b36a02c84689954ff5656a33c61626b02f",
+    "Airwang DIT for MacTests/StatisticsPerformanceTests.swift": "52570184bbf77d3eb0e4168ed39605c306a99807c9b1307df43a154237cfa836",
+    "Airwang DIT for MacTests/SupportDiagnosticsTests.swift": "12a98b1650496cb981a5c67861032b6867a26a6ad11d9b677fb4a5ed6d728dde",
+    "Airwang DIT for MacTests/TransferServiceTests.swift": "2fbe13a6dc24e5676bac5064e9b6b73f357320a25daf60ab31b3e6b203340309"
+  },
+  "clockSamplesSeconds": {
+    "original": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": [
+        4.979222122,
+        5.011868208,
+        4.985303857,
+        5.044259274000001,
+        4.948089264
+      ],
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": [
+        0.001777514,
+        0.0015365980000000001,
+        0.001601542,
+        0.001539673,
+        0.00158383
+      ],
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": [
+        0.280753855,
+        0.28379851500000003,
+        0.279252066,
+        0.296549761,
+        0.27890721500000004
+      ],
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": [
+        0.027925059000000002,
+        0.027706078000000002,
+        0.02780579,
+        0.027731088,
+        0.028018662000000003
+      ]
+    },
+    "selection": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": [
+        1.2218e-05,
+        5.658000000000001e-06,
+        8.200000000000001e-06,
+        4.9610000000000004e-06,
+        4.6740000000000005e-06
+      ],
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": [
+        0.001529505,
+        0.0015217560000000002,
+        0.0015227810000000002,
+        0.001559066,
+        0.001524954
+      ],
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": [
+        0.282397094,
+        0.273079393,
+        0.27149732600000004,
+        0.283387859,
+        0.28761553300000003
+      ],
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": [
+        0.027593574000000003,
+        0.028255519000000003,
+        0.027479512,
+        0.027786397,
+        0.027604767000000002
+      ]
+    },
+    "heatmap": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": [
+        4.7375800120000005,
+        4.75993928,
+        4.720471081,
+        4.744616268000001,
+        4.762488865
+      ],
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": [
+        0.0016016650000000002,
+        0.001567922,
+        0.001574728,
+        0.0015758760000000001,
+        0.001565093
+      ],
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": [
+        0.182489442,
+        0.18212413200000002,
+        0.18360784000000002,
+        0.18173118800000002,
+        0.181870629
+      ],
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": [
+        0.026606786,
+        0.026519784,
+        0.026509657000000002,
+        0.026534216000000003,
+        0.026529829
+      ]
+    },
+    "combined": {
+      "ImportSelectionTests/testLargeSelectionReadPerformance()": [
+        5.781e-06,
+        6.847000000000001e-06,
+        5.207e-06,
+        5.371000000000001e-06,
+        5.2890000000000005e-06
+      ],
+      "StatisticsPerformanceTests/testCachedHeatmapModeSwitchLookupStaysConstantWork()": [
+        0.0015802630000000002,
+        0.00158178,
+        0.0015675530000000002,
+        0.001567758,
+        0.001581001
+      ],
+      "StatisticsPerformanceTests/testHeatmapBuildPerformance()": [
+        0.18241674900000002,
+        0.18176587400000002,
+        0.182036843,
+        0.18138531200000002,
+        0.181822946
+      ],
+      "StatisticsPerformanceTests/testStatisticsIndexAndHeatmapBuildPerformanceForLargeHistory()": [
+        0.027112685,
+        0.027205058,
+        0.027183164000000003,
+        0.027008873000000003,
+        0.026883044000000002
+      ]
+    }
+  },
+  "deadCodeVariants": {
+    "control-final": {
+      "result": "Passed",
+      "passedTests": 65,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 65
+    },
+    "a": {
+      "result": "Passed",
+      "passedTests": 65,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 65
+    },
+    "b": {
+      "result": "Passed",
+      "passedTests": 65,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 65
+    },
+    "c": {
+      "result": "Passed",
+      "passedTests": 65,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 65
+    }
+  }
+}

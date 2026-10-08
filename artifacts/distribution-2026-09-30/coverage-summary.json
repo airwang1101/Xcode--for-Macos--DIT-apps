@@ -1,0 +1,20 @@
+{
+  "applicationLineCoverage": 0.2597968721912637,
+  "groups": {
+    "models": {
+      "coveredLines": 1586,
+      "executableLines": 2290,
+      "lineCoverage": 0.6925764192139738
+    },
+    "services": {
+      "coveredLines": 3029,
+      "executableLines": 4558,
+      "lineCoverage": 0.6645458534444932
+    },
+    "businessCore": {
+      "coveredLines": 4929,
+      "executableLines": 9989,
+      "lineCoverage": 0.4934427870657723
+    }
+  }
+}

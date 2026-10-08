@@ -1,0 +1,16 @@
+{
+  "Debug": {
+    "sourceWarnings": 0,
+    "toolWarnings": [
+      "2026-09-30 15:39:43.911 appintentsmetadataprocessor[79032:1479016] warning: Metadata extraction skipped, no AppIntents.framework dependency found",
+      "2026-09-30 15:39:44.300 appintentsmetadataprocessor[79038:1479052] warning: Metadata extraction skipped, no AppIntents.framework dependency found",
+      "2026-09-30 15:39:44.628 appintentsmetadataprocessor[79044:1479142] warning: Metadata extraction skipped, no AppIntents.framework dependency found"
+    ]
+  },
+  "Release": {
+    "sourceWarnings": 0,
+    "toolWarnings": [
+      "2026-09-30 15:42:07.403 appintentsmetadataprocessor[80222:1487792] warning: Metadata extraction skipped, no AppIntents.framework dependency found"
+    ]
+  }
+}

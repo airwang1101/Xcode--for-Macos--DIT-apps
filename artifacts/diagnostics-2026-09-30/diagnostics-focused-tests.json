@@ -1,0 +1,21 @@
+{
+  "result": "Passed",
+  "passedTests": 14,
+  "cases": [
+    "testBuiltSourceProvenanceIsIncludedWithoutLocalPaths()",
+    "testCancellationDoesNotPublishAnOutput()",
+    "testConcurrentExportsCannotReplaceEachOther()",
+    "testDefaultFileNameIsUniqueAndUTCRegardlessOfSystemLocale()",
+    "testEncodedDiagnosticsExcludePrivateModelFieldsAndIdentifiers()",
+    "testExistingOutputIsPreserved()",
+    "testKnownEnglishChineseAndRawVerificationLabelsAreNormalized()",
+    "testMissingOrInvalidProvenanceIsUnknownAndNeverEchoed()",
+    "testMissingParentAndWrongExtensionDoNotCreateFiles()",
+    "testPublicationProducesValidJSONWithPrivateFilePermissions()",
+    "testSamplingIsBoundedWhileTotalsIncludeAllReports()",
+    "testSavePanelPrivateTemporaryDirectoryAliasPublishesSafely()",
+    "testSymlinkTargetAndParentArePreservedAndRefused()",
+    "testTaskStatesAndFailureKindsRemainUsefulWithoutRawText()"
+  ],
+  "aliasRegressionFailedBeforeFix": true
+}

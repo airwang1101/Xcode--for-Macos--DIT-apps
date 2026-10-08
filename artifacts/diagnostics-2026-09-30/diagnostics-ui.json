@@ -1,0 +1,88 @@
+{
+  "activity" : {
+    "activeProjectCount" : 0,
+    "backupEnabled" : false,
+    "errorCategory" : "none",
+    "executionMode" : "sequential",
+    "importing" : false,
+    "language" : "english",
+    "organizing" : false,
+    "scanning" : false,
+    "selectedVerificationMode" : "sha256",
+    "theme" : "day",
+    "unsavedChanges" : false
+  },
+  "application" : {
+    "build" : "20260621",
+    "buildInputSHA256" : "unknown",
+    "bundleIdentifier" : "com.airwang.ditformac.dev",
+    "developmentBuild" : true,
+    "isolatedDevelopmentData" : true,
+    "sourceRevision" : "unknown",
+    "sourceState" : "unknown",
+    "version" : "0.1.0"
+  },
+  "environment" : {
+    "architecture" : "arm64",
+    "operatingSystem" : "macOS 27.2.0",
+    "physicalMemoryBytes" : 34359738368,
+    "processorCount" : 8
+  },
+  "format" : "com.airwang.dit.support-diagnostics",
+  "generatedAt" : "2026-09-30T07:40:12Z",
+  "privacy" : {
+    "automaticallyUploaded" : false,
+    "includesDeviceIdentifiers" : false,
+    "includesEnvironmentVariables" : false,
+    "includesFileNames" : false,
+    "includesMediaContent" : false,
+    "includesPaths" : false,
+    "includesRawErrors" : false,
+    "redacted" : true
+  },
+  "projects" : {
+    "recoveryEnabled" : 0,
+    "stages" : {
+
+    },
+    "statusCounts" : {
+
+    },
+    "total" : 0,
+    "verificationModeCounts" : {
+
+    },
+    "withBackup" : 0
+  },
+  "recentReports" : [
+    {
+      "cancelled" : false,
+      "copyFailureCount" : 1,
+      "finishedAt" : "2001-01-01T00:16:50Z",
+      "interrupted" : false,
+      "reference" : 1,
+      "reportWriteFailed" : true,
+      "resumedFileCount" : 0,
+      "selectedFileCount" : 2,
+      "skippedFileCount" : 0,
+      "success" : false,
+      "verificationFailureCount" : 0,
+      "verificationMode" : "sha256"
+    }
+  ],
+  "reports" : {
+    "cancelled" : 0,
+    "interrupted" : 0,
+    "invalidMetrics" : 0,
+    "reportWriteFailures" : 1,
+    "successful" : 0,
+    "total" : 1,
+    "verificationModeCounts" : {
+      "sha256" : 1
+    },
+    "withCopyFailures" : 1,
+    "withSkippedFiles" : 0,
+    "withVerificationFailures" : 0
+  },
+  "schemaVersion" : 1
+}

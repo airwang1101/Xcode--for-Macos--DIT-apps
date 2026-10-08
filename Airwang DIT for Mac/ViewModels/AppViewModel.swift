@@ -1,13 +1,73 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// 把高频进度状态合并到固定发布节奏:间隔内只保留最新一份,尾沿必定送达。
+///
+/// TransferService 只在单文件内部按时间节流 chunk 级进度,但每个文件边界
+/// (开始/写入确认/收尾/校验完成)都会无条件发布一次;小文件密集的素材卡
+/// (照片、RAW 帧序列)每秒能产生数百次发布,每次都让整棵主界面视图树
+/// 重算一遍。汇聚点统一按时间合并后,发布频率与文件大小和数量解耦。
+@MainActor
+final class TransferProgressCoalescer {
+    private let interval: TimeInterval
+    private let apply: (TransferState) -> Void
+    private var lastPublishAt = Date.distantPast
+    private var pending: TransferState?
+    private var flushTask: Task<Void, Never>?
+
+    init(interval: TimeInterval = 0.4, apply: @escaping (TransferState) -> Void) {
+        self.interval = interval
+        self.apply = apply
+    }
+
+    func ingest(_ state: TransferState) {
+        let now = Date()
+        if now.timeIntervalSince(lastPublishAt) >= interval {
+            deliver(state, at: now)
+            return
+        }
+
+        pending = state
+        guard flushTask == nil else { return }
+        let delay = max(interval - now.timeIntervalSince(lastPublishAt), 0.01)
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.flushTask = nil
+            if let pending = self.pending {
+                self.pending = nil
+                self.deliver(pending, at: Date())
+            }
+        }
+    }
+
+    /// 丢弃积压并停止尾沿投递。终态(完成/取消/失败)由调用方直接写入,
+    /// 写入前必须调用,避免迟到的进度覆盖终态。
+    func cancelPending() {
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
+    }
+
+    private func deliver(_ state: TransferState, at now: Date) {
+        lastPublishAt = now
+        pending = nil
+        flushTask?.cancel()
+        flushTask = nil
+        apply(state)
+    }
+}
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    @Published var preferences: AppPreferences
+    @Published var preferences: AppPreferences {
+        didSet { rebuildDisplayVolumesCache() }
+    }
     @Published var selectedTheme: AppTheme = .day
     @Published var selectedLanguage: AppLanguage = .chinese
-    @Published var autoStartQueuedProjects = true
+    @Published var autoStartQueuedProjects = false
     @Published var selectedSection: MainSection = .copy
     @Published var copyProjects: [CopyProject] = [] {
         didSet { orderedProjectsCache = Self.sortedProjects(copyProjects) }
@@ -24,7 +84,10 @@ final class AppViewModel: ObservableObject {
     @Published var projectNameMode: ProjectNameMode = .automatic
     @Published var draftProjectName = ""
     @Published var activeProjectIDs: Set<UUID> = []
-    @Published var mountedVolumes: [StorageVolume] = []
+    @Published var mountedVolumes: [StorageVolume] = [] {
+        didSet { rebuildDisplayVolumesCache() }
+    }
+    private(set) var displayVolumesCache: [StorageVolume] = []
     @Published var pendingImportVolume: StorageVolume?
     @Published var selectedImportMode: ImportMode = .time
     @Published var selectedAssetBrowserMode: AssetBrowserMode = .icon
@@ -35,14 +98,38 @@ final class AppViewModel: ObservableObject {
         }
     }
     @Published var timeGroups: [TimeGroup] = []
-    @Published var selectedItemIDs: Set<String> = []
+    @Published var selectedItemIDs: Set<String> = [] {
+        didSet { selectedItemsSnapshot = nil }
+    }
     @Published var isScanning = false
     @Published var isImporting = false
-    @Published var transferState = TransferState()
-    @Published var latestReport: TransferReport?
     @Published var reports: [TransferReport] = []
+    @Published private(set) var copyStatistics = CopyStatisticsSummary.make(reports: [], projects: [])
+    @Published private(set) var copyStatisticsHeatmaps = CopyStatisticsHeatmaps.make(days: [])
+    @Published private(set) var statisticsRecentReports: [TransferReport] = []
+    @Published private(set) var statisticsRefreshedAt = Date.distantPast
+    @Published private(set) var isRefreshingStatistics = false
+    @Published var organizerSourceURL: URL?
+    @Published var organizerDestinationURL: URL?
+    @Published var organizerScanFilter: ScanFilter = .all
+    @Published var organizerOperationMode: OrganizerOperationMode = .copy
+    @Published var organizerDuplicatePolicy: OrganizerDuplicatePolicy = .rename
+    @Published private(set) var organizerPlan: OrganizerPlan?
+    @Published private(set) var organizerExecutionState = OrganizerExecutionState()
+    @Published private(set) var organizerLastSummary: OrganizerRunSummary?
+    @Published private(set) var isBuildingOrganizerPlan = false
+    @Published private(set) var isRunningOrganizer = false
+    @Published var organizerStatusMessage: String?
+    @Published var organizerPreviewFilter: OrganizerPreviewFilter = .all
     @Published var importError: String?
     @Published var hasUnsavedChanges = false
+    @Published private(set) var isExportingDiagnostics = false
+    @Published private(set) var isChoosingDiagnosticsDestination = false
+    @Published private(set) var diagnosticsExportStatus: String?
+    @Published private(set) var isExportingPDFReport = false
+    @Published private(set) var isChoosingPDFReportDestination = false
+    @Published private(set) var pdfReportExportStatus: String?
+    @Published private(set) var pdfReportExportID: UUID?
     @Published var activeFolderPicker: FolderPickerPurpose?
     @Published var folderRoots: [FolderBrowserItem] = []
     @Published var folderChildren: [FolderBrowserItem] = []
@@ -55,50 +142,76 @@ final class AppViewModel: ObservableObject {
     @Published var hasScannedSource = false
     @Published private(set) var taskLogScopeName = AppStorageScope.displayName
 
-    let settingsStore = SettingsStore()
+    let settingsStore: SettingsStore
     private let volumeMonitor = VolumeMonitor()
     private let scanner = MediaScanner()
     private let transferService = TransferService()
-    private let interruptionToken = ImportInterruptionToken()
+    private let organizerService = OrganizerService()
     private static let projectAutoStartDelay: TimeInterval = 300
+    private static let statisticsRefreshInterval: TimeInterval = 600
     private let reportURL: URL
     private let projectURL: URL
-    private var importTask: Task<Void, Never>?
+    private let statisticsIndexURL: URL
     private var projectTasks: [UUID: Task<Void, Never>] = [:]
     private var projectTokens: [UUID: ImportInterruptionToken] = [:]
     private var pendingDeleteProjectIDs: Set<UUID> = []
     private var autoStartTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private var organizerPlanTask: Task<Void, Never>?
+    private var organizerExecutionTask: Task<Void, Never>?
     private var folderChildrenTask: Task<Void, Never>?
     private var sourceFolderChildrenTask: Task<Void, Never>?
-    private var activeImportSummary: ImportSelectionSummary?
-    private var retrySourceItems: [MediaItem] = []
+    private var statisticsRefreshTask: Task<Void, Never>?
+    private var statisticsBuildTask: Task<Void, Never>?
+    private var statisticsRevision: UInt64 = 0
+    private var organizerPlanGeneration = UUID()
     private var scanSessionID = UUID()
     private var folderNavigationID = UUID()
     private var sourceFolderNavigationID = UUID()
+    private var selectedItemsSnapshot: (items: [MediaItem], totalBytes: Int64)?
+    private var scannedTotalBytesCache: Int64 = 0
     private var scannedItemsByID: [String: MediaItem] = [:]
     private var scannedItemOrder: [String: Int] = [:]
     private var relatedIDsByItemID: [String: Set<String>] = [:]
     private var projectsNeedSave = false
     private var reportsNeedSave = false
+    private var statisticsIndexNeedSave = false
+    private var copyStatisticsIndex = CopyStatisticsIndex()
     private var manualQueueRunActive = false
+    private var diagnosticsExportTask: Task<Void, Never>?
+    private var pdfReportExportTask: Task<Void, Never>?
+    private let backupChangeConfirmation: ((String, String) -> Bool)?
 
-    init() {
+    init(dataDirectory: URL? = nil, backupChangeConfirmation: ((String, String) -> Bool)? = nil) {
+        self.backupChangeConfirmation = backupChangeConfirmation
+        if let dataDirectory {
+            settingsStore = SettingsStore(
+                preferencesURL: dataDirectory.appendingPathComponent(AppStorageScope.preferencesURL.lastPathComponent),
+                uiSettingsURL: dataDirectory.appendingPathComponent(AppStorageScope.uiSettingsURL.lastPathComponent)
+            )
+        } else {
+            settingsStore = SettingsStore()
+        }
         preferences = settingsStore.load()
         let uiSettings = settingsStore.loadUISettings()
         selectedTheme = uiSettings.theme
         selectedLanguage = uiSettings.language
         autoStartQueuedProjects = uiSettings.autoStartQueuedProjects
-        reportURL = Self.makeReportURL()
-        projectURL = Self.makeProjectURL()
+        reportURL = dataDirectory?.appendingPathComponent(Self.makeReportURL().lastPathComponent) ?? Self.makeReportURL()
+        projectURL = dataDirectory?.appendingPathComponent(Self.makeProjectURL().lastPathComponent) ?? Self.makeProjectURL()
+        statisticsIndexURL = dataDirectory?.appendingPathComponent(Self.makeStatisticsIndexURL().lastPathComponent) ?? Self.makeStatisticsIndexURL()
         let reportLoad = Self.loadReports(from: reportURL)
         reports = reportLoad.items
+        let statisticsIndexLoad = Self.loadStatisticsIndex(from: statisticsIndexURL)
+        copyStatisticsIndex = statisticsIndexLoad.value
+        organizerDestinationURL = preferences.targetURL
         let projectLoad = Self.loadProjects(from: projectURL)
         let storedProjects = projectLoad.items
         let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
         copyProjects = recoveredProjects
         orderedProjectsCache = Self.sortedProjects(recoveredProjects)
-        importError = [settingsStore.lastLoadWarning, reportLoad.warning, projectLoad.warning]
+        rebuildCopyStatistics()
+        importError = [settingsStore.lastLoadWarning, reportLoad.warning, statisticsIndexLoad.warning, projectLoad.warning]
             .compactMap { $0 }
             .joined(separator: "\n")
         if importError?.isEmpty == true {
@@ -115,10 +228,27 @@ final class AppViewModel: ObservableObject {
             self?.handleUnmountedVolume(url)
         }
         mountedVolumes = volumeMonitor.volumes
+        // init 内的赋值不触发属性观察器,缓存必须手动建一次,
+        // 否则冷启动时已挂载的设备不会出现在列表里。
+        rebuildDisplayVolumesCache()
         if storedProjects.contains(where: { $0.status == .running || $0.status == .cancelling }) {
             saveProjects()
         }
         scheduleNextAutoStartCheck()
+        startStatisticsRefreshTimer()
+    }
+
+    deinit {
+        diagnosticsExportTask?.cancel()
+        pdfReportExportTask?.cancel()
+        statisticsRefreshTask?.cancel()
+        statisticsBuildTask?.cancel()
+        autoStartTask?.cancel()
+        scanTask?.cancel()
+        organizerPlanTask?.cancel()
+        organizerExecutionTask?.cancel()
+        folderChildrenTask?.cancel()
+        sourceFolderChildrenTask?.cancel()
     }
 
     var isConfigured: Bool {
@@ -137,24 +267,31 @@ final class AppViewModel: ObservableObject {
         localized(theme.title)
     }
 
-    var selectedItems: [MediaItem] {
-        selectedItemIDs
+    var selectedItems: [MediaItem] { importSelectionSnapshot.items }
+
+    var selectedTotalBytes: Int64 { importSelectionSnapshot.totalBytes }
+
+    var scannedTotalBytes: Int64 { scannedTotalBytesCache }
+
+    // Reuse selection work across UI reads. Either input invalidates this snapshot.
+    private var importSelectionSnapshot: (items: [MediaItem], totalBytes: Int64) {
+        if let selectedItemsSnapshot { return selectedItemsSnapshot }
+        let items = selectedItemIDs
             .compactMap { scannedItemsByID[$0] }
             .sorted {
                 (scannedItemOrder[$0.id] ?? Int.max) < (scannedItemOrder[$1.id] ?? Int.max)
             }
+        let snapshot = (items: items, totalBytes: items.reduce(Int64(0)) { $0 + $1.size })
+        selectedItemsSnapshot = snapshot
+        return snapshot
     }
 
-    var selectedTotalBytes: Int64 {
-        selectedItems.reduce(0) { $0 + $1.size }
-    }
+    // shouldShowAsImportSource 要做卷标识符解析(文件系统调用),不能放在
+    // 每次视图 body 求值的路径上;缓存只在挂载列表或偏好变化时重建。
+    var displayVolumes: [StorageVolume] { displayVolumesCache }
 
-    var scannedTotalBytes: Int64 {
-        scannedItems.reduce(0) { $0 + $1.size }
-    }
-
-    var displayVolumes: [StorageVolume] {
-        mountedVolumes.filter { volume in
+    private func rebuildDisplayVolumesCache() {
+        displayVolumesCache = mountedVolumes.filter { volume in
             shouldShowAsImportSource(volume)
         }
     }
@@ -166,16 +303,17 @@ final class AppViewModel: ObservableObject {
 
     var selectionSummary: ImportSelectionSummary? {
         guard let volume = pendingImportVolume,
-              let targetURL = preferences.targetURL,
-              !selectedItems.isEmpty else {
+              let targetURL = preferences.targetURL else {
             return nil
         }
+        let selection = importSelectionSnapshot
+        guard !selection.items.isEmpty else { return nil }
 
         return ImportSelectionSummary(
             sourceVolume: volume,
             sourceRootURL: sourceFolderURL ?? volume.url,
-            selectedItems: selectedItems,
-            totalSize: selectedItems.reduce(0) { $0 + $1.size },
+            selectedItems: selection.items,
+            totalSize: selection.totalBytes,
             targetURL: targetURL,
             backupURL: preferences.backupURL,
             verificationMode: selectedVerificationMode.title,
@@ -186,19 +324,31 @@ final class AppViewModel: ObservableObject {
     var destinationWarnings: [String] {
         guard let summary = selectionSummary else { return [] }
         var warnings: [String] = []
-        let required = summary.totalSize
+        let requirement = SpacePreflightPolicy.requirement(for: summary.totalSize)
 
-        if let available = availableCapacity(for: summary.targetURL), available < required {
-            warnings.append("主目标盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+        if let preflight = targetSpacePreflight {
+            switch preflight.status {
+            case .passed:
+                break
+            case .insufficient:
+                warnings.append("主目标盘空间不足：最低需要 \(ByteDisplayFormatter.string(fromByteCount: preflight.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: preflight.availableBytes ?? 0))")
+            case .capacityUnavailable:
+                warnings.append("主目标盘容量不可读，为避免写满或中断，已阻止创建项目。")
+            }
         }
         if !isWritableDestination(summary.targetURL) {
             warnings.append("主目标盘不可写或位于只读卷，请重新选择。")
         }
 
-        if let backupURL = summary.backupURL,
-           let available = availableCapacity(for: backupURL),
-           available < required {
-            warnings.append("备份盘空间不足：需要 \(ByteDisplayFormatter.string(fromByteCount: required))，可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+        if let preflight = backupSpacePreflight {
+            switch preflight.status {
+            case .passed:
+                break
+            case .insufficient:
+                warnings.append("备份盘空间不足：最低需要 \(ByteDisplayFormatter.string(fromByteCount: preflight.requirement.requiredBytes))，可用 \(ByteDisplayFormatter.string(fromByteCount: preflight.availableBytes ?? 0))")
+            case .capacityUnavailable:
+                warnings.append("备份盘容量不可读，为避免写满或中断，已阻止创建项目。")
+            }
         }
         if let backupURL = summary.backupURL, !isWritableDestination(backupURL) {
             warnings.append("备份盘不可写或位于只读卷，请重新选择。")
@@ -209,9 +359,10 @@ final class AppViewModel: ObservableObject {
            let backupRoot = DiskCapacityResolver.volumeRootPath(for: backupURL),
            targetRoot == backupRoot,
            let available = availableCapacity(for: summary.targetURL) {
-            let combinedRequired = required * 2
-            if available < combinedRequired {
-                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写需要 \(ByteDisplayFormatter.string(fromByteCount: combinedRequired))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
+            let (combinedRequired, overflowed) = requirement.requiredBytes.multipliedReportingOverflow(by: 2)
+            let safeCombinedRequired = overflowed ? Int64.max : combinedRequired
+            if available < safeCombinedRequired {
+                warnings.append("主目标盘和备份盘在同一磁盘卷上：双写最低需要 \(ByteDisplayFormatter.string(fromByteCount: safeCombinedRequired))，当前可用 \(ByteDisplayFormatter.string(fromByteCount: available))")
             }
         }
 
@@ -264,8 +415,12 @@ final class AppViewModel: ObservableObject {
         return localized("当前无法执行队列")
     }
 
+    var hasActiveFileOperations: Bool {
+        hasActiveTransfers || isRunningOrganizer || organizerExecutionTask != nil || isExportingPDFReport
+    }
+
     var hasActiveTransfers: Bool {
-        isImporting || !activeProjectIDs.isEmpty || importTask != nil || !projectTasks.isEmpty
+        isImporting || !activeProjectIDs.isEmpty || !projectTasks.isEmpty
     }
 
     var orderedProjects: [CopyProject] { orderedProjectsCache }
@@ -291,10 +446,6 @@ final class AppViewModel: ObservableObject {
         orderedProjects.filter(\.hasBackup)
     }
 
-    var copyStatistics: CopyStatisticsSummary {
-        CopyStatisticsSummary.make(reports: reports, projects: orderedProjects)
-    }
-
     var projectNamePreview: String {
         guard let volume = pendingImportVolume else {
             return automaticProjectName(sourceName: "Source", date: Date())
@@ -313,11 +464,6 @@ final class AppViewModel: ObservableObject {
         return makeFolderItem(from: selectedFolderURL, fallbackName: selectedFolderURL.lastPathComponent)
     }
 
-    var selectedSourceCapacity: StorageCapacitySnapshot? {
-        guard let sourceFolderURL else { return nil }
-        return DiskCapacityResolver.capacity(for: sourceFolderURL)
-    }
-
     var targetCapacity: StorageCapacitySnapshot? {
         guard let targetURL = preferences.targetURL else { return nil }
         return DiskCapacityResolver.capacity(for: targetURL)
@@ -326,6 +472,70 @@ final class AppViewModel: ObservableObject {
     var backupCapacity: StorageCapacitySnapshot? {
         guard let backupURL = preferences.backupURL else { return nil }
         return DiskCapacityResolver.capacity(for: backupURL)
+    }
+
+    var organizerRule: OrganizerRule {
+        OrganizerRule(
+            scanFilter: organizerScanFilter,
+            operationMode: organizerOperationMode,
+            duplicatePolicy: organizerDuplicatePolicy
+        )
+    }
+
+    var organizerStatistics: OrganizerStatisticsSnapshot {
+        OrganizerStatisticsSnapshot.make(plan: organizerPlan, lastSummary: organizerLastSummary)
+    }
+
+    var organizerWarnings: [String] {
+        var warnings: [String] = []
+        guard let sourceURL = organizerSourceURL,
+              let destinationURL = organizerDestinationURL else {
+            return warnings
+        }
+        if PathSafety.pathsOverlap(sourceURL, destinationURL) {
+            warnings.append("源文件夹和目标文件夹不能相同，也不能互相包含。")
+        }
+        if hasActiveTransfers {
+            warnings.append("当前有导入或备份任务运行，请等任务完成后再执行规整，避免同时抢占磁盘。")
+        }
+        return warnings
+    }
+
+    var organizerCanBuildPlan: Bool {
+        organizerSourceURL != nil
+            && organizerDestinationURL != nil
+            && organizerWarnings.filter { !$0.contains("导入或备份任务") }.isEmpty
+            && !isBuildingOrganizerPlan
+            && !isRunningOrganizer
+    }
+
+    var organizerCanRun: Bool {
+        guard let organizerPlan else { return false }
+        return organizerPlan.executableFiles > 0
+            && organizerWarnings.isEmpty
+            && !isBuildingOrganizerPlan
+            && !isRunningOrganizer
+    }
+
+    var targetSpacePreflight: DestinationSpacePreflight? {
+        guard let summary = selectionSummary else { return nil }
+        return SpacePreflightPolicy.evaluate(
+            destinationLabel: "主目标盘",
+            destinationPath: summary.targetURL.path,
+            payloadBytes: summary.totalSize,
+            availableBytes: targetCapacity?.availableCapacity
+        )
+    }
+
+    var backupSpacePreflight: DestinationSpacePreflight? {
+        guard let summary = selectionSummary,
+              let backupURL = summary.backupURL else { return nil }
+        return SpacePreflightPolicy.evaluate(
+            destinationLabel: "备份盘",
+            destinationPath: backupURL.path,
+            payloadBytes: summary.totalSize,
+            availableBytes: backupCapacity?.availableCapacity
+        )
     }
 
     func openFolderPicker(for purpose: FolderPickerPurpose) {
@@ -342,6 +552,10 @@ final class AppViewModel: ObservableObject {
         case let .projectBackup(projectID):
             existingURL = copyProjects.first(where: { $0.id == projectID })?.backupRootURL
                 ?? preferences.backupURL
+        case .organizerSource:
+            existingURL = organizerSourceURL
+        case .organizerDestination:
+            existingURL = organizerDestinationURL ?? preferences.targetURL
         }
 
         let initial = existingURL ?? folderRoots.first?.url
@@ -381,6 +595,9 @@ final class AppViewModel: ObservableObject {
         switch purpose {
         case .target:
             preferences.targetPath = selectedFolderURL.path
+            if organizerDestinationURL == nil {
+                organizerDestinationURL = selectedFolderURL
+            }
             savePreferences()
         case .backup:
             preferences.backupEnabled = true
@@ -406,6 +623,12 @@ final class AppViewModel: ObservableObject {
             guard applyProjectBackup(projectID: projectID, backupURL: selectedFolderURL) else {
                 return
             }
+        case .organizerSource:
+            organizerSourceURL = selectedFolderURL
+            resetOrganizerPlan()
+        case .organizerDestination:
+            organizerDestinationURL = selectedFolderURL
+            resetOrganizerPlan()
         }
         closeFolderPicker()
     }
@@ -457,8 +680,10 @@ final class AppViewModel: ObservableObject {
         let values = try? url.resourceValues(forKeys: [.isWritableKey, .volumeIsReadOnlyKey])
         let requiresWritableDestination: Bool
         switch purpose {
-        case .target, .backup, .projectBackup:
+        case .target, .backup, .projectBackup, .organizerDestination:
             requiresWritableDestination = true
+        case .organizerSource:
+            requiresWritableDestination = false
         }
         if requiresWritableDestination,
            (values?.volumeIsReadOnly == true || values?.isWritable == false || !FileManager.default.isWritableFile(atPath: url.path)) {
@@ -556,6 +781,160 @@ final class AppViewModel: ObservableObject {
             NSWorkspace.shared.open(documentURL)
         } else {
             importError = "找不到拷贝报告。目标报告和 App 本地备份报告都不存在，可能已被手动删除。"
+        }
+    }
+
+    func exportPDFReport(_ report: TransferReport) {
+        guard !isExportingPDFReport, !isChoosingPDFReportDestination else { return }
+        guard let source = existingReportDocumentURL(for: report) else {
+            importError = localized("找不到原始 TXT 报告，无法导出完整 PDF。")
+            return
+        }
+        isChoosingPDFReportDestination = true
+        let panel = NSSavePanel()
+        panel.title = localized("导出 PDF 报告")
+        panel.message = localized("PDF 包含原始 TXT 的完整明细，请选择新名称以保留已有文件。")
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = ReportPDFExporter.defaultFileName(for: source)
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.isChoosingPDFReportDestination = false
+            guard response == .OK, let destination = panel.url else { return }
+            self.beginPDFReportExport(sourceURL: source, to: destination, reportID: report.id)
+        }
+    }
+
+    func cancelPDFReportExport() {
+        pdfReportExportTask?.cancel()
+    }
+
+    func beginPDFReportExport(sourceURL: URL, to destination: URL, reportID: UUID) {
+        guard !isExportingPDFReport else { return }
+        isExportingPDFReport = true
+        pdfReportExportID = reportID
+        pdfReportExportStatus = localized("正在导出 PDF 报告…")
+        let worker = Task.detached(priority: .utility) { () -> Result<Int, any Error> in
+            let accessing = destination.startAccessingSecurityScopedResource()
+            defer { if accessing { destination.stopAccessingSecurityScopedResource() } }
+            do {
+                return .success(try ReportPDFExporter.export(sourceURL: sourceURL, to: destination))
+            } catch {
+                return .failure(error)
+            }
+        }
+        pdfReportExportTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self else { return }
+            self.isExportingPDFReport = false
+            self.pdfReportExportTask = nil
+            switch result {
+            case let .success(pages):
+                self.pdfReportExportStatus = String(format: self.localized("PDF 报告已导出（%d 页）。"), pages)
+            case let .failure(error):
+                let detail: String
+                if error is CancellationError {
+                    detail = self.localized("PDF 导出已取消。")
+                } else if let exportError = error as? ReportPDFExporter.ExportError {
+                    switch exportError {
+                    case .destinationExists: detail = self.localized("已有文件已保留，请选择新名称。")
+                    case .invalidDestination: detail = self.localized("请选择可写文件夹中的 PDF 文件。")
+                    case .invalidSource: detail = self.localized("找不到有效的原始 TXT 报告。")
+                    case .sourceChanged: detail = self.localized("原始 TXT 报告在读取期间发生变化，导出已停止。")
+                    case .renderingFailed: detail = self.localized("无法完整生成 PDF 报告。")
+                    }
+                } else {
+                    detail = error.localizedDescription
+                }
+                self.pdfReportExportStatus = detail
+            }
+        }
+    }
+
+    func exportDiagnostics() {
+        guard !isExportingDiagnostics, !isChoosingDiagnosticsDestination else { return }
+        isChoosingDiagnosticsDestination = true
+        let panel = NSSavePanel()
+        panel.title = localized("导出诊断")
+        panel.message = localized("请选择新名称以保留已有诊断文件。")
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = SupportDiagnosticsExporter.defaultFileName()
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            self.isChoosingDiagnosticsDestination = false
+            guard response == .OK, let url = panel.url else { return }
+            self.beginDiagnosticsExport(to: url)
+        }
+    }
+
+    func cancelDiagnosticsExport() {
+        diagnosticsExportTask?.cancel()
+    }
+
+    private func beginDiagnosticsExport(to url: URL) {
+        guard !isExportingDiagnostics else { return }
+        let projects = copyProjects
+        let history = reports
+        var activity = SupportDiagnosticsSnapshot.Activity()
+        activity.language = selectedLanguage.rawValue
+        activity.theme = selectedTheme.rawValue
+        activity.executionMode = executionMode.rawValue
+        activity.selectedVerificationMode = selectedVerificationMode.rawValue
+        activity.backupEnabled = preferences.backupEnabled
+        activity.scanning = isScanning
+        activity.importing = isImporting
+        activity.organizing = isRunningOrganizer
+        activity.activeProjectCount = activeProjectIDs.count
+        activity.unsavedChanges = hasUnsavedChanges
+        activity.errorCategory = .classify(importError)
+        let capturedActivity = activity
+        isExportingDiagnostics = true
+        diagnosticsExportStatus = localized("正在导出诊断…")
+        let worker = Task.detached(priority: .utility) { () -> Result<Void, any Error> in
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let snapshot = SupportDiagnosticsSnapshot.capture(projects: projects, reports: history, activity: capturedActivity)
+                try SupportDiagnosticsExporter.write(snapshot, to: url)
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        diagnosticsExportTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self else { return }
+            self.isExportingDiagnostics = false
+            self.diagnosticsExportTask = nil
+            switch result {
+            case .success:
+                self.diagnosticsExportStatus = self.localized("已导出诊断，可先检查文件再提供给支持人员。")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let error):
+                if error is CancellationError {
+                    self.diagnosticsExportStatus = self.localized("诊断导出已取消")
+                } else {
+                    let detail: String
+                    if let exportError = error as? SupportDiagnosticsExporter.ExportError {
+                        switch exportError {
+                        case .destinationExists: detail = self.localized("已有文件已保留，请选择新名称。")
+                        case .invalidDestination: detail = self.localized("请选择可写文件夹中的 JSON 文件。")
+                        }
+                    } else {
+                        detail = error.localizedDescription
+                    }
+                    self.diagnosticsExportStatus = self.localized("诊断导出失败") + ": " + detail
+                }
+            }
         }
     }
 
@@ -755,7 +1134,6 @@ final class AppViewModel: ObservableObject {
             importError = "项目“\(project.name)”未能保存，已取消加入队列。请处理保存错误后重试。"
             return
         }
-        retrySourceItems = summary.selectedItems
         closeImportSheet()
         selectedSection = .copy
         scheduleNextAutoStartCheck()
@@ -789,16 +1167,256 @@ final class AppViewModel: ObservableObject {
         if reportsNeedSave, saveReports() {
             messages.append("任务日志已保存")
         }
+        if statisticsIndexNeedSave, saveStatisticsIndex() {
+            messages.append("统计索引已保存")
+        }
         if !hasUnsavedChanges, !messages.isEmpty {
             importError = messages.joined(separator: "，") + "。"
         }
     }
 
-    func cancelImport() {
-        interruptionToken.stop(reason: "用户取消了导入任务")
-        importTask?.cancel()
-        transferState.phaseTitle = "正在取消"
-        transferState.verificationStatus = "等待当前文件操作结束"
+    func refreshCopyStatistics() {
+        rebuildCopyStatistics()
+    }
+
+    func setOrganizerScanFilter(_ filter: ScanFilter) {
+        guard organizerScanFilter != filter else { return }
+        organizerScanFilter = filter
+        resetOrganizerPlan()
+    }
+
+    func setOrganizerOperationMode(_ mode: OrganizerOperationMode) {
+        guard organizerOperationMode != mode else { return }
+        organizerOperationMode = mode
+        resetOrganizerPlan()
+    }
+
+    func setOrganizerDuplicatePolicy(_ policy: OrganizerDuplicatePolicy) {
+        guard organizerDuplicatePolicy != policy else { return }
+        organizerDuplicatePolicy = policy
+        resetOrganizerPlan()
+    }
+
+    func buildOrganizerPlan() {
+        guard let sourceURL = organizerSourceURL,
+              let destinationURL = organizerDestinationURL else {
+            importError = "请先选择待规整文件夹和规整目标文件夹。"
+            return
+        }
+        let blockingWarnings = organizerWarnings.filter { !$0.contains("导入或备份任务") }
+        guard blockingWarnings.isEmpty else {
+            importError = blockingWarnings.joined(separator: "\n")
+            return
+        }
+
+        organizerPlanTask?.cancel()
+        let generation = UUID()
+        organizerPlanGeneration = generation
+        isBuildingOrganizerPlan = true
+        organizerStatusMessage = "正在扫描并生成规整预览..."
+        organizerPlan = nil
+        organizerLastSummary = nil
+        organizerExecutionState = OrganizerExecutionState()
+        let rule = organizerRule
+
+        organizerPlanTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let plan = try await organizerService.makePlan(
+                    sourceURL: sourceURL,
+                    destinationURL: destinationURL,
+                    rule: rule,
+                    progress: { [weak self] progress in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.organizerPlanGeneration == generation, self.isBuildingOrganizerPlan else { return }
+                            self.organizerStatusMessage = progress.message
+                        }
+                    }
+                )
+                try Task.checkCancellation()
+                await MainActor.run { [weak self] in
+                    guard let self, self.organizerPlanGeneration == generation else { return }
+                    self.organizerPlan = plan
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    var message = "已生成预览：\(plan.executableFiles) 个可执行文件，\(ByteDisplayFormatter.string(fromByteCount: plan.totalBytes))。"
+                    if plan.duplicateFiles > 0 {
+                        message += "查重命中 \(plan.duplicateFiles) 个内容重复文件，将跳过。"
+                    }
+                    self.organizerStatusMessage = message
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self, self.organizerPlanGeneration == generation else { return }
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    self.organizerStatusMessage = "已取消生成预览。"
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, self.organizerPlanGeneration == generation else { return }
+                    self.isBuildingOrganizerPlan = false
+                    self.organizerPlanTask = nil
+                    self.organizerStatusMessage = nil
+                    self.importError = "生成规整预览失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func startOrganizerExecution() {
+        guard !isRunningOrganizer else { return }
+        guard let plan = organizerPlan else {
+            importError = "请先生成规整预览。"
+            return
+        }
+        guard organizerWarnings.isEmpty else {
+            importError = organizerWarnings.joined(separator: "\n")
+            return
+        }
+        guard plan.executableFiles > 0 else {
+            importError = "当前预览没有可执行文件。"
+            return
+        }
+
+        organizerExecutionTask?.cancel()
+        isRunningOrganizer = true
+        organizerLastSummary = nil
+        organizerStatusMessage = plan.rule.operationMode == .copy ? "正在复制规整..." : "正在移动规整..."
+
+        organizerExecutionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let summary = try await organizerService.execute(plan: plan) { [weak self] state in
+                    await MainActor.run { [weak self] in
+                        self?.organizerExecutionState = state
+                    }
+                }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerLastSummary = summary
+                    var message = summary.success
+                        ? "规整完成：\(summary.completedFiles) 个文件已处理。"
+                        : "规整完成：\(summary.completedFiles) 个文件已处理，\(summary.failedFiles.count) 个失败。"
+                    if summary.duplicateFiles > 0 {
+                        message += "查重跳过 \(summary.duplicateFiles) 个内容重复文件。"
+                    }
+                    self.organizerStatusMessage = message
+                    self.organizerPlan = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerExecutionState.isActive = false
+                    self.organizerExecutionState.phaseTitle = "已取消规整"
+                    self.organizerStatusMessage = "已取消规整。"
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isRunningOrganizer = false
+                    self.organizerExecutionTask = nil
+                    self.organizerExecutionState.isActive = false
+                    self.organizerStatusMessage = nil
+                    self.importError = "规整执行失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func cancelOrganizerExecution() {
+        if isBuildingOrganizerPlan {
+            organizerPlanTask?.cancel()
+        }
+        if isRunningOrganizer {
+            organizerExecutionTask?.cancel()
+        }
+    }
+
+    private func resetOrganizerPlan() {
+        organizerPlanGeneration = UUID()
+        organizerPlanTask?.cancel()
+        organizerPlanTask = nil
+        organizerPlan = nil
+        organizerLastSummary = nil
+        organizerStatusMessage = nil
+        organizerPreviewFilter = .all
+        if isBuildingOrganizerPlan {
+            isBuildingOrganizerPlan = false
+        }
+        if !isRunningOrganizer {
+            organizerExecutionState = OrganizerExecutionState()
+        }
+    }
+
+    private func startStatisticsRefreshTimer() {
+        statisticsRefreshTask?.cancel()
+        statisticsRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let nanoseconds = UInt64(Self.statisticsRefreshInterval * 1_000_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: nanoseconds)
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                self?.rebuildCopyStatistics()
+            }
+        }
+    }
+
+    private func rebuildCopyStatistics(now: Date = Date()) {
+        statisticsRevision &+= 1
+        // 同一时间只运行一份统计计算；期间的新报告合并为下一次请求。
+        guard statisticsBuildTask == nil else { return }
+        let revision = statisticsRevision
+        let reportsSnapshot = reports
+        let projectsSnapshot = orderedProjects
+        let indexSnapshot = copyStatisticsIndex
+        let calendar = Calendar.current
+        isRefreshingStatistics = true
+        statisticsBuildTask = Task { [weak self] in
+            let worker = Task.detached(priority: .utility) {
+                let needsRebuild = !indexSnapshot.matches(reports: reportsSnapshot, calendar: calendar, now: now)
+                let index = needsRebuild
+                    ? CopyStatisticsIndex.make(reports: reportsSnapshot, calendar: calendar, now: now)
+                    : indexSnapshot
+                let summary = index.summary(projects: projectsSnapshot, calendar: calendar, now: now)
+                let heatmaps = CopyStatisticsHeatmaps.make(days: summary.days, calendar: calendar)
+                return (index, summary, heatmaps, needsRebuild)
+            }
+            let (index, summary, heatmaps, needsRebuild) = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.statisticsBuildTask = nil
+            guard self.statisticsRevision == revision else {
+                self.rebuildCopyStatistics()
+                return
+            }
+            self.copyStatisticsIndex = index
+            if needsRebuild { self.saveStatisticsIndex() }
+            if self.copyStatistics != summary { self.copyStatistics = summary }
+            if self.copyStatisticsHeatmaps != heatmaps { self.copyStatisticsHeatmaps = heatmaps }
+            // 同 ID 的报告内容也可能变化，不能仅通过 ID 判断是否刷新。
+            self.statisticsRecentReports = Array(reportsSnapshot.prefix(8))
+            self.statisticsRefreshedAt = now
+            self.isRefreshingStatistics = false
+        }
+    }
+
+    private func recordFinishedReport(_ report: TransferReport) {
+        reports.insert(report, at: 0)
+        saveReports()
+        copyStatisticsIndex.add(report)
+        saveStatisticsIndex()
+        rebuildCopyStatistics()
     }
 
     func cancelProject(_ project: CopyProject) {
@@ -863,39 +1481,47 @@ final class AppViewModel: ObservableObject {
         }
 
         updateProject(project.id) { item in
-            item.status = .queued
-            item.errorMessage = nil
-            item.skipVerificationConfirmations = 0
-            item.primaryCopyState = ProjectStageState(
-                title: ProjectStageKind.primaryCopy.title,
-                totalBytes: item.totalBytes,
-                totalFiles: item.selectedItems.count
-            )
-            item.primaryVerifyState = ProjectStageState(
-                title: ProjectStageKind.primaryVerify.title,
-                totalBytes: item.totalBytes,
-                totalFiles: item.selectedItems.count
-            )
-            item.backupCopyState = ProjectStageState(
-                title: ProjectStageKind.backupCopy.title,
-                detail: item.hasBackup ? "等待主盘完成" : "未配置备份盘",
-                totalBytes: item.hasBackup ? item.totalBytes : 0,
-                totalFiles: item.hasBackup ? item.selectedItems.count : 0
-            )
-            item.backupVerifyState = ProjectStageState(
-                title: ProjectStageKind.backupVerify.title,
-                detail: item.hasBackup ? "等待备份完成" : "未配置备份盘",
-                totalBytes: item.hasBackup ? item.totalBytes : 0,
-                totalFiles: item.hasBackup ? item.selectedItems.count : 0
-            )
-            item.primaryReportID = nil
-            item.backupReportID = nil
-            item.autoStartEnabled = false
-            item.autoStartDeadline = nil
+            item.prepareForRetry()
         }
         scheduleNextAutoStartCheck()
         selectedSection = .copy
-        importError = "已将项目“\(project.name)”重新加入任务队列。需要手动点击“执行任务队列”才会开始写盘。"
+        importError = "已将项目“\(project.name)”重新加入任务队列。已有文件会完整复核 SHA-256，缺失文件会补拷，内容不一致的文件将保留并报告异常。需要手动点击“执行任务队列”才会开始。"
+    }
+
+    func canRetryBackup(for project: CopyProject) -> Bool {
+        guard let current = copyProjects.first(where: { $0.id == project.id }),
+              !activeProjectIDs.contains(current.id), current.canPrepareBackupRetry,
+              let report = primaryReferenceReport(for: current) else { return false }
+        return report.success && !report.cancelled && !report.reportDocumentWriteFailed
+            && report.fileRecords.count == current.selectedItems.count
+    }
+
+    private func primaryReferenceReport(for project: CopyProject) -> TransferReport? {
+        if let reference = project.primaryCompletionReference { return reference.report }
+        return reports.first(where: { $0.id == project.primaryReportID })
+    }
+
+    func retryBackupProject(_ project: CopyProject) {
+        guard canRetryBackup(for: project), let current = copyProjects.first(where: { $0.id == project.id }) else {
+            importError = localized("主盘完成记录不足，或项目仍在执行，无法独立重试备份。")
+            return
+        }
+        do {
+            _ = try TransferService.backupRetryReference(
+                project: current, report: primaryReferenceReport(for: current)
+            )
+        } catch {
+            importError = localized("无法独立重试备份") + ": " + error.localizedDescription
+            return
+        }
+        updateProject(current.id) { item in item.prepareForBackupRetry() }
+        scheduleNextAutoStartCheck()
+        selectedSection = .copy
+        let executionNote = manualQueueRunActive
+            ? localized("当前手动队列会继续执行此项目。")
+            : localized("请手动执行任务队列。")
+        importError = String(format: localized("项目“%@”已加入独立备份重试队列。主盘完成状态和原报告已保留，已有备份文件会完整复核 SHA-256。"), current.name)
+            + " " + executionNote
     }
 
     func cancelAutoStart(for project: CopyProject) {
@@ -942,7 +1568,7 @@ final class AppViewModel: ObservableObject {
         guard !cleaned.isEmpty else { return }
         updateProject(project.id) { item in
             item.name = cleaned
-            if item.status == .queued {
+            if item.status == .queued, !item.backupOnlyRetry {
                 let shortID = String(item.id.uuidString.prefix(8).lowercased())
                 item.taskFolderName = FileNameSanitizer.safeComponent(cleaned) + "_" + shortID
             }
@@ -957,7 +1583,9 @@ final class AppViewModel: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "修改项目名称"
-        alert.informativeText = "名称会用于队列显示、报告标题；排队中的项目还会同步更新目标文件夹名。"
+        alert.informativeText = project.backupOnlyRetry
+            ? localized("独立备份重试只修改显示名称与后续报告标题，已有主盘文件夹保持不变。")
+            : "名称会用于队列显示、报告标题；排队中的项目还会同步更新目标文件夹名。"
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
 
@@ -1010,124 +1638,6 @@ final class AppViewModel: ObservableObject {
             return
         }
         importError = "找不到项目输出文件夹：\(url.path)"
-    }
-
-    func retryLatestFailedItems() {
-        guard let latestReport else {
-            importError = "当前还没有可重试的任务日志。"
-            return
-        }
-        guard !latestReport.failedFiles.isEmpty else {
-            importError = "最新任务没有异常素材，不需要重试。"
-            return
-        }
-
-        let retryItems = retryItems(for: latestReport)
-        guard !retryItems.isEmpty else {
-            importError = "当前会话里找不到可重试的异常素材，请重新选择源文件夹扫描后再试。"
-            return
-        }
-
-        let createdAt = Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let retryName = "重试异常_\(latestReport.namingRule)_\(formatter.string(from: createdAt))"
-        let safeFolderName = FileNameSanitizer.safeComponent(
-            retryName,
-            fallback: "Retry_\(formatter.string(from: createdAt))"
-        )
-        let targetRootURL = URL(fileURLWithPath: latestReport.targetPath, isDirectory: true)
-            .deletingLastPathComponent()
-        let backupRootPath = latestReport.backupPath.map {
-            URL(fileURLWithPath: $0, isDirectory: true).deletingLastPathComponent().path
-        }
-        let verificationMode = VerificationMode.allCases.first {
-            $0.title == latestReport.verificationMode || $0.shortTitle == latestReport.verificationMode
-        } ?? selectedVerificationMode
-        let autoStartDeadline = autoStartQueuedProjects
-            ? createdAt.addingTimeInterval(Self.projectAutoStartDelay)
-            : nil
-
-        let project = CopyProject(
-            name: retryName,
-            taskFolderName: safeFolderName,
-            createdAt: createdAt,
-            updatedAt: createdAt,
-            sourceName: latestReport.sourceName,
-            sourceVolumePath: latestReport.sourcePath,
-            sourceRootPath: latestReport.sourceRootPath ?? latestReport.sourcePath,
-            targetRootPath: targetRootURL.path,
-            backupRootPath: backupRootPath,
-            selectedItems: retryItems.map(ProjectMediaItem.init(mediaItem:)),
-            totalBytes: retryItems.reduce(0) { $0 + $1.size },
-            verificationMode: verificationMode,
-            orderIndex: nextProjectOrderIndex(),
-            autoStartEnabled: autoStartQueuedProjects,
-            autoStartDeadline: autoStartDeadline
-        )
-
-        copyProjects.append(project)
-        normalizeProjectOrder()
-        saveProjects()
-        scheduleNextAutoStartCheck()
-        selectedSection = .copy
-        if let autoStartDeadline {
-            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目。5 分钟内可取消自动执行，预计启动：\(shortTimeText(autoStartDeadline))。"
-        } else {
-            importError = "已把 \(retryItems.count) 个异常素材创建为新的重试项目，需要手动执行队列才会开始。"
-        }
-    }
-
-    private func startImport(with summary: ImportSelectionSummary) {
-        isImporting = true
-        let destinationCount = destinationCount(for: summary)
-        transferState = TransferState(
-            totalBytes: summary.totalSize * Int64(destinationCount),
-            processedBytes: 0,
-            verificationTotalBytes: summary.totalSize * Int64(1 + destinationCount),
-            copiedFiles: 0,
-            verifiedFiles: 0,
-            verificationCheckedFiles: 0,
-            totalFiles: summary.selectedItems.count,
-            startedAt: Date(),
-            currentFile: "",
-            verificationStatus: "等待整批校验",
-            failedFiles: [],
-            phaseTitle: "正在准备导入",
-            reportSummary: ""
-        )
-        interruptionToken.reset()
-        activeImportSummary = summary
-        retrySourceItems = summary.selectedItems
-
-        let transferService = self.transferService
-        importTask = Task { [weak self, summary, interruptionToken, transferService] in
-            guard let self else { return }
-            do {
-                let result = try await transferService.runImport(
-                    summary: summary,
-                    interruptionToken: interruptionToken,
-                    language: self.selectedLanguage
-                ) { [weak self] state in
-                    await MainActor.run { [weak self] in
-                        self?.transferState = state
-                    }
-                }
-                self.latestReport = result.report
-                self.reports.insert(result.report, at: 0)
-                self.saveReports()
-            } catch is CancellationError {
-                self.transferState.phaseTitle = "任务已取消"
-                self.transferState.verificationStatus = "用户已取消"
-                self.transferState.isCancelled = true
-            } catch {
-                self.importError = "导入任务失败：\(error.localizedDescription)"
-            }
-
-            self.isImporting = false
-            self.importTask = nil
-            self.activeImportSummary = nil
-        }
     }
 
     private func scheduleQueuedProjects(automaticOnlyAt now: Date? = nil) {
@@ -1187,17 +1697,29 @@ final class AppViewModel: ObservableObject {
     private func runQueuedProject(projectID: UUID, token: ImportInterruptionToken) async {
         guard let primaryProject = copyProjects.first(where: { $0.id == projectID }) else { return }
 
+        // 每阶段一个合并器:文件边界的进度发布不经节流直达这里,
+        // 小文件批次下必须在汇聚点按时间合并(见 TransferProgressCoalescer)。
+        let primaryProgress = TransferProgressCoalescer { [weak self] state in
+            self?.applyProgress(state, to: projectID, stage: .primary)
+        }
+        var backupProgress: TransferProgressCoalescer?
+
         do {
-            let primaryResult = try await transferService.runPrimaryStage(
-                project: primaryProject,
-                interruptionToken: token,
-                language: selectedLanguage
-            ) { [weak self] state in
-                await MainActor.run { [weak self] in
-                    self?.applyProgress(state, to: projectID, stage: .primary)
+            var primaryResult: TransferService.ProjectStageResult?
+            if !primaryProject.backupOnlyRetry {
+                let result = try await transferService.runPrimaryStage(
+                    project: primaryProject,
+                    interruptionToken: token,
+                    language: selectedLanguage
+                ) { state in
+                    await MainActor.run {
+                        primaryProgress.ingest(state)
+                    }
                 }
+                primaryResult = result
+                primaryProgress.cancelPending()
+                finishPrimaryStage(projectID: projectID, result: result)
             }
-            finishPrimaryStage(projectID: projectID, result: primaryResult)
 
             guard let currentProject = copyProjects.first(where: { $0.id == projectID }) else {
                 finishProjectTask(projectID)
@@ -1206,7 +1728,9 @@ final class AppViewModel: ObservableObject {
             if currentProject.status == .cancelling {
                 updateProject(projectID) { item in
                     item.status = .cancelled
-                    item.errorMessage = "用户取消了导入任务，主盘阶段已收尾，后续阶段未执行。"
+                    item.errorMessage = item.backupOnlyRetry
+                        ? localized("独立备份重试已取消，主盘完成状态已保留。")
+                        : "用户取消了导入任务，主盘阶段已收尾，后续阶段未执行。"
                 }
                 finishProjectTask(projectID)
                 return
@@ -1216,18 +1740,18 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
-            if !primaryResult.report.success {
+            if let primaryResult, !primaryResult.report.success {
                 updateProject(projectID) { item in
                     if item.hasBackup {
                         item.status = .blocked
-                        item.errorMessage = "主盘异常，备份已阻塞。请查看第一份主盘报告后重试。"
+                        item.errorMessage = "\(primaryResult.report.verificationSummary) 备份已阻塞，请查看第一份主盘报告后重试。"
                         item.backupCopyState.isBlocked = true
                         item.backupCopyState.detail = "主盘异常，备份已阻塞"
                         item.backupVerifyState.isBlocked = true
                         item.backupVerifyState.detail = "主盘异常，备份已阻塞"
                     } else {
                         item.status = .failed
-                        item.errorMessage = "主盘拷贝或校验异常。此项目未配置备份盘，请查看主盘报告后重试。"
+                        item.errorMessage = primaryResult.report.verificationSummary
                         item.backupCopyState.detail = "未配置备份盘"
                         item.backupVerifyState.detail = "未配置备份盘"
                     }
@@ -1245,25 +1769,37 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
+            let backupCoalescer = TransferProgressCoalescer { [weak self] state in
+                self?.applyProgress(state, to: projectID, stage: .backup)
+            }
+            backupProgress = backupCoalescer
+
             let backupResult = try await transferService.runBackupStage(
                 project: currentProject,
+                primaryReferenceReport: currentProject.backupOnlyRetry
+                    ? primaryReferenceReport(for: currentProject) : nil,
                 interruptionToken: token,
                 language: selectedLanguage
-            ) { [weak self] state in
-                await MainActor.run { [weak self] in
-                    self?.applyProgress(state, to: projectID, stage: .backup)
+            ) { state in
+                await MainActor.run {
+                    backupCoalescer.ingest(state)
                 }
             }
+            backupCoalescer.cancelPending()
             finishBackupStage(projectID: projectID, result: backupResult)
         } catch is CancellationError {
             // Use the token's stop reason when available (e.g. device disconnect),
             // otherwise fall back to the generic user-cancel message.
+            primaryProgress.cancelPending()
+            backupProgress?.cancelPending()
             let cancelReason = projectTokens[projectID]?.reason ?? "用户取消了导入任务"
             updateProject(projectID) { item in
                 item.status = .cancelled
                 item.errorMessage = cancelReason
             }
         } catch {
+            primaryProgress.cancelPending()
+            backupProgress?.cancelPending()
             updateProject(projectID) { item in
                 item.status = .failed
                 item.errorMessage = error.localizedDescription
@@ -1275,14 +1811,15 @@ final class AppViewModel: ObservableObject {
     }
 
     private func finishPrimaryStage(projectID: UUID, result: TransferService.ProjectStageResult) {
-        latestReport = result.report
-        reports.insert(result.report, at: 0)
-        saveReports()
+        recordFinishedReport(result.report)
 
         updateProject(projectID) { item in
             item.primaryReportID = result.report.id
+            item.primaryCompletionReference = result.report.success
+                ? PrimaryCompletionReference(report: result.report) : nil
             item.primaryCopyState.isActive = false
-            item.primaryCopyState.isComplete = result.finalState.copyFailedFiles.isEmpty
+            item.primaryCopyState.isComplete = result.finalState.copiedFiles >= result.finalState.totalFiles
+                && result.finalState.copyFailedFiles.isEmpty
             item.primaryCopyState.finishedAt = Date()
             item.primaryVerifyState.isActive = false
             item.primaryVerifyState.isComplete = result.report.success
@@ -1299,14 +1836,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func finishBackupStage(projectID: UUID, result: TransferService.ProjectStageResult) {
-        latestReport = result.report
-        reports.insert(result.report, at: 0)
-        saveReports()
+        recordFinishedReport(result.report)
 
         updateProject(projectID) { item in
             item.backupReportID = result.report.id
             item.backupCopyState.isActive = false
-            item.backupCopyState.isComplete = result.finalState.copyFailedFiles.isEmpty
+            item.backupCopyState.isComplete = result.finalState.copiedFiles >= result.finalState.totalFiles
+                && result.finalState.copyFailedFiles.isEmpty
             item.backupCopyState.finishedAt = Date()
             item.backupVerifyState.isActive = false
             item.backupVerifyState.isComplete = result.report.success
@@ -1411,11 +1947,11 @@ final class AppViewModel: ObservableObject {
                 let stageState = makeVerificationStageState(from: state, title: stage == .primary ? ProjectStageKind.primaryVerify.title : ProjectStageKind.backupVerify.title)
                 if stage == .primary {
                     item.primaryCopyState.isActive = false
-                    item.primaryCopyState.isComplete = state.copyFailedFiles.isEmpty
+                    item.primaryCopyState.isComplete = state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
                     item.primaryVerifyState = stageState
                 } else {
                     item.backupCopyState.isActive = false
-                    item.backupCopyState.isComplete = state.copyFailedFiles.isEmpty
+                    item.backupCopyState.isComplete = state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
                     item.backupVerifyState = stageState
                 }
             }
@@ -1435,7 +1971,7 @@ final class AppViewModel: ObservableObject {
             startedAt: state.startedAt,
             failedFiles: state.copyFailedFiles,
             isActive: true,
-            isComplete: state.processedBytes >= state.totalBytes && state.copyFailedFiles.isEmpty
+            isComplete: state.copiedFiles >= state.totalFiles && state.copyFailedFiles.isEmpty
         )
     }
 
@@ -1459,8 +1995,12 @@ final class AppViewModel: ObservableObject {
     private func canRunAlongsideActiveProjects(_ project: CopyProject) -> Bool {
         for activeID in activeProjectIDs {
             guard let active = copyProjects.first(where: { $0.id == activeID }) else { continue }
-            if PathSafety.pathsShareVolume(project.sourceRootURL, active.sourceRootURL)
-                || PathSafety.pathsShareVolume(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)) {
+            let source = project.backupOnlyRetry ? project.primaryImportURL : project.sourceRootURL
+            let activeSource = active.backupOnlyRetry ? active.primaryImportURL : active.sourceRootURL
+            let sourceVolume = project.backupOnlyRetry ? project.targetRootURL : URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true)
+            let activeSourceVolume = active.backupOnlyRetry ? active.targetRootURL : URL(fileURLWithPath: active.sourceVolumePath, isDirectory: true)
+            if PathSafety.pathsShareVolume(source, activeSource)
+                || PathSafety.pathsShareVolume(sourceVolume, activeSourceVolume) {
                 return false
             }
             if PathSafety.pathsShareVolume(project.targetRootURL, active.targetRootURL) {
@@ -1484,7 +2024,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updateGlobalImportFlag() {
-        isImporting = !activeProjectIDs.isEmpty || importTask != nil
+        isImporting = !activeProjectIDs.isEmpty
     }
 
     private func updateProject(
@@ -1520,76 +2060,6 @@ final class AppViewModel: ObservableObject {
 
     private func nextProjectOrderIndex() -> Int {
         (copyProjects.map(\.orderIndex).max() ?? -1) + 1
-    }
-
-    private func retryItems(for report: TransferReport) -> [MediaItem] {
-        let sourceRootURL = URL(fileURLWithPath: report.sourceRootPath ?? report.sourcePath, isDirectory: true)
-        let cachedItems = (retrySourceItems + scannedItems).reduce(into: [String: MediaItem]()) { result, item in
-            guard PathSafety.isContained(item.fileURL, in: sourceRootURL) else { return }
-            result[item.relativePath] = item
-        }
-        var items: [MediaItem] = []
-        var seen = Set<String>()
-
-        for relativePath in report.failedFiles where seen.insert(relativePath).inserted {
-            guard (try? SafeRelativePath(relativePath)) != nil else { continue }
-            if let cachedItem = cachedItems[relativePath],
-               FileManager.default.fileExists(atPath: cachedItem.fileURL.path) {
-                items.append(cachedItem)
-                continue
-            }
-
-            guard let fileURL = try? PathSafety.resolvedURL(for: relativePath, under: sourceRootURL) else {
-                continue
-            }
-            guard let item = makeRetryMediaItem(relativePath: relativePath, fileURL: fileURL) else {
-                continue
-            }
-            items.append(item)
-        }
-
-        return items
-    }
-
-    private func makeRetryMediaItem(relativePath: String, fileURL: URL) -> MediaItem? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-
-        let keys: Set<URLResourceKey> = [
-            .creationDateKey,
-            .contentModificationDateKey,
-            .fileSizeKey,
-            .nameKey,
-            .isRegularFileKey
-        ]
-        guard let values = try? fileURL.resourceValues(forKeys: keys),
-              values.isRegularFile == true else {
-            return nil
-        }
-
-        let mediaKind = mediaKind(for: fileURL.pathExtension.lowercased())
-        return MediaItem(
-            id: relativePath,
-            fileURL: fileURL,
-            relativePath: relativePath,
-            displayName: values.name ?? fileURL.lastPathComponent,
-            createdAt: values.creationDate ?? values.contentModificationDate ?? .now,
-            size: Int64(values.fileSize ?? 0),
-            isVideo: mediaKind == .video,
-            mediaKind: mediaKind
-        )
-    }
-
-    private func mediaKind(for fileExtension: String) -> ScanFilter {
-        if ["mov", "mp4", "mxf", "r3d", "braw", "ari", "crm", "avi", "mkv", "mts", "m2ts"].contains(fileExtension) {
-            return .video
-        }
-        if ["jpg", "jpeg", "png", "heic", "tif", "tiff", "dng", "cr2", "cr3", "nef", "arw", "raf", "rw2"].contains(fileExtension) {
-            return .photo
-        }
-        if ["wav", "aif", "aiff", "mp3", "m4a", "flac"].contains(fileExtension) {
-            return .audio
-        }
-        return .all
     }
 
     private func projectBackupEditBlockReason(_ project: CopyProject) -> String? {
@@ -1631,8 +2101,15 @@ final class AppViewModel: ObservableObject {
 
         updateProject(projectID) { item in
             item.backupRootPath = backupURL?.path
+            item.backupVolumeIdentifier = backupURL.flatMap {
+                (try? $0.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+            }
             item.backupReportID = nil
             if backupURL == nil {
+                if item.backupOnlyRetry {
+                    item.status = .completed
+                    item.backupOnlyRetry = false
+                }
                 item.backupCopyState = ProjectStageState(
                     title: ProjectStageKind.backupCopy.title,
                     detail: "未配置备份盘"
@@ -1672,9 +2149,17 @@ final class AppViewModel: ObservableObject {
         var warnings: [String] = []
         let sourceVolumeURL = URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true)
 
+        let sharesOriginalSourceVolume: Bool
+        if project.backupOnlyRetry {
+            let backupID = try? backupURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+            sharesOriginalSourceVolume = project.sourceVolumeIdentifier != nil
+                && project.sourceVolumeIdentifier == backupID
+        } else {
+            sharesOriginalSourceVolume = PathSafety.pathsShareVolume(sourceVolumeURL, backupURL)
+                || PathSafety.pathsShareVolume(project.sourceRootURL, backupURL)
+        }
         if PathSafety.pathsOverlap(project.sourceRootURL, backupURL)
-            || PathSafety.pathsShareVolume(sourceVolumeURL, backupURL)
-            || PathSafety.pathsShareVolume(project.sourceRootURL, backupURL) {
+            || sharesOriginalSourceVolume {
             warnings.append("备份盘不能位于源设备同一个磁盘卷上，请选择独立备份盘。")
         }
 
@@ -1694,6 +2179,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func confirmProjectBackupChange(title: String, message: String) -> Bool {
+        if let backupChangeConfirmation { return backupChangeConfirmation(title, message) }
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -1719,7 +2205,8 @@ final class AppViewModel: ObservableObject {
 
         for project in copyProjects where activeProjectIDs.contains(project.id) {
             let affectedRole: String?
-            if PathSafety.isContained(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), in: url)
+            if !project.backupOnlyRetry,
+               PathSafety.isContained(URL(fileURLWithPath: project.sourceVolumePath, isDirectory: true), in: url)
                 || PathSafety.isContained(project.sourceRootURL, in: url) {
                 affectedRole = "源设备"
             } else if PathSafety.isContained(project.targetRootURL, in: url)
@@ -1742,30 +2229,6 @@ final class AppViewModel: ObservableObject {
         if !messages.isEmpty {
             importError = messages.joined(separator: "\n")
         }
-
-        guard isImporting, let activeImportSummary else { return }
-
-        let affectedRole: String?
-        if PathSafety.isContained(activeImportSummary.sourceVolume.url, in: url) {
-            affectedRole = "源设备"
-        } else if PathSafety.isContained(activeImportSummary.targetURL, in: url) {
-            affectedRole = "主目标盘"
-        } else if let backupURL = activeImportSummary.backupURL,
-                  PathSafety.isContained(backupURL, in: url) {
-            affectedRole = "备份盘"
-        } else {
-            affectedRole = nil
-        }
-
-        guard let affectedRole else { return }
-        let reason = "\(affectedRole) 在导入任务执行中断开：\(url.path)"
-        interruptionToken.stop(reason: reason)
-        importTask?.cancel()
-        transferState.phaseTitle = "设备中断，正在安全收尾"
-        transferState.verificationStatus = "停止新写入并生成报告"
-        transferState.interruptionReason = reason
-        transferState.reportSummary = reason
-        importError = reason
     }
 
     private func existingReportDocumentURL(for report: TransferReport) -> URL? {
@@ -1803,7 +2266,7 @@ final class AppViewModel: ObservableObject {
         do {
             try JSONPersistence.writeReports(reports, to: reportURL)
             reportsNeedSave = false
-            hasUnsavedChanges = projectsNeedSave || reportsNeedSave
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
             return true
         } catch {
             reportsNeedSave = true
@@ -1814,11 +2277,26 @@ final class AppViewModel: ObservableObject {
     }
 
     @discardableResult
+    private func saveStatisticsIndex() -> Bool {
+        do {
+            try JSONPersistence.writeStatisticsIndex(copyStatisticsIndex, to: statisticsIndexURL)
+            statisticsIndexNeedSave = false
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
+            return true
+        } catch {
+            statisticsIndexNeedSave = true
+            hasUnsavedChanges = true
+            importError = "保存统计索引失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
     private func saveProjects() -> Bool {
         do {
             try JSONPersistence.writeProjects(orderedProjects, to: projectURL)
             projectsNeedSave = false
-            hasUnsavedChanges = projectsNeedSave || reportsNeedSave
+            hasUnsavedChanges = projectsNeedSave || reportsNeedSave || statisticsIndexNeedSave
             return true
         } catch {
             projectsNeedSave = true
@@ -1851,10 +2329,6 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
-    private func destinationCount(for summary: ImportSelectionSummary) -> Int {
-        summary.backupURL == nil ? 1 : 2
-    }
-
     private func relatedItemIDs(for item: MediaItem) -> Set<String> {
         relatedIDsByItemID[item.id] ?? [item.id]
     }
@@ -1871,6 +2345,8 @@ final class AppViewModel: ObservableObject {
     }
 
     private func rebuildScanIndexes() {
+        selectedItemsSnapshot = nil
+        scannedTotalBytesCache = scannedItems.reduce(0) { $0 + $1.size }
         scannedItemsByID = Dictionary(uniqueKeysWithValues: scannedItems.map { ($0.id, $0) })
         scannedItemOrder = Dictionary(uniqueKeysWithValues: scannedItems.enumerated().map { ($0.element.id, $0.offset) })
         var groupedIDs: [String: Set<String>] = [:]
@@ -1895,6 +2371,10 @@ final class AppViewModel: ObservableObject {
     private static func loadReports(from url: URL) -> (items: [TransferReport], warning: String?) {
         let result = JSONPersistence.loadReports(from: url)
         return (result.value.sorted { $0.startedAt > $1.startedAt }, result.warning)
+    }
+
+    private static func loadStatisticsIndex(from url: URL) -> PersistentLoadResult<CopyStatisticsIndex> {
+        JSONPersistence.loadStatisticsIndex(from: url)
     }
 
     private static func loadProjects(from url: URL) -> (items: [CopyProject], warning: String?) {
@@ -1925,6 +2405,10 @@ final class AppViewModel: ObservableObject {
 
     private static func makeReportURL() -> URL {
         AppStorageScope.taskLogURL
+    }
+
+    private static func makeStatisticsIndexURL() -> URL {
+        AppStorageScope.statisticsIndexURL
     }
 
     private static func makeProjectURL() -> URL {

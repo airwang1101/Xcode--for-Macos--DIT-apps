@@ -21,3 +21,14 @@ AppArtifactArchive/
 *.ipa
 *.xcarchive
 *.xcresult
+*.profraw
+*.zip
+*.app
+
+# Local QA evidence and synthetic trial media. Selected summaries are committed explicitly.
+artifacts/
+试用素材-20260921/
+
+# Python tooling caches
+__pycache__/
+*.pyc
