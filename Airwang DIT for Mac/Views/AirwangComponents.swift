@@ -198,8 +198,6 @@ struct AirwangGlassSurface: View {
         .compositingGroup()
         .modifier(AirwangLayeredShadow(
             theme: theme,
-            tint: tint,
-            tintStrength: tintStrength,
             elevation: elevation,
             enabled: !reduceEffects
         ))
@@ -208,8 +206,6 @@ struct AirwangGlassSurface: View {
 
 private struct AirwangLayeredShadow: ViewModifier {
     let theme: AppTheme
-    let tint: Color
-    let tintStrength: Double
     let elevation: AirwangGlassElevation
     var enabled = true
 
@@ -217,8 +213,6 @@ private struct AirwangLayeredShadow: ViewModifier {
         let isNight = theme == .night
         let ambient = elevation.ambientOpacity
         let contact = elevation.contactOpacity
-        // tint / tintStrength 参数保留以兼容既有调用点;
-        // 染色光晕已从阴影系统移除(由选中态描边承担)。
         // enabled 走透明度归零而非增删修饰符:修饰符链保持恒定,
         // 窗口缩放降级不再引起视图身份变化。
         let gate = enabled ? 1.0 : 0.0
@@ -252,7 +246,7 @@ extension View {
         // enabled=false 时保持同一条修饰符链、只把阴影透明度归零,避免
         // 窗口缩放降级在两棵视图树之间整体切换。
         compositingGroup()
-            .modifier(AirwangLayeredShadow(theme: theme, tint: tint, tintStrength: tintStrength, elevation: elevation, enabled: enabled))
+            .modifier(AirwangLayeredShadow(theme: theme, elevation: elevation, enabled: enabled))
     }
 }
 

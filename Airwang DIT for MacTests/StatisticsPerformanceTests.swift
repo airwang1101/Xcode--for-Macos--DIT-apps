@@ -91,6 +91,60 @@ final class StatisticsPerformanceTests: XCTestCase {
         XCTAssertEqual(secondHeatmaps, firstHeatmaps)
     }
 
+    func testHeatmapsPreservePartialWeeksAndCumulativeCounts() throws {
+        let start = try makeDate(year: 2026, month: 6, day: 24)
+        let days = (0..<9).map { offset in
+            CopyActivityDay(
+                date: calendar.date(byAdding: .day, value: offset, to: start)!,
+                bytes: Int64(offset + 1), files: offset + 1, reportCount: 1,
+                successCount: offset % 2
+            )
+        }
+        var mondayCalendar = calendar
+        mondayCalendar.firstWeekday = 2
+        let heatmaps = CopyStatisticsHeatmaps.make(days: days, calendar: mondayCalendar)
+        XCTAssertEqual(heatmaps.daily.days, days)
+        XCTAssertEqual(heatmaps.daily.weeks.map { $0.compactMap { $0 }.count }, [4, 5])
+        XCTAssertEqual(heatmaps.weekly.days.map(\.bytes), [10, 10, 10, 10, 35, 35, 35, 35, 35])
+        XCTAssertEqual(heatmaps.weekly.days.map(\.files), [10, 10, 10, 10, 35, 35, 35, 35, 35])
+        XCTAssertEqual(heatmaps.weekly.days.map(\.reportCount), [4, 4, 4, 4, 5, 5, 5, 5, 5])
+        XCTAssertEqual(heatmaps.weekly.days.map(\.successCount), Array(repeating: 2, count: 9))
+        XCTAssertEqual(heatmaps.cumulative.days.map(\.bytes), [1, 3, 6, 10, 15, 21, 28, 36, 45])
+        XCTAssertEqual(heatmaps.cumulative.days.last?.files, 45)
+        XCTAssertEqual(heatmaps.cumulative.days.last?.reportCount, 9)
+        XCTAssertEqual(heatmaps.cumulative.days.last?.successCount, 4)
+        XCTAssertEqual(heatmaps.weekly.peakDay?.date, days.last?.date)
+        XCTAssertEqual(heatmaps.weekly.maxBytes, 35)
+        let empty = CopyStatisticsHeatmaps.make(days: [], calendar: calendar)
+        for mode in StatisticsActivityMode.allCases {
+            XCTAssertTrue(empty.heatmap(for: mode).weeks.isEmpty)
+            XCTAssertNil(empty.heatmap(for: mode).peakDay)
+            XCTAssertEqual(empty.heatmap(for: mode).maxBytes, 1)
+        }
+        let inactive = CopyStatisticsHeatmap.make(days: [
+            CopyActivityDay(date: start, bytes: -1, files: 0, reportCount: 0, successCount: 0)
+        ], calendar: calendar)
+        XCTAssertNil(inactive.peakDay)
+        XCTAssertEqual(inactive.maxBytes, 1)
+    }
+
+    func testHeatmapBuildPerformance() throws {
+        let now = try makeDate(year: 2026, month: 6, day: 24)
+        let reports = makeStressReports(count: 10_000, now: now, daySpan: 730)
+        let days = CopyStatisticsIndex.make(reports: reports, calendar: calendar, now: now)
+            .summary(projects: [], calendar: calendar, now: now).days
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        measure(metrics: [XCTClockMetric()], options: options) {
+            var checksum = 0
+            for _ in 0..<300 {
+                let heatmaps = CopyStatisticsHeatmaps.make(days: days, calendar: calendar)
+                checksum += heatmaps.weekly.days.count + heatmaps.cumulative.days.count
+            }
+            XCTAssertEqual(checksum, 219_000)
+        }
+    }
+
     private func makeStressReports(count: Int, now: Date, daySpan: Int) -> [TransferReport] {
         let dayStart = calendar.startOfDay(for: now)
         let sourceNames = ["A7M3 Card", "FX3 Card", "A7S3 Card", "Drone Card"]

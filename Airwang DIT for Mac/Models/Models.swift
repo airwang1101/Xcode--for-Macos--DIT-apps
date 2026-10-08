@@ -622,20 +622,11 @@ struct StorageCapacitySnapshot: Equatable, Hashable {
         totalCapacity != nil || availableCapacity != nil
     }
 
-    var usageFraction: Double? {
-        guard let totalCapacity, totalCapacity > 0, let availableCapacity else { return nil }
-        return min(max(1 - (Double(availableCapacity) / Double(totalCapacity)), 0), 1)
-    }
-
     var capacityLine: String {
         guard isReadable else { return "容量暂不可读" }
         let free = availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
         let total = totalCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "-"
         return "可用 \(free) / 总计 \(total)"
-    }
-
-    var shortAvailableText: String {
-        availableCapacity.map { ByteDisplayFormatter.string(fromByteCount: $0) } ?? "未知"
     }
 }
 
@@ -1561,19 +1552,6 @@ struct TransferState {
     var interruptionReason: String?
     var spacePreflightResults: [DestinationSpacePreflight] = []
 
-    var copyFraction: Double {
-        guard totalBytes > 0 else { return 0 }
-        return min(max(Double(processedBytes) / Double(totalBytes), 0), 1)
-    }
-
-    var verificationFraction: Double {
-        if verificationTotalBytes > 0 {
-            return min(max(Double(verificationProcessedBytes) / Double(verificationTotalBytes), 0), 1)
-        }
-        guard totalFiles > 0 else { return 0 }
-        return min(max(Double(verificationCheckedFiles) / Double(totalFiles), 0), 1)
-    }
-
     var copySpeedBytesPerSecond: Double {
         if currentSpeedBytesPerSecond > 0 {
             return currentSpeedBytesPerSecond
@@ -1887,6 +1865,55 @@ struct CopyStatisticsCountItem: Identifiable, Equatable, Codable {
     var id: String { title }
 }
 
+private enum CopyStatisticsCalculations {
+    static func activeProcessedBytes(for project: CopyProject) -> Int64 {
+        [
+            project.primaryCopyState,
+            project.primaryVerifyState,
+            project.backupCopyState,
+            project.backupVerifyState
+        ]
+        .filter(\.isActive)
+        .reduce(0) { partial, state in
+            partial + max(state.processedBytes, 0)
+        }
+    }
+
+    static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
+        var streak = 0
+        var cursor = today
+        while activeDates.contains(cursor) {
+            streak += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
+                break
+            }
+            cursor = previousDay
+        }
+        return streak
+    }
+
+    static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
+        let sortedDates = activeDates.sorted()
+        var longest = 0
+        var current = 0
+        var previousDate: Date?
+
+        for date in sortedDates {
+            if let previousDate,
+               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
+               expectedDate == date {
+                current += 1
+            } else {
+                current = 1
+            }
+            longest = max(longest, current)
+            previousDate = date
+        }
+
+        return longest
+    }
+}
+
 struct CopyStatisticsSummary: Equatable {
     let days: [CopyActivityDay]
     let totalBytes: Int64
@@ -1974,13 +2001,13 @@ struct CopyStatisticsSummary: Equatable {
             totalFiles: allTimeDays.reduce(0) { $0 + $1.files },
             totalReports: allTimeDays.reduce(0) { $0 + $1.reportCount },
             successfulReports: allTimeDays.reduce(0) { $0 + $1.successCount },
-            activeBytes: activeProjects.reduce(0) { $0 + activeProcessedBytes(for: $1) },
+            activeBytes: activeProjects.reduce(0) { $0 + CopyStatisticsCalculations.activeProcessedBytes(for: $1) },
             activeProjectCount: activeProjects.count,
             peakDayBytes: peakDay?.bytes ?? 0,
             peakDay: peakDay?.hasActivity == true ? peakDay : nil,
             longestReportDuration: reportsUpToToday.map(\.duration).max() ?? 0,
-            currentStreakDays: currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
-            longestStreakDays: longestStreakDays(activeDates: activeDates, calendar: calendar),
+            currentStreakDays: CopyStatisticsCalculations.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: CopyStatisticsCalculations.longestStreakDays(activeDates: activeDates, calendar: calendar),
             activeDayCount: activeDates.count,
             backupReportCount: reportsUpToToday.filter { $0.backupPath != nil }.count,
             verificationModeCounts: topCounts(reportsUpToToday.map(\.verificationMode)),
@@ -1997,53 +2024,6 @@ struct CopyStatisticsSummary: Equatable {
             bucket.successCount += 1
         }
         buckets[day] = bucket
-    }
-
-    private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
-        [
-            project.primaryCopyState,
-            project.primaryVerifyState,
-            project.backupCopyState,
-            project.backupVerifyState
-        ]
-        .filter(\.isActive)
-        .reduce(0) { partial, state in
-            partial + max(state.processedBytes, 0)
-        }
-    }
-
-    private static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
-        var streak = 0
-        var cursor = today
-        while activeDates.contains(cursor) {
-            streak += 1
-            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
-                break
-            }
-            cursor = previousDay
-        }
-        return streak
-    }
-
-    private static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
-        let sortedDates = activeDates.sorted()
-        var longest = 0
-        var current = 0
-        var previousDate: Date?
-
-        for date in sortedDates {
-            if let previousDate,
-               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
-               expectedDate == date {
-                current += 1
-            } else {
-                current = 1
-            }
-            longest = max(longest, current)
-            previousDate = date
-        }
-
-        return longest
     }
 
     private static func topCounts(_ values: [String], limit: Int = 5) -> [CopyStatisticsCountItem] {
@@ -2290,13 +2270,13 @@ struct CopyStatisticsIndex: Codable, Equatable {
             totalFiles: totalFiles,
             totalReports: totalReports,
             successfulReports: successfulReports,
-            activeBytes: activeProjects.reduce(0) { $0 + Self.activeProcessedBytes(for: $1) },
+            activeBytes: activeProjects.reduce(0) { $0 + CopyStatisticsCalculations.activeProcessedBytes(for: $1) },
             activeProjectCount: activeProjects.count,
             peakDayBytes: peakDay?.bytes ?? 0,
             peakDay: peakDay,
             longestReportDuration: longestReportDuration,
-            currentStreakDays: Self.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
-            longestStreakDays: Self.longestStreakDays(activeDates: activeDates, calendar: calendar),
+            currentStreakDays: CopyStatisticsCalculations.currentStreakDays(activeDates: activeDates, today: today, calendar: calendar),
+            longestStreakDays: CopyStatisticsCalculations.longestStreakDays(activeDates: activeDates, calendar: calendar),
             activeDayCount: activeDates.count,
             backupReportCount: backupReportCount,
             verificationModeCounts: verificationModeCounts.prefix(5).map { $0 },
@@ -2377,53 +2357,6 @@ struct CopyStatisticsIndex: Codable, Equatable {
     private static func identifier(for calendar: Calendar) -> String {
         String(describing: calendar.identifier)
     }
-
-    private static func activeProcessedBytes(for project: CopyProject) -> Int64 {
-        [
-            project.primaryCopyState,
-            project.primaryVerifyState,
-            project.backupCopyState,
-            project.backupVerifyState
-        ]
-        .filter(\.isActive)
-        .reduce(0) { partial, state in
-            partial + max(state.processedBytes, 0)
-        }
-    }
-
-    private static func currentStreakDays(activeDates: Set<Date>, today: Date, calendar: Calendar) -> Int {
-        var streak = 0
-        var cursor = today
-        while activeDates.contains(cursor) {
-            streak += 1
-            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: cursor) else {
-                break
-            }
-            cursor = previousDay
-        }
-        return streak
-    }
-
-    private static func longestStreakDays(activeDates: Set<Date>, calendar: Calendar) -> Int {
-        let sortedDates = activeDates.sorted()
-        var longest = 0
-        var current = 0
-        var previousDate: Date?
-
-        for date in sortedDates {
-            if let previousDate,
-               let expectedDate = calendar.date(byAdding: .day, value: 1, to: previousDate),
-               expectedDate == date {
-                current += 1
-            } else {
-                current = 1
-            }
-            longest = max(longest, current)
-            previousDate = date
-        }
-
-        return longest
-    }
 }
 
 struct CopyStatisticsIndexDay: Codable, Equatable {
@@ -2467,7 +2400,7 @@ struct CopyStatisticsHeatmap: Equatable {
             days: days,
             weeks: calendarWeeks(from: days, calendar: calendar),
             peakDay: activePeakDay,
-            maxBytes: max(days.map(\.bytes).max() ?? 0, 1)
+            maxBytes: max(peakDay?.bytes ?? 0, 1)
         )
     }
 
@@ -2494,9 +2427,10 @@ struct CopyStatisticsHeatmaps: Equatable {
     let cumulative: CopyStatisticsHeatmap
 
     static func make(days: [CopyActivityDay], calendar: Calendar = .current) -> CopyStatisticsHeatmaps {
-        CopyStatisticsHeatmaps(
-            daily: CopyStatisticsHeatmap.make(days: days, calendar: calendar),
-            weekly: CopyStatisticsHeatmap.make(days: weeklyDays(from: days, calendar: calendar), calendar: calendar),
+        let daily = CopyStatisticsHeatmap.make(days: days, calendar: calendar)
+        return CopyStatisticsHeatmaps(
+            daily: daily,
+            weekly: CopyStatisticsHeatmap.make(days: weeklyDays(from: daily.weeks), calendar: calendar),
             cumulative: CopyStatisticsHeatmap.make(days: cumulativeDays(from: days), calendar: calendar)
         )
     }
@@ -2512,8 +2446,8 @@ struct CopyStatisticsHeatmaps: Equatable {
         }
     }
 
-    private static func weeklyDays(from days: [CopyActivityDay], calendar: Calendar) -> [CopyActivityDay] {
-        CopyStatisticsHeatmap.make(days: days, calendar: calendar).weeks.flatMap { week in
+    private static func weeklyDays(from weeks: [[CopyActivityDay?]]) -> [CopyActivityDay] {
+        weeks.flatMap { week in
             let realDays = week.compactMap { $0 }
             let bytes = realDays.reduce(0) { $0 + $1.bytes }
             let files = realDays.reduce(0) { $0 + $1.files }

@@ -14,6 +14,117 @@ import XCTest
 /// 一个磁盘镜像作为独立目标/备份卷；环境不支持时 (`XCTSkip`) 跳过而非误判失败。
 final class TransferServiceTests: XCTestCase {
 
+    @MainActor
+    func testImportSheetQueuesAndPersistsSelectionWithoutStartingFileOperations() throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        guard let backup = try makeSeparateVolume() else { throw XCTSkip("Test backup unavailable") }
+        defer { backup.detach() }
+        let clip = source.appendingPathComponent("clip.mov")
+        let sidecar = source.appendingPathComponent("clip.xml")
+        try writeFile(Data("clip".utf8), to: clip)
+        try writeFile(Data("sidecar".utf8), to: sidecar)
+        let volume = StorageVolume(
+            id: source.path, name: "Card", url: source,
+            isRemovable: true, isInternal: false,
+            totalCapacity: nil, availableCapacity: nil
+        )
+        let items = try MediaScanner().scan(volume: volume, filter: .all)
+        for mode in VerificationMode.allCases {
+            for autoStart in [false, true] {
+                let storage = try makeTempDir(); defer { cleanup(storage) }
+                let vm = AppViewModel(dataDirectory: storage)
+                vm.preferences.targetPath = primary.mount.path
+                vm.preferences.backupPath = backup.mount.path
+                vm.preferences.backupEnabled = true
+                vm.autoStartQueuedProjects = autoStart
+                vm.selectedVerificationMode = mode
+                vm.projectNameMode = .custom
+                vm.draftProjectName = "Queue regression"
+                vm.pendingImportVolume = volume
+                vm.sourceFolderURL = source
+                vm.scannedItems = items
+                vm.selectedItemIDs = [try XCTUnwrap(items.first { $0.relativePath == "clip.mov" }).id]
+                vm.toggle(item: try XCTUnwrap(items.first { $0.relativePath == "clip.xml" }))
+                XCTAssertTrue(vm.canStartImport, vm.destinationWarnings.joined(separator: "\n"))
+
+                vm.startImport()
+
+                let project = try XCTUnwrap(vm.copyProjects.first)
+                XCTAssertEqual(vm.copyProjects.count, 1)
+                XCTAssertEqual(project.name, "Queue regression")
+                XCTAssertEqual(project.status, .queued)
+                XCTAssertEqual(project.verificationMode, mode)
+                XCTAssertEqual(project.sourceRootPath, source.path)
+                XCTAssertEqual(project.targetRootPath, primary.mount.path)
+                XCTAssertEqual(project.backupRootPath, backup.mount.path)
+                XCTAssertEqual(Set(project.selectedItems.map(\.relativePath)), ["clip.mov", "clip.xml"])
+                XCTAssertEqual(project.totalBytes, 11)
+                XCTAssertEqual(project.autoStartEnabled, autoStart)
+                XCTAssertEqual(project.autoStartDeadline, autoStart ? project.createdAt.addingTimeInterval(300) : nil)
+                XCTAssertNil(vm.pendingImportVolume)
+                XCTAssertEqual(vm.selectedSection, .copy)
+                XCTAssertFalse(vm.isImporting)
+                XCTAssertFalse(vm.hasActiveFileOperations)
+                XCTAssertTrue(vm.reports.isEmpty)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: project.primaryImportURL.path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(project.backupImportURL).path))
+                let saved = JSONPersistence.loadProjects(from: storage.appendingPathComponent(AppStorageScope.copyProjectsURL.lastPathComponent))
+                XCTAssertNil(saved.warning)
+                XCTAssertEqual(saved.value.first?.id, project.id)
+                XCTAssertEqual(saved.value.first?.verificationMode, mode)
+                XCTAssertEqual(saved.value.first?.selectedItems.map(\.relativePath), project.selectedItems.map(\.relativePath))
+                XCTAssertEqual(try Data(contentsOf: clip), Data("clip".utf8))
+            }
+        }
+    }
+
+    @MainActor
+    func testQueueCancellationClearsActivityAndFullRetryStillCompletes() async throws {
+        let source = try makeTempDir(); defer { cleanup(source) }
+        let storage = try makeTempDir(); defer { cleanup(storage) }
+        guard let primary = try makeSeparateVolume() else { throw XCTSkip("Test primary unavailable") }
+        defer { primary.detach() }
+        let data = Data("queue cancellation and retry".utf8)
+        try writeFile(data, to: source.appendingPathComponent("clip.mov"))
+        let project = makeProject(
+            source: source, target: primary.mount, backup: nil,
+            items: [mediaItem(sourceRoot: source, relativePath: "clip.mov", data: data)], mode: .sha256
+        )
+        let vm = AppViewModel(dataDirectory: storage)
+        vm.copyProjects = [project]
+        vm.startQueue()
+        XCTAssertTrue(vm.isImporting)
+        XCTAssertTrue(vm.hasActiveFileOperations)
+        vm.cancelProject(project)
+        XCTAssertEqual(vm.copyProjects.first?.status, .cancelling)
+        let cancellationDeadline = Date().addingTimeInterval(20)
+        while vm.hasActiveTransfers && Date() < cancellationDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(vm.copyProjects.first?.status, .cancelled, vm.importError ?? "")
+        XCTAssertFalse(vm.isImporting)
+        XCTAssertFalse(vm.hasActiveFileOperations)
+        XCTAssertTrue(vm.activeProjectIDs.isEmpty)
+        XCTAssertTrue(vm.reports.contains { $0.cancelled })
+        XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("clip.mov")), data)
+
+        vm.retryProject(try XCTUnwrap(vm.copyProjects.first))
+        XCTAssertEqual(vm.copyProjects.first?.status, .queued)
+        vm.startQueue()
+        let retryDeadline = Date().addingTimeInterval(20)
+        while vm.hasActiveTransfers && Date() < retryDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(vm.copyProjects.first?.status, .completed, vm.importError ?? "")
+        XCTAssertFalse(vm.isImporting)
+        XCTAssertFalse(vm.hasActiveFileOperations)
+        XCTAssertTrue(vm.activeProjectIDs.isEmpty)
+        XCTAssertTrue(vm.reports.contains { $0.success })
+        XCTAssertEqual(try Data(contentsOf: project.primaryImportURL.appendingPathComponent("clip.mov")), data)
+    }
+
     // MARK: - 正常路径（需要独立目标卷）
 
     func testPrimaryStageCopiesAndVerifiesWithSHA256() async throws {

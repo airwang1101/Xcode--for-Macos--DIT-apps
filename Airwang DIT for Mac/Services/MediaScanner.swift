@@ -19,7 +19,6 @@ struct MediaScanner {
             .creationDateKey,
             .contentModificationDateKey,
             .fileSizeKey,
-            .typeIdentifierKey,
             .nameKey,
             .isDirectoryKey,
             .isHiddenKey,
