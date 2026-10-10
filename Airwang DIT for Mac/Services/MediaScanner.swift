@@ -3,17 +3,27 @@ import Foundation
 struct MediaScanner {
     enum ScanError: LocalizedError {
         case cannotCreateEnumerator(URL)
+        case cannotReadEntry(URL, String)
 
         var errorDescription: String? {
             switch self {
             case let .cannotCreateEnumerator(url):
                 return "无法读取素材目录：\(url.path)"
+            case let .cannotReadEntry(url, reason):
+                return "无法完整读取素材目录：\(url.path)。\(reason)"
             }
         }
     }
 
     func scan(volume: StorageVolume, rootURL: URL? = nil, filter: ScanFilter = .video) throws -> [MediaItem] {
+        try Task.checkCancellation()
         let scanRoot = rootURL ?? volume.url
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: scanRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ScanError.cannotCreateEnumerator(scanRoot)
+        }
+        let pathResolver = PathSafety.RelativePathResolver(baseURL: scanRoot)
+        var enumerationError: (URL, Error)?
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .creationDateKey,
@@ -29,7 +39,11 @@ struct MediaScanner {
         guard let enumerator = FileManager.default.enumerator(
             at: scanRoot,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { url, error in
+                enumerationError = (url, error)
+                return false
+            }
         ) else {
             throw ScanError.cannotCreateEnumerator(scanRoot)
         }
@@ -37,7 +51,9 @@ struct MediaScanner {
         var items: [MediaItem] = []
         for case let url as URL in enumerator {
             try Task.checkCancellation()
-            guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+            let values: URLResourceValues
+            do { values = try url.resourceValues(forKeys: keys) }
+            catch { throw ScanError.cannotReadEntry(url, error.localizedDescription) }
             if shouldSkip(url: url, values: values) {
                 if values.isDirectory == true || values.isSymbolicLink == true {
                     enumerator.skipDescendants()
@@ -46,12 +62,12 @@ struct MediaScanner {
             }
             guard values.isRegularFile == true else { continue }
 
-            let createdAt = values.creationDate ?? values.contentModificationDate ?? Date()
-            let size = Int64(values.fileSize ?? 0)
-            let relativePath = try PathSafety.relativePath(for: url, under: scanRoot)
             let fileExtension = url.pathExtension.lowercased()
             let mediaKind = mediaKind(for: fileExtension)
             guard filter == .all || mediaKind == filter || isSidecarExtension(fileExtension) else { continue }
+            let createdAt = values.creationDate ?? values.contentModificationDate ?? Date()
+            let size = Int64(values.fileSize ?? 0)
+            let relativePath = try pathResolver.relativePath(for: url)
 
             items.append(
                 MediaItem(
@@ -67,6 +83,10 @@ struct MediaScanner {
             )
         }
 
+        try Task.checkCancellation()
+        if let (url, error) = enumerationError {
+            throw ScanError.cannotReadEntry(url, error.localizedDescription)
+        }
         return items.sorted { lhs, rhs in
             if lhs.createdAt == rhs.createdAt {
                 return lhs.relativePath < rhs.relativePath

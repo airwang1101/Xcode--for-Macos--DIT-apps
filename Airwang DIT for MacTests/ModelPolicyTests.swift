@@ -5,6 +5,71 @@ import XCTest
 /// 纯逻辑模型/策略层测试：不碰文件系统，毫秒级完成。
 final class ModelPolicyTests: XCTestCase {
 
+    @MainActor
+    func testDirectoryBrowserOnlyListsVisibleImmediateFolders() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DirectoryPolicy-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["Beta", "alpha", ".hidden", "alpha/nested"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        try Data("clip".utf8).write(to: root.appendingPathComponent("ignored.mov"))
+        let model = AppViewModel(dataDirectory: root.appendingPathComponent("settings"))
+        model.navigate(to: root)
+        let deadline = Date().addingTimeInterval(3)
+        while model.isLoadingFolderChildren && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(model.isLoadingFolderChildren)
+        XCTAssertNil(model.importError)
+        XCTAssertEqual(model.folderChildren.map(\.name), ["alpha", "Beta"])
+        XCTAssertTrue(model.folderChildren.allSatisfy { $0.subtitle == $0.url.path })
+    }
+
+    @MainActor
+    func testClosingDirectoryPickerCannotPublishLateResults() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DirectoryClose-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("child"), withIntermediateDirectories: true)
+        let model = AppViewModel(dataDirectory: root.appendingPathComponent("settings"))
+        model.navigate(to: root)
+        model.closeFolderPicker()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(model.isLoadingFolderChildren)
+        XCTAssertTrue(model.folderChildren.isEmpty)
+        XCTAssertNil(model.activeFolderPicker)
+    }
+
+    @MainActor
+    func testClosingSourceBrowserCannotPublishLateResults() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("SourceClose-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("DCIM"), withIntermediateDirectories: true)
+        let model = AppViewModel(dataDirectory: root.appendingPathComponent("settings"))
+        let volume = StorageVolume(id: root.path, name: "Card", url: root, isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil)
+        model.prepareImport(for: volume)
+        model.closeImportSheet()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(model.isLoadingSourceFolderChildren)
+        XCTAssertTrue(model.sourceFolderChildren.isEmpty)
+        XCTAssertNil(model.pendingImportVolume)
+    }
+
+    @MainActor
+    func testRapidDirectoryNavigationOnlyPublishesLatestLocation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("DirectorySwitch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first")
+        let second = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: first.appendingPathComponent("old"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second.appendingPathComponent("new"), withIntermediateDirectories: true)
+        let model = AppViewModel(dataDirectory: root.appendingPathComponent("settings"))
+        model.navigate(to: first)
+        model.navigate(to: second)
+        let deadline = Date().addingTimeInterval(3)
+        while model.isLoadingFolderChildren && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(model.isLoadingFolderChildren)
+        XCTAssertEqual(model.currentFolderURL, second)
+        XCTAssertEqual(model.folderChildren.map(\.name), ["new"])
+    }
+
     func testLegacyUISettingsAdoptPaperWithoutLosingLanguageThemeOrAutoStart() throws {
         let data = Data(#"{"theme":"night","language":"english","autoStartQueuedProjects":true}"#.utf8)
         let settings = try JSONDecoder().decode(AppUISettings.self, from: data)

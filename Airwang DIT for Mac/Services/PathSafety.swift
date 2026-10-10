@@ -75,23 +75,33 @@ enum PathSafety {
         return resolved
     }
 
-    static func relativePath(for fileURL: URL, under baseURL: URL) throws -> String {
-        let basePath = normalizedPath(baseURL)
-        let filePath = normalizedPath(fileURL)
-        let canonicalBase = canonicalComparisonPath(basePath)
-        let canonicalFile = canonicalComparisonPath(filePath)
+    /// Reuse only the immutable root spelling; every candidate is still validated.
+    struct RelativePathResolver: Sendable {
+        private let basePath: String
+        private let canonicalBase: String
+        private let prefix: String
 
-        if basePath == "/" {
-            let raw = String(canonicalFile.dropFirst())
-            return try validatedRelativePath(raw)
+        init(baseURL: URL) {
+            basePath = PathSafety.normalizedPath(baseURL)
+            canonicalBase = basePath.precomposedStringWithCanonicalMapping
+            prefix = canonicalBase + "/"
         }
-        let prefix = canonicalBase + "/"
-        guard canonicalFile.hasPrefix(prefix) else {
-            throw Error.pathEscapesBase(relativePath: fileURL.path, basePath: basePath)
+
+        func relativePath(for fileURL: URL) throws -> String {
+            let canonicalFile = PathSafety.normalizedPath(fileURL).precomposedStringWithCanonicalMapping
+            if basePath == "/" {
+                return try PathSafety.validatedRelativePath(String(canonicalFile.dropFirst()))
+            }
+            guard canonicalFile.hasPrefix(prefix) else {
+                throw Error.pathEscapesBase(relativePath: fileURL.path, basePath: basePath)
+            }
+            let raw = String(canonicalFile[canonicalFile.index(canonicalFile.startIndex, offsetBy: prefix.count)...])
+            return try PathSafety.validatedRelativePath(raw)
         }
-        // Slice from the canonical string so multibyte/combining characters don't misalign the offset.
-        let raw = String(canonicalFile[canonicalFile.index(canonicalFile.startIndex, offsetBy: prefix.count)...])
-        return try validatedRelativePath(raw)
+    }
+
+    static func relativePath(for fileURL: URL, under baseURL: URL) throws -> String {
+        try RelativePathResolver(baseURL: baseURL).relativePath(for: fileURL)
     }
 
     static func isContained(_ candidateURL: URL, in baseURL: URL) -> Bool {

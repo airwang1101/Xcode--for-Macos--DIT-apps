@@ -49,6 +49,9 @@ extension ContentView {
                 viewModel.setLanguage(viewModel.selectedLanguage == .chinese ? .english : .chinese)
             }
             Menu {
+                Button(viewModel.localized("新手教程")) { viewModel.reopenGettingStarted() }
+                    .disabled(!viewModel.canPresentGettingStarted)
+                Divider()
                 Section(viewModel.localized("界面外观")) {
                     ForEach(InterfaceStyle.allCases) { style in
                         Button(viewModel.localized(style.title)) { viewModel.setInterfaceStyle(style) }

@@ -88,6 +88,8 @@ struct AirwangDITForMacApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .help) {
+                Button(viewModel.localized("新手教程")) { viewModel.reopenGettingStarted() }
+                    .disabled(!viewModel.canPresentGettingStarted)
                 Button(viewModel.localized("导出诊断")) {
                     viewModel.exportDiagnostics()
                 }
@@ -219,6 +221,9 @@ private struct AppSettingsView: View {
             }
 
             Section(viewModel.localized("支持与诊断")) {
+                Button(viewModel.localized("新手教程")) { viewModel.reopenGettingStarted() }
+                    .disabled(!viewModel.canPresentGettingStarted)
+                    .accessibilityIdentifier("settings-getting-started")
                 Text(viewModel.localized("导出版本、系统环境和任务状态。诊断不包含素材、文件名、路径或原始错误文本。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

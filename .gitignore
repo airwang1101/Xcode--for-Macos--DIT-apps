@@ -32,3 +32,12 @@ artifacts/
 # Python tooling caches
 __pycache__/
 *.pyc
+
+# Local credentials and Apple signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "TransferResult",
+    "lines": 3
+  },
+  {
+    "name": "runImport",
+    "lines": 422
+  },
+  {
+    "name": "makePreflightFailureResult",
+    "lines": 94
+  },
+  {
+    "name": "buildDestinations",
+    "lines": 7
+  },
+  {
+    "name": "validateDestinationSeparation",
+    "lines": 25
+  },
+  {
+    "name": "validateRelativePaths",
+    "lines": 5
+  },
+  {
+    "name": "verificationBytesForItem",
+    "lines": 3
+  },
+  {
+    "name": "cleanupInstalledCopies",
+    "lines": 18
+  },
+  {
+    "name": "ensureRequiredLocations",
+    "lines": 7
+  },
+  {
+    "name": "ensureDestinationFilesDoNotExist",
+    "lines": 10
+  },
+  {
+    "name": "fatalInterruptionReason",
+    "lines": 38
+  },
+  {
+    "name": "isPathOverlapError",
+    "lines": 7
+  },
+  {
+    "name": "copy",
+    "lines": 23
+  },
+  {
+    "name": "makeTaskFolderName",
+    "lines": 7
+  },
+  {
+    "name": "sanitizedFileNameComponent",
+    "lines": 22
+  },
+  {
+    "name": "writeReportDocument",
+    "lines": 174
+  },
+  {
+    "name": "writeReportContent",
+    "lines": 45
+  },
+  {
+    "name": "writeText",
+    "lines": 10
+  }
+]

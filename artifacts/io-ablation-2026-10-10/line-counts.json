@@ -1,0 +1,32 @@
+{
+  "Airwang DIT for Mac/Services/MediaScanner.swift": {
+    "before": 142,
+    "after": 162,
+    "netRemoved": -20
+  },
+  "Airwang DIT for Mac/Services/PathSafety.swift": {
+    "before": 226,
+    "after": 236,
+    "netRemoved": -10
+  },
+  "Airwang DIT for Mac/Services/TransferService.swift": {
+    "before": 3272,
+    "after": 2314,
+    "netRemoved": 958
+  },
+  "Airwang DIT for Mac/ViewModels/AppViewModel.swift": {
+    "before": 2636,
+    "after": 2644,
+    "netRemoved": -8
+  },
+  "Airwang DIT for MacTests/MediaScannerTests.swift": {
+    "before": 98,
+    "after": 148,
+    "netRemoved": -50
+  },
+  "Airwang DIT for MacTests/ModelPolicyTests.swift": {
+    "before": 246,
+    "after": 311,
+    "netRemoved": -65
+  }
+}

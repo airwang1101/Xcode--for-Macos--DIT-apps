@@ -192,6 +192,7 @@ enum AppLocalization {
         "语言": "Language",
         "中文": "Chinese",
         "界面设置": "Interface Settings",
+        "新手教程": "Getting Started",
         "自动执行": "Auto Start",
         "支持与诊断": "Support and Diagnostics",
         "导出诊断": "Export Diagnostics",
@@ -584,6 +585,7 @@ struct AppUISettings: Codable {
     var theme: AppTheme
     var language: AppLanguage
     var autoStartQueuedProjects: Bool
+    var gettingStarted: GettingStartedProgress?
 
     static let `default` = AppUISettings(theme: .day, language: .chinese, autoStartQueuedProjects: false)
 
@@ -592,18 +594,21 @@ struct AppUISettings: Codable {
         case language
         case autoStartQueuedProjects
         case interfaceStyle
+        case gettingStarted
     }
 
     init(
         theme: AppTheme,
         language: AppLanguage = .chinese,
         autoStartQueuedProjects: Bool = false,
-        interfaceStyle: InterfaceStyle = .paper
+        interfaceStyle: InterfaceStyle = .paper,
+        gettingStarted: GettingStartedProgress? = nil
     ) {
         self.theme = theme
         self.language = language
         self.autoStartQueuedProjects = autoStartQueuedProjects
         self.interfaceStyle = interfaceStyle
+        self.gettingStarted = gettingStarted
     }
 
     init(from decoder: any Decoder) throws {
@@ -612,6 +617,7 @@ struct AppUISettings: Codable {
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .chinese
         autoStartQueuedProjects = try container.decodeIfPresent(Bool.self, forKey: .autoStartQueuedProjects) ?? false
         interfaceStyle = try container.decodeIfPresent(InterfaceStyle.self, forKey: .interfaceStyle) ?? .paper
+        gettingStarted = try container.decodeIfPresent(GettingStartedProgress.self, forKey: .gettingStarted)
     }
 }
 

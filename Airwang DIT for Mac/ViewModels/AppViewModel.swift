@@ -69,6 +69,9 @@ final class AppViewModel: ObservableObject {
     @Published var selectedTheme: AppTheme = .day
     @Published var selectedLanguage: AppLanguage = .chinese
     @Published var autoStartQueuedProjects = false
+    @Published private(set) var gettingStartedProgress = GettingStartedProgress()
+    @Published private(set) var isShowingGettingStarted = false
+    private var resumesGettingStartedAfterFolderPicker = false
     @Published var selectedSection: MainSection = .copy
     @Published var copyProjects: [CopyProject] = [] {
         didSet { orderedProjectsCache = Self.sortedProjects(copyProjects) }
@@ -209,6 +212,11 @@ final class AppViewModel: ObservableObject {
         organizerDestinationURL = preferences.targetURL
         let projectLoad = Self.loadProjects(from: projectURL)
         let storedProjects = projectLoad.items
+        gettingStartedProgress = .initial(
+            saved: uiSettings.gettingStarted,
+            hasExistingData: settingsStore.hasSavedSettings || preferences.targetPath != nil
+                || !storedProjects.isEmpty || !reportLoad.items.isEmpty
+        )
         let recoveredProjects = Self.recoverInterruptedProjects(storedProjects)
         copyProjects = recoveredProjects
         orderedProjectsCache = Self.sortedProjects(recoveredProjects)
@@ -746,6 +754,50 @@ final class AppViewModel: ObservableObject {
         saveUISettings()
     }
 
+    var canPresentGettingStarted: Bool {
+        !isShowingGettingStarted && !hasActiveFileOperations && !isExportingDiagnostics && !isChoosingDiagnosticsDestination
+            && !isChoosingPDFReportDestination && pendingImportVolume == nil
+            && activeFolderPicker == nil && importError == nil
+    }
+
+    func presentGettingStartedIfNeeded() {
+        guard gettingStartedProgress.shouldPresentAutomatically || resumesGettingStartedAfterFolderPicker,
+              !isShowingGettingStarted, canPresentGettingStarted else { return }
+        resumesGettingStartedAfterFolderPicker = false
+        isShowingGettingStarted = true
+        saveUISettings()
+    }
+
+    func reopenGettingStarted() {
+        guard canPresentGettingStarted else { return }
+        gettingStartedProgress.lastVisitedStep = GettingStartedStep.welcome.rawValue
+        isShowingGettingStarted = true
+        saveUISettings()
+    }
+
+    func visitGettingStartedStep(_ step: GettingStartedStep) {
+        gettingStartedProgress.lastVisitedStep = step.rawValue
+        saveUISettings()
+    }
+
+    func chooseGettingStartedDestination(backup: Bool) {
+        guard isShowingGettingStarted, pendingImportVolume == nil, activeFolderPicker == nil,
+              !hasActiveFileOperations else { return }
+        resumesGettingStartedAfterFolderPicker = true
+        isShowingGettingStarted = false
+        if backup { setBackupEnabled(true) }
+        openFolderPicker(for: backup ? .backup : .target)
+    }
+
+    func dismissGettingStarted() {
+        resumesGettingStartedAfterFolderPicker = false
+        gettingStartedProgress.completedVersion = max(
+            gettingStartedProgress.completedVersion, GettingStartedProgress.currentVersion
+        )
+        isShowingGettingStarted = false
+        saveUISettings()
+    }
+
     private func saveUISettings() {
         do {
             try settingsStore.saveUISettings(
@@ -753,7 +805,8 @@ final class AppViewModel: ObservableObject {
                     theme: selectedTheme,
                     language: selectedLanguage,
                     autoStartQueuedProjects: autoStartQueuedProjects,
-                    interfaceStyle: interfaceStyle
+                    interfaceStyle: interfaceStyle,
+                    gettingStarted: gettingStartedProgress
                 )
             )
         } catch {
@@ -2465,9 +2518,8 @@ final class AppViewModel: ObservableObject {
         folderChildren = []
 
         folderChildrenTask = Task { [weak self] in
-            let result = await Task.detached {
-                Self.loadFolderChildrenSnapshot(for: url)
-            }.value
+            let result = await Self.cancellableFolderChildrenSnapshot(for: url)
+            guard !Task.isCancelled else { return }
 
             await MainActor.run { [weak self] in
                 guard let self, self.folderNavigationID == navigationID else { return }
@@ -2489,9 +2541,8 @@ final class AppViewModel: ObservableObject {
         sourceFolderChildren = []
 
         sourceFolderChildrenTask = Task { [weak self] in
-            let result = await Task.detached {
-                Self.loadFolderChildrenSnapshot(for: url)
-            }.value
+            let result = await Self.cancellableFolderChildrenSnapshot(for: url)
+            guard !Task.isCancelled else { return }
 
             await MainActor.run { [weak self] in
                 guard let self, self.sourceFolderNavigationID == navigationID else { return }
@@ -2505,42 +2556,52 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    nonisolated private static func cancellableFolderChildrenSnapshot(for url: URL) async -> (items: [FolderBrowserItem], errorMessage: String?) {
+        let worker = Task.detached { loadFolderChildrenSnapshot(for: url) }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
     nonisolated private static func loadFolderChildrenSnapshot(for url: URL) -> (items: [FolderBrowserItem], errorMessage: String?) {
         do {
+            try Task.checkCancellation()
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
             let parentCapacity = DiskCapacityResolver.capacity(for: url)
             let shouldResolveEachChild = url.path == "/" || url.path == "/Volumes"
-
-            let children = try FileManager.default.contentsOfDirectory(
+            let keys: Set<URLResourceKey> = [.isDirectoryKey, .isHiddenKey, .localizedNameKey, .nameKey]
+            var enumerationError: Error?
+            guard let children = FileManager.default.enumerator(
                 at: url,
-                includingPropertiesForKeys: [
-                    .isDirectoryKey,
-                    .isHiddenKey,
-                    .localizedNameKey,
-                    .nameKey
-                ],
-                options: [.skipsPackageDescendants]
-            )
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsSubdirectoryDescendants, .skipsPackageDescendants],
+                errorHandler: { _, error in enumerationError = error; return false }
+            ) else { throw CocoaError(.fileReadUnknown) }
 
-            let items: [FolderBrowserItem] = children.compactMap { child -> FolderBrowserItem? in
-                guard let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .localizedNameKey, .nameKey]),
-                      values.isDirectory == true,
-                      values.isHidden != true else {
-                    return nil
-                }
+            var items: [FolderBrowserItem] = []
+            for case let child as URL in children {
+                try Task.checkCancellation()
+                let values = try child.resourceValues(forKeys: keys)
+                guard values.isDirectory == true, values.isHidden != true else { continue }
                 let name = values.localizedName ?? values.name ?? child.lastPathComponent
                 let capacity = shouldResolveEachChild ? DiskCapacityResolver.capacity(for: child) : parentCapacity
-                return FolderBrowserItem(
-                    id: child.path,
-                    name: name.isEmpty ? child.lastPathComponent : name,
-                    url: child,
-                    subtitle: child.path,
-                    totalCapacity: capacity.totalCapacity,
-                    availableCapacity: capacity.availableCapacity
-                )
+                items.append(FolderBrowserItem(
+                    id: child.path, name: name.isEmpty ? child.lastPathComponent : name,
+                    url: child, subtitle: child.path,
+                    totalCapacity: capacity.totalCapacity, availableCapacity: capacity.availableCapacity
+                ))
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-
+            try Task.checkCancellation()
+            if let enumerationError { throw enumerationError }
+            items.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return (items, nil)
+        } catch is CancellationError {
+            return ([], nil)
         } catch {
             return ([], "读取文件夹失败：\(error.localizedDescription)")
         }

@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D70000000000000000000003 /* GettingStartedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000013 /* GettingStartedTests.swift */; };
+		D70000000000000000000002 /* GettingStartedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000012 /* GettingStartedView.swift */; };
+		D70000000000000000000001 /* GettingStarted.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70000000000000000000011 /* GettingStarted.swift */; };
 		D60000000000000000000002 /* ContentView+PaperWorkbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000012 /* ContentView+PaperWorkbench.swift */; };
 		D60000000000000000000001 /* PaperDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60000000000000000000011 /* PaperDesign.swift */; };
 		D50000000000000000000002 /* ReportPDFExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50000000000000000000012 /* ReportPDFExporterTests.swift */; };
@@ -61,6 +64,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D70000000000000000000013 /* GettingStartedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GettingStartedTests.swift; sourceTree = "<group>"; };
+		D70000000000000000000012 /* GettingStartedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GettingStartedView.swift; sourceTree = "<group>"; };
+		D70000000000000000000011 /* GettingStarted.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GettingStarted.swift; sourceTree = "<group>"; };
 		D60000000000000000000012 /* ContentView+PaperWorkbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+PaperWorkbench.swift"; sourceTree = "<group>"; };
 		D60000000000000000000011 /* PaperDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PaperDesign.swift"; sourceTree = "<group>"; };
 		D50000000000000000000012 /* ReportPDFExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportPDFExporterTests.swift; sourceTree = "<group>"; };
@@ -162,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000012 /* Models.swift */,
+				D70000000000000000000011 /* GettingStarted.swift */,
 				C30000000000000000000011 /* OrganizerModels.swift */,
 				A20000000000000000000012 /* StoreFiles.swift */,
 			);
@@ -195,6 +202,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000018 /* ContentView.swift */,
+				D70000000000000000000012 /* GettingStartedView.swift */,
 				D10000000000000000000011 /* ContentView+CopyWorkspace.swift */,
 				D10000000000000000000012 /* ContentView+OrganizeWorkspace.swift */,
 				D10000000000000000000013 /* ContentView+StatisticsWorkspace.swift */,
@@ -218,6 +226,7 @@
 				A20000000000000000000014 /* MediaScannerTests.swift */,
 				C30000000000000000000013 /* OrganizerServiceTests.swift */,
 				A20000000000000000000015 /* PersistenceCompatibilityTests.swift */,
+				D70000000000000000000013 /* GettingStartedTests.swift */,
 				A20000000000000000000017 /* StatisticsPerformanceTests.swift */,
 				A20000000000000000000016 /* TransferServiceTests.swift */,
 			);
@@ -380,6 +389,7 @@
 				D40000000000000000000001 /* SupportDiagnostics.swift in Sources */,
 				A10000000000000000000001 /* AirwangDITForMacApp.swift in Sources */,
 				A10000000000000000000002 /* Models.swift in Sources */,
+				D70000000000000000000001 /* GettingStarted.swift in Sources */,
 				A10000000000000000000003 /* SettingsStore.swift in Sources */,
 				A10000000000000000000004 /* VolumeMonitor.swift in Sources */,
 				A10000000000000000000005 /* MediaScanner.swift in Sources */,
@@ -390,6 +400,7 @@
 				A10000000000000000000007 /* AppViewModel.swift in Sources */,
 				A20000000000000000000002 /* StoreFiles.swift in Sources */,
 				A10000000000000000000008 /* ContentView.swift in Sources */,
+				D70000000000000000000002 /* GettingStartedView.swift in Sources */,
 				D10000000000000000000001 /* ContentView+CopyWorkspace.swift in Sources */,
 				D10000000000000000000002 /* ContentView+OrganizeWorkspace.swift in Sources */,
 				D10000000000000000000003 /* ContentView+StatisticsWorkspace.swift in Sources */,
@@ -411,6 +422,7 @@
 				A20000000000000000000004 /* MediaScannerTests.swift in Sources */,
 				C30000000000000000000003 /* OrganizerServiceTests.swift in Sources */,
 				A20000000000000000000005 /* PersistenceCompatibilityTests.swift in Sources */,
+				D70000000000000000000003 /* GettingStartedTests.swift in Sources */,
 				A20000000000000000000007 /* StatisticsPerformanceTests.swift in Sources */,
 				A20000000000000000000006 /* TransferServiceTests.swift in Sources */,
 			);

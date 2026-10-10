@@ -6,6 +6,10 @@ final class SettingsStore {
     private let uiSettingsURL: URL
     private(set) var lastLoadWarning: String?
 
+    var hasSavedSettings: Bool {
+        fileManager.fileExists(atPath: preferencesURL.path) || fileManager.fileExists(atPath: uiSettingsURL.path)
+    }
+
     init(preferencesURL: URL = AppStorageScope.preferencesURL, uiSettingsURL: URL = AppStorageScope.uiSettingsURL) {
         self.preferencesURL = preferencesURL
         self.uiSettingsURL = uiSettingsURL

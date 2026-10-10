@@ -4,6 +4,9 @@ Airwang DIT for Mac is a SwiftUI macOS app for Digital Imaging Technician copy w
 
 Repository: [airwang1101/Xcode--for-Macos--DIT-apps](https://github.com/airwang1101/Xcode--for-Macos--DIT-apps)
 
+License: [MIT](LICENSE). Build and contribution instructions are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 Active development branch: `codex/dit-paper-workbench`. The paper workbench is
 the default appearance; Classic remains available in Settings. Continue feature
 development and ablation experiments on this branch. The earlier
@@ -140,6 +143,11 @@ The current test suite covers:
 
 ## Local App Data
 
+First-time users are guided through an eight-step setup assistant, including
+destination selection, verification examples, queue progress, recovery and local
+history. The guide can be skipped and reopened from Help or Settings. Existing
+users retain their workspace without a forced tutorial. See [Getting Started](GETTING_STARTED.md).
+
 Runtime data is stored under the app's Application Support directory:
 
 ```text
@@ -188,6 +196,8 @@ The Debug test scheme places application data in `/tmp/airwang-dit-unit-tests`. 
 - Hidden system folders such as `.Trashes`, `.Spotlight-V100`, `.fseventsd`, and `__MACOSX` are skipped during scanning.
 - Build output, archives, local IDE metadata, and app distribution artifacts are ignored by Git.
 
+The current local IO ablation preserves both UI modes and the getting-started guide. See [the IO performance and stability report](IO_ABLATION_2026-10-10.md) for controlled measurements, removed-code evidence, regression results, and physical-media acceptance limits.
+
 ## Distribution Builds
 
 Run `bash script/build-release.sh preview --version 0.1.1 --build 20260930` to test, archive, package and inspect an unsigned internal DMG. Run `bash script/build-release.sh check` to inspect signing prerequisites. See [distribution/RELEASE.md](distribution/RELEASE.md) for the signed candidate procedure and saved-package verification.
@@ -199,10 +209,12 @@ The GitHub validation workflow uses the same preview process. A local build does
 The local repository is connected to:
 
 ```text
-origin  https://github.com/wngair/Xcode--for-Macos--DIT-apps.git
+origin  https://github.com/airwang1101/Xcode--for-Macos--DIT-apps.git
 ```
 
-The GitHub repository is private. Push the current branch with:
+The public source entry point is `codex/dit-paper-workbench`. The earlier
+`master` and `codex/dit-m1-m3-safety` branches remain available as historical
+versions. Push the current branch with:
 
 ```bash
 git push

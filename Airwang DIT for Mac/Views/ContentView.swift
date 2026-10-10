@@ -18,32 +18,57 @@ struct ContentView: View {
     var paperPalette: PaperPalette { PaperPalette(theme: viewModel.selectedTheme) }
 
     var body: some View {
-        Group {
-            if usesPaperAppearance {
-                paperRoot
-            } else {
-                classicRoot
+        ZStack {
+            Group {
+                if usesPaperAppearance {
+                    paperRoot
+                } else {
+                    classicRoot
+                }
+            }
+            .disabled(viewModel.isShowingGettingStarted)
+            .allowsHitTesting(!viewModel.isShowingGettingStarted)
+            .accessibilityHidden(viewModel.isShowingGettingStarted)
+            if viewModel.isShowingGettingStarted {
+                Color.black.opacity(0.22).ignoresSafeArea()
+                    .accessibilityHidden(true)
+                GettingStartedView()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 36)
+                    .padding(.bottom, 16)
+                    .transition(.opacity)
+                    .zIndex(1)
             }
         }
         .environment(\.ditPaperAppearance, usesPaperAppearance)
         .fontDesign(usesPaperAppearance ? .default : .serif)
         .preferredColorScheme(viewModel.selectedTheme == .night ? .dark : .light)
-        .sheet(item: $viewModel.pendingImportVolume) { volume in
+        .sheet(item: Binding(
+            get: { viewModel.isShowingGettingStarted ? nil : viewModel.pendingImportVolume },
+            set: { if !viewModel.isShowingGettingStarted { viewModel.pendingImportVolume = $0 } }
+        )) { volume in
             ImportSheet(volume: volume)
                 .environmentObject(viewModel)
                 .environment(\.ditPaperAppearance, usesPaperAppearance)
         }
-        .sheet(item: $viewModel.activeFolderPicker) { purpose in
+        .sheet(item: Binding(
+            get: { viewModel.isShowingGettingStarted ? nil : viewModel.activeFolderPicker },
+            set: { if !viewModel.isShowingGettingStarted { viewModel.activeFolderPicker = $0 } }
+        )) { purpose in
             FolderPickerSheet(purpose: purpose)
                 .environmentObject(viewModel)
                 .environment(\.ditPaperAppearance, usesPaperAppearance)
         }
         .alert(viewModel.localized("提示"), isPresented: Binding(
-            get: { viewModel.importError != nil },
+            get: { !viewModel.isShowingGettingStarted && viewModel.importError != nil },
             set: { if !$0 { viewModel.importError = nil } }
         )) {
             Button(viewModel.localized("知道了"), role: .cancel) {}
         } message: { Text(viewModel.importError ?? "") }
+        .task { viewModel.presentGettingStartedIfNeeded() }
+        .onChange(of: viewModel.canPresentGettingStarted) { _, canPresent in
+            if canPresent { viewModel.presentGettingStartedIfNeeded() }
+        }
     }
 
     var classicRoot: some View {
@@ -88,6 +113,10 @@ struct ContentView: View {
                         .font(compact ? .body : .title3)
                         .foregroundStyle(secondaryTextColor)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Button(viewModel.localized("新手教程")) { viewModel.reopenGettingStarted() }
+                        .disabled(!viewModel.canPresentGettingStarted)
+                        .accessibilityIdentifier("setup-getting-started")
 
                     onboardingDestinationSection(stacked: compact)
                     onboardingFeatureSection(stacked: compact)

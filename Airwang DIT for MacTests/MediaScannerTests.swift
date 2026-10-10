@@ -88,6 +88,56 @@ final class MediaScannerTests: XCTestCase {
         }
     }
 
+    func testMissingRootDoesNotMasqueradeAsAnEmptyCard() throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("removed-card")
+        let volume = StorageVolume(id: root.path, name: "Card", url: root, isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil)
+        XCTAssertThrowsError(try MediaScanner().scan(volume: volume, filter: .all))
+    }
+
+    func testFileCannotBeUsedAsAScanDirectory() throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("clip.mov")
+        try Data("clip".utf8).write(to: root)
+        let volume = StorageVolume(id: root.path, name: "Card", url: root, isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil)
+        XCTAssertThrowsError(try MediaScanner().scan(volume: volume, filter: .all))
+    }
+
+    @MainActor
+    func testCancelledEmptyScanStillReportsCancellation() async throws {
+        let root = try makeTemporaryDirectory()
+        let volume = StorageVolume(id: root.path, name: "Card", url: root, isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil)
+        let worker = Task.detached {
+            try? await Task.sleep(for: .milliseconds(20))
+            return try MediaScanner().scan(volume: volume, filter: .all)
+        }
+        worker.cancel()
+        do {
+            _ = try await worker.value
+            XCTFail("An empty directory must not hide a cancelled scan")
+        } catch is CancellationError {} catch { XCTFail("Unexpected scan error: \(error)") }
+    }
+
+    func testEveryExistingExtensionAndSidecarRemainsSelectable() throws {
+        let root = try makeTemporaryDirectory().resolvingSymlinksInPath()
+        let folder = root.appendingPathComponent("Données_素材_e\u{301}", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let videos = ["mov", "mp4", "mxf", "r3d", "braw", "ari", "crm", "avi", "mkv", "mts", "m2ts"]
+        let photos = ["jpg", "jpeg", "png", "heic", "tif", "tiff", "dng", "cr2", "cr3", "nef", "arw", "raf", "rw2"]
+        let audio = ["wav", "aif", "aiff", "mp3", "m4a", "flac"]
+        let sidecars = ["rmd", "xml", "xmp", "thm", "lrv", "lut", "cube", "cdl", "ale", "edl", "json", "srt", "vtt", "md5", "sha1", "sha256"]
+        let all = videos + photos + audio + sidecars + ["bin"]
+        for suffix in all { try Data(suffix.utf8).write(to: folder.appendingPathComponent("素材.\(suffix.uppercased())")) }
+        let volume = StorageVolume(id: root.path, name: "Card", url: root, isRemovable: true, isInternal: false, totalCapacity: nil, availableCapacity: nil)
+        let filters: [(ScanFilter, [String])] = [(.video, videos), (.photo, photos), (.audio, audio), (.all, all)]
+        for (filter, included) in filters {
+            let items = try MediaScanner().scan(volume: volume, filter: filter)
+            XCTAssertEqual(Set(items.map { $0.fileURL.pathExtension.lowercased() }), Set(included + sidecars))
+            for item in items {
+                XCTAssertEqual(item.relativePath, try PathSafety.relativePath(for: item.fileURL, under: root))
+                XCTAssertEqual(item.size, Int64(item.fileURL.pathExtension.utf8.count))
+            }
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("AirwangTests-\(UUID().uuidString)", isDirectory: true)
